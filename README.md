@@ -4,6 +4,9 @@ DreamShader 是一个 Unreal Engine 材质生成插件。它提供 `DreamShaderL
 
 > 当前版本：`1.3.0`。插件仍在持续开发中，核心工作流已经可用，建议在项目中逐步接入并保留源文件版本管理。
 
+> 本插件目前基于 Unreal Engine `5.7` 版本为基础开发 其他版本未经测试
+
+> 有任何问题/Bug反馈 可以创建[Issues](https://github.com/TypeDreamMoon/DreamShader/issues/new)更快的支持 可以直接加我的[QQ群 466585194](点击链接加入群聊【UNREAL GIRLS CRY】：https://qm.qq.com/q/X9uCLjVcY)
 ## 核心能力
 
 - 使用文本源文件维护材质逻辑，减少手动连材质节点的重复工作。
@@ -351,11 +354,7 @@ import "@typedreammoon/dream-noise/Library/Noise.dsh";
 
 ## VSCode 扩展
 
-VSCode 扩展位于：
-
-```text
-I:/UnrealProject_Moon/VSCodeExt/dreamshader-language-support
-```
+[Github](https://github.com/TypeDreamMoon/dreamshader-language-support/releases)
 
 扩展提供：
 
@@ -403,6 +402,8 @@ git push origin v1.3.0
 
 ## Roadmap
 
-- Custom Render Pass。
-- 更完整的 `Graph` 语义诊断。
-- 更多内置材质函数库和 Package 示例。
+- Custom Full Screen Render Pass
+- 更完整的 `VSCode` 语义诊断
+- `Substrate` 的完整支持
+- `Material Layer`的完整支持
+- `Moon Engine` 引擎 深入支持 [参考文章](https://zhuanlan.zhihu.com/p/21979494450)
