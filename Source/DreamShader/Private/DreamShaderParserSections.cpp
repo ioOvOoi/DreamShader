@@ -508,7 +508,7 @@ namespace UE::DreamShader::Private
 		}
 
 		OutError = FString::Printf(
-			TEXT("Unsupported UE builtin function '%s'. Use OutputType=\"float1/2/3/4/Texture2D\" for generic MaterialExpression calls."),
+			TEXT("Unsupported UE builtin function '%s'. Use OutputType=\"float1/2/3/4/Texture2D/Substrate\" for generic MaterialExpression calls."),
 			*FunctionName);
 		return false;
 	}

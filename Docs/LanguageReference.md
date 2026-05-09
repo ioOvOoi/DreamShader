@@ -4,7 +4,7 @@ DreamShaderLang 是 DreamShader 插件使用的文本语言。它用 `.dsm` / `.
 
 | 项目 | 内容 |
 | --- | --- |
-| 插件版本 | `1.3.1` |
+| 插件版本 | `1.3.2` |
 | 源文件 | `.dsm` / `.dsh` |
 | 主要产物 | `UMaterial` / `UMaterialFunction` |
 | 开发者 | TypeDreamMoon |
@@ -366,6 +366,24 @@ Graph = {
 
 当 `Shader` 绑定 `Base.MaterialAttributes` 时，生成器会自动启用 Unreal 材质的 `Use Material Attributes`。
 
+`Substrate` 可以作为 Graph 值、ShaderFunction / VirtualFunction pin 类型，以及 `Shader` 输出变量类型。根材质输出使用 `Base.FrontMaterial`：
+
+```c
+Outputs = {
+    Substrate Surface;
+    Base.FrontMaterial = Surface;
+}
+
+Graph = {
+    Surface = UE.SubstrateSlab(
+        DiffuseAlbedo=vec3(0.8, 0.25, 0.18),
+        F0=vec3(0.04, 0.04, 0.04),
+        Roughness=0.42);
+}
+```
+
+Substrate 输出必须来自 `Graph`。Custom HLSL 节点不能返回 `Substrate`，普通 `if` / `else` 也不能选择 Substrate 值；请使用 `UE.SubstrateSelect`、`UE.SubstrateHorizontalBlend`、`UE.SubstrateVerticalLayer`、`UE.SubstrateAdd` 或 `UE.SubstrateWeight` 组合 BSDF 树。
+
 ### 3.4 `Settings`
 
 配置 Unreal 材质或 Material Function 属性。
@@ -407,6 +425,7 @@ Options = {
 - `UE.*` builtin 调用。
 - `UE.CollectionParam(Collection=Path(...), Parameter="Name")` 读取 Material Parameter Collection。
 - `UE.StaticSwitchParameter(...)` 或 `StaticSwitchParameter` 属性调用。
+- `Substrate` 图值和 `UE.Substrate*` 节点，可连接到 `Base.FrontMaterial`。
 - `Function(...)` / `Namespace::Function(...)` 独立调用。
 - `GraphFunction(...)` / `Namespace::GraphFunction(...)` Custom 节点调用。
 - `ShaderFunction(...)` / `VirtualFunction(...)` 值调用。
@@ -604,6 +623,11 @@ if (Mask > 0.5) {
 | `UE.TransformVector(...)` | Vector Transform。 |
 | `UE.TransformPosition(...)` | Position Transform。 |
 | `UE.Expression(...)` | 泛型 MaterialExpression 创建入口。 |
+| `UE.SubstrateSlab(...)` | Substrate Slab BSDF，输出 `Substrate`。 |
+| `UE.SubstrateUnlit(...)` | Substrate Unlit BSDF，输出 `Substrate`。 |
+| `UE.SubstrateHorizontalBlend(...)` | Substrate Horizontal Blend，输出 `Substrate`。 |
+| `UE.SubstrateVerticalLayer(...)` | Substrate Vertical Layer，输出 `Substrate`。 |
+| `UE.SubstrateAdd(...)` / `UE.SubstrateWeight(...)` / `UE.SubstrateSelect(...)` | Substrate BSDF 组合节点。 |
 
 泛型示例：
 
@@ -612,6 +636,17 @@ float pulse = UE.Expression(
     Class="Sine",
     OutputType="float1",
     Input=UE.Time());
+```
+
+泛型 Substrate 表达式也可以显式声明 `OutputType="Substrate"`：
+
+```c
+Substrate Surface = UE.Expression(
+    Class="SubstrateSlabBSDF",
+    OutputType="Substrate",
+    DiffuseAlbedo=BaseColor,
+    F0=vec3(0.04, 0.04, 0.04),
+    Roughness=Roughness);
 ```
 
 ## 10. 输出绑定

@@ -1768,6 +1768,12 @@ namespace UE::DreamShader::Editor::Private
 		QueueFullScan();
 		UpdateDiagnosticsFile();
 
+		if (IsRunningCommandlet())
+		{
+			ProcessPendingFilesImmediately();
+			return;
+		}
+
 		FDirectoryWatcherModule& DirectoryWatcherModule = FModuleManager::LoadModuleChecked<FDirectoryWatcherModule>(TEXT("DirectoryWatcher"));
 		if (IDirectoryWatcher* DirectoryWatcher = DirectoryWatcherModule.Get())
 		{
@@ -2042,6 +2048,22 @@ namespace UE::DreamShader::Editor::Private
 				ReadyFiles.Add(PendingFile.Key);
 			}
 		}
+
+		for (const FString& ReadyFile : ReadyFiles)
+		{
+			PendingFiles.Remove(ReadyFile);
+			if (IFileManager::Get().FileExists(*ReadyFile))
+			{
+				ProcessSourceFile(ReadyFile);
+			}
+		}
+	}
+
+	void FDreamShaderEditorBridge::ProcessPendingFilesImmediately()
+	{
+		TArray<FString> ReadyFiles;
+		PendingFiles.GetKeys(ReadyFiles);
+		ReadyFiles.Sort();
 
 		for (const FString& ReadyFile : ReadyFiles)
 		{

@@ -4,7 +4,7 @@
 
 DreamShader is an Unreal Engine plugin for authoring materials and material functions with text source files. It introduces `DreamShaderLang`, a compact DSL that turns `.dsm` and `.dsh` files into Unreal `UMaterial`, `UMaterialFunction`, Material Layer, and Material Layer Blend assets.
 
-> Current version: `1.3.1`.
+> Current version: `1.3.2`.
 >
 > DreamShader is actively developed. The core authoring workflow is usable, but you should keep all `.dsm` / `.dsh` files in source control.
 >
@@ -186,6 +186,33 @@ Graph = {
 
 `GraphFunction` is also generated as a Custom node, but it can reference `UE.*` calls in the body. DreamShader creates those Unreal material nodes and wires their outputs into the Custom node as generated inputs.
 
+## Substrate
+
+DreamShader can author UE Substrate front-material graphs in `Graph` blocks. Declare a `Substrate` output, bind it to `Base.FrontMaterial`, set `ShadingModel = "Substrate"` or `"Strata"`, and create the BSDF tree with `UE.Substrate*` nodes.
+
+```c
+Shader(Name="Materials/M_SubstrateSlab")
+{
+    Settings = {
+        ShadingModel = "Substrate";
+    }
+
+    Outputs = {
+        Substrate Surface;
+        Base.FrontMaterial = Surface;
+    }
+
+    Graph = {
+        Surface = UE.SubstrateSlab(
+            DiffuseAlbedo=vec3(0.8, 0.25, 0.18),
+            F0=vec3(0.04, 0.04, 0.04),
+            Roughness=0.42);
+    }
+}
+```
+
+Supported aliases include `UE.SubstrateSlab`, `UE.SubstrateUnlit`, `UE.SubstrateHorizontalBlend`, `UE.SubstrateVerticalLayer`, `UE.SubstrateAdd`, `UE.SubstrateWeight`, and `UE.SubstrateSelect`. `UE.Expression(Class="SubstrateSlabBSDF", OutputType="Substrate", ...)` also works for reflected Substrate expression classes. Substrate values are graph-only values: they can be connected to Substrate expression inputs, `ShaderFunction` / `VirtualFunction` Substrate pins, and `Base.FrontMaterial`, but they cannot be returned from Custom HLSL nodes or used in numeric arithmetic.
+
 ## MaterialAttributes
 
 `MaterialAttributes` can be used as a graph value, a function output, a virtual function output, and a material output binding. When a `Shader` binds to `Base.MaterialAttributes`, DreamShader automatically enables Unreal's `Use Material Attributes` option on the generated material.
@@ -303,8 +330,8 @@ The extension releases are available from [dreamshader-language-support](https:/
 The repository includes a GitHub Actions release workflow. Push a tag that matches `VersionName` in `DreamShader.uplugin`:
 
 ```powershell
-git tag v1.3.1
-git push origin v1.3.1
+git tag v1.3.2
+git push origin v1.3.2
 ```
 
 The release archive is named `DreamShader-<Version>.zip` and contains the plugin source, resources, built-in libraries, documentation, README, CHANGELOG, and LICENSE. It excludes `Binaries` and `Intermediate`. The release workflow also attaches the latest VSCode extension assets from `TypeDreamMoon/dreamshader-language-support`.
@@ -313,7 +340,7 @@ The release archive is named `DreamShader-<Version>.zip` and contains the plugin
 
 | Item | Value |
 | --- | --- |
-| Version | `1.3.1` |
+| Version | `1.3.2` |
 | Language | `DreamShaderLang` |
 | Author | TypeDreamMoon |
 | GitHub | <https://github.com/TypeDreamMoon> |
@@ -325,6 +352,6 @@ The release archive is named `DreamShader-<Version>.zip` and contains the plugin
 
 - Custom full-screen render pass support.
 - More complete VSCode semantic diagnostics.
-- Full Substrate support.
+- Broader Substrate utility coverage and higher-level templates.
 - Deeper Material Layer workflow support.
 - Deeper Moon Engine integration. Reference: <https://zhuanlan.zhihu.com/p/21979494450>

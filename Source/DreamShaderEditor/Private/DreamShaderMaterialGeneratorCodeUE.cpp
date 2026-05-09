@@ -415,6 +415,7 @@ namespace UE::DreamShader::Editor::Private
 			OutValue.ComponentCount = bIsVectorParameter ? 4 : 1;
 			OutValue.bIsTextureObject = false;
 			OutValue.bIsMaterialAttributes = false;
+			OutValue.bIsSubstrate = false;
 			return true;
 		}
 
@@ -445,6 +446,7 @@ namespace UE::DreamShader::Editor::Private
 			OutValue.ComponentCount = Builtin.OutputComponents;
 			OutValue.bIsTextureObject = false;
 			OutValue.bIsMaterialAttributes = false;
+			OutValue.bIsSubstrate = false;
 			return true;
 		};
 
@@ -606,6 +608,39 @@ namespace UE::DreamShader::Editor::Private
 			}
 		}
 
+		static const TMap<FString, FString> SubstrateAliases =
+		{
+			{ UE::DreamShader::NormalizeSettingKey(TEXT("SubstrateShadingModels")), TEXT("SubstrateShadingModels") },
+			{ UE::DreamShader::NormalizeSettingKey(TEXT("SubstrateSlab")), TEXT("SubstrateSlabBSDF") },
+			{ UE::DreamShader::NormalizeSettingKey(TEXT("SubstrateSlabBSDF")), TEXT("SubstrateSlabBSDF") },
+			{ UE::DreamShader::NormalizeSettingKey(TEXT("SubstrateClearCoat")), TEXT("SubstrateSimpleClearCoatBSDF") },
+			{ UE::DreamShader::NormalizeSettingKey(TEXT("SubstrateSimpleClearCoat")), TEXT("SubstrateSimpleClearCoatBSDF") },
+			{ UE::DreamShader::NormalizeSettingKey(TEXT("SubstrateSimpleClearCoatBSDF")), TEXT("SubstrateSimpleClearCoatBSDF") },
+			{ UE::DreamShader::NormalizeSettingKey(TEXT("SubstrateVolumetricFogCloud")), TEXT("SubstrateVolumetricFogCloudBSDF") },
+			{ UE::DreamShader::NormalizeSettingKey(TEXT("SubstrateVolumetricFogCloudBSDF")), TEXT("SubstrateVolumetricFogCloudBSDF") },
+			{ UE::DreamShader::NormalizeSettingKey(TEXT("SubstrateUnlit")), TEXT("SubstrateUnlitBSDF") },
+			{ UE::DreamShader::NormalizeSettingKey(TEXT("SubstrateUnlitBSDF")), TEXT("SubstrateUnlitBSDF") },
+			{ UE::DreamShader::NormalizeSettingKey(TEXT("SubstrateHair")), TEXT("SubstrateHairBSDF") },
+			{ UE::DreamShader::NormalizeSettingKey(TEXT("SubstrateHairBSDF")), TEXT("SubstrateHairBSDF") },
+			{ UE::DreamShader::NormalizeSettingKey(TEXT("SubstrateEye")), TEXT("SubstrateEyeBSDF") },
+			{ UE::DreamShader::NormalizeSettingKey(TEXT("SubstrateEyeBSDF")), TEXT("SubstrateEyeBSDF") },
+			{ UE::DreamShader::NormalizeSettingKey(TEXT("SubstrateSingleLayerWater")), TEXT("SubstrateSingleLayerWaterBSDF") },
+			{ UE::DreamShader::NormalizeSettingKey(TEXT("SubstrateSingleLayerWaterBSDF")), TEXT("SubstrateSingleLayerWaterBSDF") },
+			{ UE::DreamShader::NormalizeSettingKey(TEXT("SubstrateLightFunction")), TEXT("SubstrateLightFunction") },
+			{ UE::DreamShader::NormalizeSettingKey(TEXT("SubstratePostProcess")), TEXT("SubstratePostProcess") },
+			{ UE::DreamShader::NormalizeSettingKey(TEXT("SubstrateUI")), TEXT("SubstrateUI") },
+			{ UE::DreamShader::NormalizeSettingKey(TEXT("SubstrateConvertToDecal")), TEXT("SubstrateConvertToDecal") },
+			{ UE::DreamShader::NormalizeSettingKey(TEXT("SubstrateConvertMaterialAttributes")), TEXT("SubstrateConvertMaterialAttributes") },
+			{ UE::DreamShader::NormalizeSettingKey(TEXT("SubstrateHorizontalBlend")), TEXT("SubstrateHorizontalMixing") },
+			{ UE::DreamShader::NormalizeSettingKey(TEXT("SubstrateHorizontalMixing")), TEXT("SubstrateHorizontalMixing") },
+			{ UE::DreamShader::NormalizeSettingKey(TEXT("SubstrateVerticalLayer")), TEXT("SubstrateVerticalLayering") },
+			{ UE::DreamShader::NormalizeSettingKey(TEXT("SubstrateVerticalLayering")), TEXT("SubstrateVerticalLayering") },
+			{ UE::DreamShader::NormalizeSettingKey(TEXT("SubstrateAdd")), TEXT("SubstrateAdd") },
+			{ UE::DreamShader::NormalizeSettingKey(TEXT("SubstrateWeight")), TEXT("SubstrateWeight") },
+			{ UE::DreamShader::NormalizeSettingKey(TEXT("SubstrateSelect")), TEXT("SubstrateSelect") },
+		};
+		const FString* SubstrateClassAlias = SubstrateAliases.Find(UE::DreamShader::NormalizeSettingKey(FunctionName));
+
 		for (const FCodeCallArgument& Argument : Arguments)
 		{
 			if (!Argument.bIsNamed)
@@ -620,16 +655,16 @@ namespace UE::DreamShader::Editor::Private
 		{
 			OutputTypeArgument = FindNamedArgument(Arguments, TEXT("ResultType"));
 		}
-		if (!OutputTypeArgument)
+		if (!OutputTypeArgument && !SubstrateClassAlias)
 		{
 			OutError = FString::Printf(
-				TEXT("Unsupported UE builtin call '%s' in Graph. For generic MaterialExpression calls, add OutputType=\"float1/2/3/4/Texture2D\"."),
+				TEXT("Unsupported UE builtin call '%s' in Graph. For generic MaterialExpression calls, add OutputType=\"float1/2/3/4/Texture2D/Substrate\"."),
 				*CalleeName);
 			return false;
 		}
 
-		FString OutputTypeText;
-		if (!TryExtractLiteralText(OutputTypeArgument->Expression, OutputTypeText))
+		FString OutputTypeText = SubstrateClassAlias ? TEXT("Substrate") : FString();
+		if (OutputTypeArgument && !TryExtractLiteralText(OutputTypeArgument->Expression, OutputTypeText))
 		{
 			OutError = FString::Printf(TEXT("UE.%s OutputType must be a literal value."), *FunctionName);
 			return false;
@@ -644,6 +679,10 @@ namespace UE::DreamShader::Editor::Private
 		}
 
 		FString ClassSpecifier = FunctionName;
+		if (SubstrateClassAlias)
+		{
+			ClassSpecifier = *SubstrateClassAlias;
+		}
 		if (const FCodeCallArgument* ClassArgument = FindNamedArgument(Arguments, TEXT("Class")))
 		{
 			if (!TryExtractLiteralText(ClassArgument->Expression, ClassSpecifier))
@@ -786,6 +825,7 @@ namespace UE::DreamShader::Editor::Private
 		OutValue.ComponentCount = OutputComponents;
 		OutValue.bIsTextureObject = bIsTextureObject;
 		OutValue.bIsMaterialAttributes = IsMaterialAttributesComponentType(OutputComponents, bIsTextureObject);
+		OutValue.bIsSubstrate = IsSubstrateComponentType(OutputComponents, bIsTextureObject);
 		return true;
 	}
 }

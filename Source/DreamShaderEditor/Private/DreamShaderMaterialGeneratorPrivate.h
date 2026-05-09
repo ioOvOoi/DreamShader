@@ -22,12 +22,14 @@ namespace UE::DreamShader::Editor::Private
 	{
 		EMaterialProperty Property = MP_EmissiveColor;
 		ECustomMaterialOutputType OutputType = CMOT_Float1;
+		bool bIsSubstrate = false;
 	};
 
 	struct FResolvedNamedOutput
 	{
 		FString Name;
 		ECustomMaterialOutputType OutputType = CMOT_Float1;
+		bool bIsSubstrate = false;
 	};
 
 	enum class ECodeTokenType : uint8
@@ -112,6 +114,7 @@ namespace UE::DreamShader::Editor::Private
 		int32 ComponentCount = 1;
 		bool bIsTextureObject = false;
 		bool bIsMaterialAttributes = false;
+		bool bIsSubstrate = false;
 	};
 
 	bool ParseCodeExpression(const FString& InExpression, TSharedPtr<FCodeExpression>& OutExpression, FString& OutError);
@@ -164,6 +167,7 @@ namespace UE::DreamShader::Editor::Private
 		FString& OutError);
 	bool TryGetComponentCountForOutputType(ECustomMaterialOutputType OutputType, int32& OutComponentCount);
 	bool IsMaterialAttributesType(const FString& InTypeName);
+	bool IsSubstrateType(const FString& InTypeName);
 	bool TryResolveCodeDeclaredType(const FString& InTypeName, int32& OutComponentCount, bool& bOutIsTexture);
 	bool TryResolveOutputVariableComponentCount(
 		const FTextShaderDefinition& Definition,

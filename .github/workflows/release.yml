@@ -80,6 +80,7 @@ jobs:
 
           $Items = @(
             'Source',
+            'Shaders',
             'Resources',
             'Library',
             'Docs',

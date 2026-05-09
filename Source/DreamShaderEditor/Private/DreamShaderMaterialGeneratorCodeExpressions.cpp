@@ -183,7 +183,8 @@ namespace UE::DreamShader::Editor::Private
 			&& Left.OutputIndex == Right.OutputIndex
 			&& Left.ComponentCount == Right.ComponentCount
 			&& Left.bIsTextureObject == Right.bIsTextureObject
-			&& Left.bIsMaterialAttributes == Right.bIsMaterialAttributes;
+			&& Left.bIsMaterialAttributes == Right.bIsMaterialAttributes
+			&& Left.bIsSubstrate == Right.bIsSubstrate;
 	}
 
 	static void CollectChangedValueNames(
@@ -275,6 +276,11 @@ namespace UE::DreamShader::Editor::Private
 				OutError = FString::Printf(TEXT("Graph if statement cannot select Texture2D value '%s'."), *Name);
 				return false;
 			}
+			if (IsSubstrateComponentType(ExpectedComponentCount, bExpectedTexture))
+			{
+				OutError = FString::Printf(TEXT("Graph if statement cannot select Substrate value '%s'. Use UE.SubstrateSelect for Substrate graphs."), *Name);
+				return false;
+			}
 
 			FCodeValue CoercedThenValue;
 			FCodeValue CoercedElseValue;
@@ -310,6 +316,11 @@ namespace UE::DreamShader::Editor::Private
 			OutError = TEXT("Texture2D values cannot be selected by Graph if statements.");
 			return false;
 		}
+		if (TrueValue.bIsSubstrate || FalseValue.bIsSubstrate)
+		{
+			OutError = TEXT("Substrate values cannot be selected by Graph if statements. Use UE.SubstrateSelect for Substrate graphs.");
+			return false;
+		}
 		if (TrueValue.bIsMaterialAttributes != FalseValue.bIsMaterialAttributes)
 		{
 			OutError = TEXT("Graph if branches cannot mix MaterialAttributes and numeric values.");
@@ -323,7 +334,7 @@ namespace UE::DreamShader::Editor::Private
 			return false;
 		}
 
-		if (LeftValue.bIsTextureObject || LeftValue.bIsMaterialAttributes || LeftValue.ComponentCount != 1)
+		if (LeftValue.bIsTextureObject || LeftValue.bIsMaterialAttributes || LeftValue.bIsSubstrate || LeftValue.ComponentCount != 1)
 		{
 			OutError = TEXT("Graph if condition left side must evaluate to a scalar value.");
 			return false;
@@ -349,7 +360,7 @@ namespace UE::DreamShader::Editor::Private
 			}
 		}
 
-		if (RightValue.bIsTextureObject || RightValue.bIsMaterialAttributes || RightValue.ComponentCount != 1)
+		if (RightValue.bIsTextureObject || RightValue.bIsMaterialAttributes || RightValue.bIsSubstrate || RightValue.ComponentCount != 1)
 		{
 			OutError = TEXT("Graph if condition right side must evaluate to a scalar value.");
 			return false;
@@ -408,6 +419,7 @@ namespace UE::DreamShader::Editor::Private
 		OutValue.ComponentCount = TrueValue.ComponentCount;
 		OutValue.bIsTextureObject = false;
 		OutValue.bIsMaterialAttributes = TrueValue.bIsMaterialAttributes;
+		OutValue.bIsSubstrate = false;
 		return true;
 	}
 
@@ -518,6 +530,12 @@ namespace UE::DreamShader::Editor::Private
 			return CreateMaterialAttributesValue(OutValue, OutError);
 		}
 
+		if (IsSubstrateComponentType(ComponentCount, bIsTexture))
+		{
+			OutError = FString::Printf(TEXT("Graph variable type '%s' requires an explicit initializer."), *DeclaredType);
+			return false;
+		}
+
 		if (bIsTexture)
 		{
 			OutError = FString::Printf(TEXT("Graph variable type '%s' requires an explicit initializer."), *DeclaredType);
@@ -573,6 +591,18 @@ namespace UE::DreamShader::Editor::Private
 			return true;
 		}
 
+		if (IsSubstrateComponentType(ExpectedComponentCount, bExpectedTexture))
+		{
+			if (!InValue.bIsSubstrate)
+			{
+				OutError = TEXT("Expected a Substrate value.");
+				return false;
+			}
+
+			OutValue = InValue;
+			return true;
+		}
+
 		if (bExpectedTexture)
 		{
 			if (!InValue.bIsTextureObject)
@@ -588,6 +618,12 @@ namespace UE::DreamShader::Editor::Private
 		if (InValue.bIsMaterialAttributes)
 		{
 			OutError = TEXT("MaterialAttributes values cannot be assigned to numeric outputs.");
+			return false;
+		}
+
+		if (InValue.bIsSubstrate)
+		{
+			OutError = TEXT("Substrate values cannot be assigned to numeric outputs.");
 			return false;
 		}
 
@@ -686,11 +722,11 @@ namespace UE::DreamShader::Editor::Private
 
 		if (const FCodeValue* ExistingValue = FindValue(Statement.TargetName))
 		{
-			if (ExistingValue->bIsTextureObject)
-			{
-				OutError = FString::Printf(TEXT("Brace initializer assignment is not supported for texture variable '%s'."), *Statement.TargetName);
-				return false;
-			}
+		if (ExistingValue->bIsTextureObject)
+		{
+			OutError = FString::Printf(TEXT("Brace initializer assignment is not supported for texture variable '%s'."), *Statement.TargetName);
+			return false;
+		}
 
 			if (ResolveTypeNameForComponentCount(ExistingValue->ComponentCount, OutTypeName))
 			{
@@ -1204,6 +1240,11 @@ namespace UE::DreamShader::Editor::Private
 			OutError = TEXT("Arithmetic operators cannot be applied to Texture2D values.");
 			return false;
 		}
+		if (LeftValue.bIsSubstrate || RightValue.bIsSubstrate)
+		{
+			OutError = TEXT("Arithmetic operators cannot be applied to Substrate values.");
+			return false;
+		}
 		if (LeftValue.bIsMaterialAttributes || RightValue.bIsMaterialAttributes)
 		{
 			OutError = TEXT("Arithmetic operators cannot be applied to MaterialAttributes values.");
@@ -1324,6 +1365,11 @@ namespace UE::DreamShader::Editor::Private
 			OutError = TEXT("Texture2D values do not support swizzle/member access in Code.");
 			return false;
 		}
+		if (BaseValue.bIsSubstrate)
+		{
+			OutError = TEXT("Substrate values do not support swizzle/member access in Code.");
+			return false;
+		}
 
 		return CreateSwizzleExpression(BaseValue, Expression->Text, OutValue, OutError);
 	}
@@ -1377,7 +1423,7 @@ namespace UE::DreamShader::Editor::Private
 		}
 		for (const FCodeValue& Part : Parts)
 		{
-			if (Part.bIsTextureObject || Part.bIsMaterialAttributes)
+			if (Part.bIsTextureObject || Part.bIsMaterialAttributes || Part.bIsSubstrate)
 			{
 				OutError = TEXT("AppendVector inputs must be numeric scalar/vector values.");
 				return false;
@@ -1645,6 +1691,11 @@ namespace UE::DreamShader::Editor::Private
 				OutError = FString::Printf(TEXT("Constructor '%s' cannot use Texture2D arguments."), *ConstructorName);
 				return false;
 			}
+			if (EvaluatedArgument.bIsSubstrate)
+			{
+				OutError = FString::Printf(TEXT("Constructor '%s' cannot use Substrate arguments."), *ConstructorName);
+				return false;
+			}
 			if (EvaluatedArgument.bIsMaterialAttributes)
 			{
 				OutError = FString::Printf(TEXT("Constructor '%s' cannot use MaterialAttributes arguments."), *ConstructorName);
@@ -1777,6 +1828,11 @@ namespace UE::DreamShader::Editor::Private
 			OutError = FString::Printf(TEXT("StaticSwitchParameter '%s' cannot switch Texture object values."), *Property.Name);
 			return false;
 		}
+		if (TrueValue.bIsSubstrate != FalseValue.bIsSubstrate)
+		{
+			OutError = FString::Printf(TEXT("StaticSwitchParameter '%s' cannot mix Substrate and non-Substrate branches."), *Property.Name);
+			return false;
+		}
 		if (TrueValue.bIsMaterialAttributes != FalseValue.bIsMaterialAttributes)
 		{
 			OutError = FString::Printf(TEXT("StaticSwitchParameter '%s' cannot mix MaterialAttributes and numeric branches."), *Property.Name);
@@ -1830,6 +1886,7 @@ namespace UE::DreamShader::Editor::Private
 		OutValue.ComponentCount = TrueValue.ComponentCount;
 		OutValue.bIsTextureObject = false;
 		OutValue.bIsMaterialAttributes = TrueValue.bIsMaterialAttributes;
+		OutValue.bIsSubstrate = TrueValue.bIsSubstrate;
 		return true;
 	}
 }

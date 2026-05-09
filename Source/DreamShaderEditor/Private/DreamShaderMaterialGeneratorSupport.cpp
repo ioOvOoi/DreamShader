@@ -70,6 +70,10 @@ namespace UE::DreamShader::Editor::Private
 		{
 			OutProperty = { MP_MaterialAttributes, CMOT_MaterialAttributes };
 		}
+		else if (Matches(TEXT("FrontMaterial")) || Matches(TEXT("Substrate")) || Matches(TEXT("SubstrateMaterial")))
+		{
+			OutProperty = { MP_FrontMaterial, CMOT_Float1, true };
+		}
 		else if (Matches(TEXT("EmissiveColor")) || Matches(TEXT("Emissive")))
 		{
 			OutProperty = { MP_EmissiveColor, CMOT_Float3 };
@@ -2708,6 +2712,50 @@ namespace UE::DreamShader::Editor::Private
 		return true;
 	}
 
+	static void ClearExpressionInput(FExpressionInput& ExpressionInput)
+	{
+		ExpressionInput.Expression = nullptr;
+		ExpressionInput.OutputIndex = 0;
+		ExpressionInput.Mask = 0;
+		ExpressionInput.MaskR = 0;
+		ExpressionInput.MaskG = 0;
+		ExpressionInput.MaskB = 0;
+		ExpressionInput.MaskA = 0;
+	}
+
+	static void ClearExpressionInputs(UObject* Object)
+	{
+		if (!Object)
+		{
+			return;
+		}
+
+		for (TFieldIterator<FProperty> It(Object->GetClass(), EFieldIteratorFlags::IncludeSuper); It; ++It)
+		{
+			FProperty* Property = *It;
+			if (IsMaterialExpressionInputProperty(Property))
+			{
+				FExpressionInput* ExpressionInput = Property->ContainerPtrToValuePtr<FExpressionInput>(Object);
+				if (ExpressionInput)
+				{
+					ClearExpressionInput(*ExpressionInput);
+				}
+			}
+		}
+	}
+
+	static void ClearExpressionCollection(FMaterialExpressionCollection& ExpressionCollection)
+	{
+		for (const TObjectPtr<UMaterialExpression>& Expression : ExpressionCollection.Expressions)
+		{
+			ClearExpressionInputs(Expression.Get());
+		}
+
+		ExpressionCollection.ExpressionExecBegin = nullptr;
+		ExpressionCollection.ExpressionExecEnd = nullptr;
+		ExpressionCollection.Empty();
+	}
+
 	void ClearMaterialExpressions(UMaterial* Material)
 	{
 		if (!Material)
@@ -2719,35 +2767,12 @@ namespace UE::DreamShader::Editor::Private
 		{
 			if (FExpressionInput* ExpressionInput = Material->GetExpressionInputForProperty(static_cast<EMaterialProperty>(MaterialPropertyIndex)))
 			{
-				ExpressionInput->Expression = nullptr;
+				ClearExpressionInput(*ExpressionInput);
 			}
 		}
 
-		int32 SafetyCounter = 0;
-		while (!Material->GetExpressions().IsEmpty() && SafetyCounter < 64)
-		{
-			TArray<UMaterialExpression*> ExpressionSnapshot;
-			ExpressionSnapshot.Reserve(Material->GetExpressions().Num());
-			for (const TObjectPtr<UMaterialExpression>& Expression : Material->GetExpressions())
-			{
-				if (Expression)
-				{
-					ExpressionSnapshot.Add(Expression.Get());
-				}
-			}
-
-			if (ExpressionSnapshot.IsEmpty())
-			{
-				break;
-			}
-
-			for (UMaterialExpression* Expression : ExpressionSnapshot)
-			{
-				UMaterialEditingLibrary::DeleteMaterialExpression(Material, Expression);
-			}
-
-			++SafetyCounter;
-		}
+		ClearExpressionCollection(Material->GetExpressionCollection());
+		Material->BuildEditorParameterList();
 	}
 
 	void ClearMaterialFunctionExpressions(UMaterialFunction* MaterialFunction)
@@ -2757,31 +2782,7 @@ namespace UE::DreamShader::Editor::Private
 			return;
 		}
 
-		int32 SafetyCounter = 0;
-		while (!MaterialFunction->GetExpressions().IsEmpty() && SafetyCounter < 64)
-		{
-			TArray<UMaterialExpression*> ExpressionSnapshot;
-			ExpressionSnapshot.Reserve(MaterialFunction->GetExpressions().Num());
-			for (const TObjectPtr<UMaterialExpression>& Expression : MaterialFunction->GetExpressions())
-			{
-				if (Expression)
-				{
-					ExpressionSnapshot.Add(Expression.Get());
-				}
-			}
-
-			if (ExpressionSnapshot.IsEmpty())
-			{
-				break;
-			}
-
-			for (UMaterialExpression* Expression : ExpressionSnapshot)
-			{
-				UMaterialEditingLibrary::DeleteMaterialExpressionInFunction(MaterialFunction, Expression);
-			}
-
-			++SafetyCounter;
-		}
+		ClearExpressionCollection(MaterialFunction->GetExpressionCollection());
 	}
 
 	void ResetMaterialToDefaults(UMaterial* Material)
@@ -4041,7 +4042,7 @@ namespace UE::DreamShader::Editor::Private
 			return CreateGenericUEExpression(Material, MaterialFunction, Property, AvailableExpressions, PositionY, OutError);
 		}
 
-		OutError = MakeError(TEXT("This builtin is not implemented by the material generator yet. For generic MaterialExpression support, add OutputType=\"float1/2/3/4/Texture2D\"."));
+		OutError = MakeError(TEXT("This builtin is not implemented by the material generator yet. For generic MaterialExpression support, add OutputType=\"float1/2/3/4/Texture2D/Substrate\"."));
 		return nullptr;
 	}
 
@@ -4116,9 +4117,23 @@ namespace UE::DreamShader::Editor::Private
 		return TypeName.Equals(TEXT("MaterialAttributes"), ESearchCase::IgnoreCase);
 	}
 
+	bool IsSubstrateType(const FString& InTypeName)
+	{
+		FString TypeName = InTypeName;
+		TypeName.TrimStartAndEndInline();
+		TypeName.ReplaceInline(TEXT(" "), TEXT(""));
+		return TypeName.Equals(TEXT("Substrate"), ESearchCase::IgnoreCase);
+	}
+
 	bool TryResolveCodeDeclaredType(const FString& InTypeName, int32& OutComponentCount, bool& bOutIsTexture)
 	{
 		bOutIsTexture = false;
+
+		if (IsSubstrateType(InTypeName))
+		{
+			OutComponentCount = -1;
+			return true;
+		}
 
 		ECustomMaterialOutputType OutputType = CMOT_Float1;
 		if (TryResolveCustomOutputType(InTypeName, OutputType) && TryGetComponentCountForOutputType(OutputType, OutComponentCount))
@@ -4568,6 +4583,14 @@ namespace UE::DreamShader::Editor::Private
 			return true;
 		}
 
+		if (IsSubstrateType(InTypeName))
+		{
+			OutComponentCount = -1;
+			bOutIsTexture = false;
+			OutFunctionInputTypeValue = static_cast<int32>(FunctionInput_Substrate);
+			return true;
+		}
+
 		if (!TryResolveCodeDeclaredType(InTypeName, OutComponentCount, bOutIsTexture))
 		{
 			return false;
@@ -4648,6 +4671,7 @@ namespace UE::DreamShader::Editor::Private
 		OutReturnType = CMOT_Float1;
 
 		TMap<FString, ECustomMaterialOutputType> DeclaredOutputTypes;
+		TMap<FString, bool> DeclaredOutputSubstrateTypes;
 		TMap<FString, FString> DeclaredOutputTypeTexts;
 		for (const FTextShaderVariableDeclaration& Declaration : Definition.OutputDeclarations)
 		{
@@ -4658,7 +4682,8 @@ namespace UE::DreamShader::Editor::Private
 			}
 
 			ECustomMaterialOutputType DeclaredType = CMOT_Float1;
-			if (!TryResolveCustomOutputType(Declaration.Type, DeclaredType))
+			const bool bDeclaredSubstrate = IsSubstrateType(Declaration.Type);
+			if (!bDeclaredSubstrate && !TryResolveCustomOutputType(Declaration.Type, DeclaredType))
 			{
 				OutError = FString::Printf(TEXT("Unsupported output type '%s' for '%s'."), *Declaration.Type, *Declaration.Name);
 				return false;
@@ -4666,7 +4691,8 @@ namespace UE::DreamShader::Editor::Private
 
 			if (const ECustomMaterialOutputType* ExistingType = DeclaredOutputTypes.Find(Declaration.Name))
 			{
-				if (*ExistingType != DeclaredType)
+				const bool bExistingSubstrate = DeclaredOutputSubstrateTypes.FindRef(Declaration.Name);
+				if (*ExistingType != DeclaredType || bExistingSubstrate != bDeclaredSubstrate)
 				{
 					OutError = FString::Printf(TEXT("Output variable '%s' is declared with conflicting types."), *Declaration.Name);
 					return false;
@@ -4675,6 +4701,7 @@ namespace UE::DreamShader::Editor::Private
 			else
 			{
 				DeclaredOutputTypes.Add(Declaration.Name, DeclaredType);
+				DeclaredOutputSubstrateTypes.Add(Declaration.Name, bDeclaredSubstrate);
 				DeclaredOutputTypeTexts.Add(Declaration.Name, Declaration.Type);
 			}
 		}
@@ -4685,6 +4712,7 @@ namespace UE::DreamShader::Editor::Private
 			const FString SourceName = Binding.SourceText.TrimStartAndEnd();
 			const bool bIsSimpleSourceReference = IsSimpleOutputReference(SourceName);
 			ECustomMaterialOutputType BindingOutputType = CMOT_Float1;
+			bool bBindingIsSubstrate = false;
 			bool bHasImplicitTypeFromTarget = false;
 			if (Binding.TargetKind == FTextShaderOutputBinding::ETargetKind::MaterialProperty)
 			{
@@ -4696,6 +4724,7 @@ namespace UE::DreamShader::Editor::Private
 				}
 
 				BindingOutputType = ResolvedProperty.OutputType;
+				bBindingIsSubstrate = ResolvedProperty.bIsSubstrate;
 				bHasImplicitTypeFromTarget = true;
 			}
 
@@ -4712,9 +4741,15 @@ namespace UE::DreamShader::Editor::Private
 					bOutUsesReturn = true;
 					OutReturnType = BindingOutputType;
 				}
-				else if (OutReturnType != BindingOutputType)
+				else if (OutReturnType != BindingOutputType || bBindingIsSubstrate)
 				{
 					OutError = TEXT("The return value is bound to material properties with incompatible types.");
+					return false;
+				}
+
+				if (bBindingIsSubstrate)
+				{
+					OutError = TEXT("The reserved output name 'return' cannot bind to Substrate FrontMaterial; use a named Substrate output in a Graph block.");
 					return false;
 				}
 
@@ -4728,7 +4763,8 @@ namespace UE::DreamShader::Editor::Private
 
 			if (const int32* ExistingIndex = OutputOrder.Find(SourceName))
 			{
-				if (OutNamedOutputs[*ExistingIndex].OutputType != BindingOutputType && bHasImplicitTypeFromTarget)
+				if ((OutNamedOutputs[*ExistingIndex].OutputType != BindingOutputType
+					|| OutNamedOutputs[*ExistingIndex].bIsSubstrate != bBindingIsSubstrate) && bHasImplicitTypeFromTarget)
 				{
 					OutError = FString::Printf(TEXT("Output variable '%s' is bound to incompatible material properties."), *SourceName);
 					return false;
@@ -4739,10 +4775,12 @@ namespace UE::DreamShader::Editor::Private
 				FResolvedNamedOutput& Output = OutNamedOutputs.AddDefaulted_GetRef();
 				Output.Name = SourceName;
 				Output.OutputType = BindingOutputType;
+				Output.bIsSubstrate = bBindingIsSubstrate;
 
 				if (const ECustomMaterialOutputType* DeclaredType = DeclaredOutputTypes.Find(SourceName))
 				{
-					if (bHasImplicitTypeFromTarget && *DeclaredType != BindingOutputType)
+					const bool bDeclaredSubstrate = DeclaredOutputSubstrateTypes.FindRef(SourceName);
+					if (bHasImplicitTypeFromTarget && (*DeclaredType != BindingOutputType || bDeclaredSubstrate != bBindingIsSubstrate))
 					{
 						OutError = FString::Printf(
 							TEXT("Output variable '%s' is declared as '%s' but bound material property '%s' expects a different type."),
@@ -4753,6 +4791,7 @@ namespace UE::DreamShader::Editor::Private
 					}
 
 					Output.OutputType = *DeclaredType;
+					Output.bIsSubstrate = bDeclaredSubstrate;
 				}
 				else if (!bHasImplicitTypeFromTarget)
 				{

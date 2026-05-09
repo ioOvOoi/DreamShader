@@ -103,6 +103,11 @@ namespace UE::DreamShader::Editor::Private
 		return ComponentCount == 0 && !bIsTextureObject;
 	}
 
+	inline bool IsSubstrateComponentType(const int32 ComponentCount, const bool bIsTextureObject)
+	{
+		return ComponentCount == -1 && !bIsTextureObject;
+	}
+
 	inline bool TrySplitMemberTarget(const FString& TargetText, FString& OutBaseName, FString& OutMemberName)
 	{
 		FString Left;
@@ -121,6 +126,7 @@ namespace UE::DreamShader::Editor::Private
 	{
 		switch (ComponentCount)
 		{
+		case -1: OutTypeName = TEXT("Substrate"); return true;
 		case 0: OutTypeName = TEXT("MaterialAttributes"); return true;
 		case 1: OutTypeName = TEXT("float"); return true;
 		case 2: OutTypeName = TEXT("float2"); return true;

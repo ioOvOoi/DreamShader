@@ -213,6 +213,7 @@ namespace UE::DreamShader::Editor::Private
 		OutValue.ComponentCount = ResultComponents;
 		OutValue.bIsTextureObject = false;
 		OutValue.bIsMaterialAttributes = IsMaterialAttributesComponentType(ResultComponents, false);
+		OutValue.bIsSubstrate = IsSubstrateComponentType(ResultComponents, false);
 		return true;
 	}
 
@@ -515,6 +516,7 @@ namespace UE::DreamShader::Editor::Private
 			ResultValue.ComponentCount = ResultComponents;
 			ResultValue.bIsTextureObject = false;
 			ResultValue.bIsMaterialAttributes = IsMaterialAttributesComponentType(ResultComponents, false);
+			ResultValue.bIsSubstrate = IsSubstrateComponentType(ResultComponents, false);
 			(*Values).Add(ResultTargetNames[ResultIndex], ResultValue);
 		}
 
@@ -871,7 +873,7 @@ namespace UE::DreamShader::Editor::Private
 					return false;
 				}
 
-				if (UEValue.bIsTextureObject || UEValue.bIsMaterialAttributes)
+				if (UEValue.bIsTextureObject || UEValue.bIsMaterialAttributes || UEValue.bIsSubstrate)
 				{
 					OutError = FString::Printf(TEXT("DreamShader GraphFunction '%s' UE input '%s' cannot be passed into a Custom node input."), *Function.Name, *CallText);
 					return false;
@@ -980,6 +982,7 @@ namespace UE::DreamShader::Editor::Private
 			ResultValue.ComponentCount = ResultComponents;
 			ResultValue.bIsTextureObject = false;
 			ResultValue.bIsMaterialAttributes = IsMaterialAttributesComponentType(ResultComponents, false);
+			ResultValue.bIsSubstrate = IsSubstrateComponentType(ResultComponents, false);
 			PreviousValues->Add(ResultTargetNames[ResultIndex], ResultValue);
 		}
 
@@ -1155,7 +1158,22 @@ namespace UE::DreamShader::Editor::Private
 				return false;
 			}
 
-			ConnectCodeValueToInput(FunctionCall->FunctionInputs[FunctionInputIndex].Input, InputValue);
+			int32 ExpectedComponentCount = 0;
+			bool bExpectedTexture = false;
+			if (!TryResolveCodeDeclaredType(InputDefinition.Type, ExpectedComponentCount, bExpectedTexture))
+			{
+				OutError = FString::Printf(TEXT("%s '%s' input '%s' uses unsupported type '%s'."), *CallKind, *FunctionName, *InputDefinition.Name, *InputDefinition.Type);
+				return false;
+			}
+
+			FCodeValue CoercedValue;
+			if (!CoerceValueToType(InputValue, ExpectedComponentCount, bExpectedTexture, CoercedValue, OutError))
+			{
+				OutError = FString::Printf(TEXT("%s '%s' input '%s': %s"), *CallKind, *FunctionName, *InputDefinition.Name, *OutError);
+				return false;
+			}
+
+			ConnectCodeValueToInput(FunctionCall->FunctionInputs[FunctionInputIndex].Input, CoercedValue);
 		}
 
 		for (const FCodeCallArgument& Argument : Arguments)
@@ -1268,6 +1286,7 @@ namespace UE::DreamShader::Editor::Private
 		OutValue.ComponentCount = OutputComponents;
 		OutValue.bIsTextureObject = bIsTextureObject;
 		OutValue.bIsMaterialAttributes = IsMaterialAttributesComponentType(OutputComponents, bIsTextureObject);
+		OutValue.bIsSubstrate = IsSubstrateComponentType(OutputComponents, bIsTextureObject);
 		return true;
 	}
 

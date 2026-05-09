@@ -47,6 +47,7 @@ namespace UE::DreamShader::Editor::Private
 		bool Tick(float DeltaSeconds);
 		void ProcessRequestFiles();
 		void ProcessReadyFiles();
+		void ProcessPendingFilesImmediately();
 		void ProcessSourceFile(const FString& SourceFilePath);
 		void OnMaterialCompilationFinished(UMaterialInterface* MaterialInterface);
 		void RegisterMenus();

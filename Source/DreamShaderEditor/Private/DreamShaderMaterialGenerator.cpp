@@ -121,8 +121,9 @@ namespace UE::DreamShader::Editor
 			}
 
 			const bool bIsMaterialAttributes = ComponentCount == 0 && !bIsTextureObject;
+			const bool bIsSubstrate = ComponentCount == -1 && !bIsTextureObject;
 			FVector4f PreviewValue;
-			if (!bIsTextureObject && !bIsMaterialAttributes && TryParseFunctionInputPreviewLiteral(InputDefinition.DefaultValueText, ComponentCount, PreviewValue))
+			if (!bIsTextureObject && !bIsMaterialAttributes && !bIsSubstrate && TryParseFunctionInputPreviewLiteral(InputDefinition.DefaultValueText, ComponentCount, PreviewValue))
 			{
 				InputExpression->PreviewValue = PreviewValue;
 				return true;
@@ -151,6 +152,7 @@ namespace UE::DreamShader::Editor
 
 			if (PreviewExpressionValue.bIsTextureObject != bIsTextureObject
 				|| PreviewExpressionValue.bIsMaterialAttributes != bIsMaterialAttributes
+				|| PreviewExpressionValue.bIsSubstrate != bIsSubstrate
 				|| PreviewExpressionValue.ComponentCount != ComponentCount)
 			{
 				OutError = FString::Printf(
@@ -194,11 +196,12 @@ namespace UE::DreamShader::Editor
 
 			Private::FCodeValue Value;
 			Value.Expression = Expression;
-			Value.OutputIndex = 0;
-			Value.ComponentCount = 0;
-			Value.bIsTextureObject = false;
-			Value.bIsMaterialAttributes = true;
-			InOutGeneratedValues.Add(ValueName, Value);
+				Value.OutputIndex = 0;
+				Value.ComponentCount = 0;
+				Value.bIsTextureObject = false;
+				Value.bIsMaterialAttributes = true;
+				Value.bIsSubstrate = false;
+				InOutGeneratedValues.Add(ValueName, Value);
 			InOutPositionY += 220;
 			return true;
 		}
@@ -1333,6 +1336,7 @@ namespace UE::DreamShader::Editor
 				PropertyValue.ComponentCount = GetGraphComponentCountForProperty(Property);
 				PropertyValue.bIsTextureObject = Property.Type == ETextShaderPropertyType::Texture2D;
 				PropertyValue.bIsMaterialAttributes = false;
+				PropertyValue.bIsSubstrate = false;
 				GeneratedValues.Add(Property.Name, PropertyValue);
 				PropertyPositionY += 220;
 			}
@@ -1377,6 +1381,7 @@ namespace UE::DreamShader::Editor
 				InputValue.ComponentCount = ComponentCount;
 				InputValue.bIsTextureObject = bIsTextureObject;
 				InputValue.bIsMaterialAttributes = ComponentCount == 0 && !bIsTextureObject;
+				InputValue.bIsSubstrate = ComponentCount == -1 && !bIsTextureObject;
 				GeneratedValues.Add(InputDefinition.Name, InputValue);
 				GeneratedInputExpressions.Add(InputDefinition.Name, InputExpression);
 				InputPositionY += 180;
@@ -1539,6 +1544,7 @@ namespace UE::DreamShader::Editor
 				PrimaryOutputValue.bIsTextureObject = false;
 				verify(Private::TryResolveCodeDeclaredType(PrimaryOutput.Type, PrimaryOutputValue.ComponentCount, PrimaryOutputValue.bIsTextureObject));
 				PrimaryOutputValue.bIsMaterialAttributes = PrimaryOutputValue.ComponentCount == 0 && !PrimaryOutputValue.bIsTextureObject;
+				PrimaryOutputValue.bIsSubstrate = PrimaryOutputValue.ComponentCount == -1 && !PrimaryOutputValue.bIsTextureObject;
 				GeneratedValues.Add(PrimaryOutput.Name, PrimaryOutputValue);
 
 				for (int32 OutputIndex = 1; OutputIndex < FunctionDefinition.Outputs.Num(); ++OutputIndex)
@@ -1549,6 +1555,7 @@ namespace UE::DreamShader::Editor
 					OutputValue.OutputIndex = OutputIndex;
 					verify(Private::TryResolveCodeDeclaredType(OutputDefinition.Type, OutputValue.ComponentCount, OutputValue.bIsTextureObject));
 					OutputValue.bIsMaterialAttributes = OutputValue.ComponentCount == 0 && !OutputValue.bIsTextureObject;
+					OutputValue.bIsSubstrate = OutputValue.ComponentCount == -1 && !OutputValue.bIsTextureObject;
 					GeneratedValues.Add(OutputDefinition.Name, OutputValue);
 				}
 			}
@@ -1577,8 +1584,11 @@ namespace UE::DreamShader::Editor
 					return false;
 				}
 
+				const bool bExpectedMaterialAttributes = ExpectedComponentCount == 0 && !bExpectedTexture;
+				const bool bExpectedSubstrate = ExpectedComponentCount == -1 && !bExpectedTexture;
 				if (bExpectedTexture != OutputValue->bIsTextureObject
-					|| ((ExpectedComponentCount == 0 && !bExpectedTexture) != OutputValue->bIsMaterialAttributes)
+					|| bExpectedMaterialAttributes != OutputValue->bIsMaterialAttributes
+					|| bExpectedSubstrate != OutputValue->bIsSubstrate
 					|| (!bExpectedTexture && ExpectedComponentCount != OutputValue->ComponentCount))
 				{
 					OutError = FString::Printf(TEXT("ShaderFunction '%s' output '%s' does not match its declared type '%s'."), *FunctionDefinition.Name, *OutputDefinition.Name, *OutputDefinition.Type);
@@ -1777,6 +1787,27 @@ namespace UE::DreamShader::Editor
 			return false;
 		}
 
+		if (bUsesReturn)
+		{
+			for (const FTextShaderOutputBinding& Binding : Definition.Outputs)
+			{
+				if (!Binding.SourceText.TrimStartAndEnd().Equals(TEXT("return"), ESearchCase::IgnoreCase)
+					|| Binding.TargetKind != FTextShaderOutputBinding::ETargetKind::MaterialProperty)
+				{
+					continue;
+				}
+
+				Private::FResolvedMaterialProperty ResolvedProperty;
+				if (Private::ResolveMaterialProperty(Binding.MaterialProperty, ResolvedProperty) && ResolvedProperty.bIsSubstrate)
+				{
+					OutMessage = FString::Printf(
+						TEXT("%s: The reserved output name 'return' cannot bind to Substrate FrontMaterial; use a named Substrate output in a Graph block."),
+						*SourceFilePath);
+					return false;
+				}
+			}
+		}
+
 		if (!Definition.Functions.IsEmpty())
 		{
 			FString IncludeWriteError;
@@ -1854,6 +1885,8 @@ namespace UE::DreamShader::Editor
 			PropertyValue.OutputIndex = GetPreferredOutputIndexForProperty(Property, PropertyExpression);
 			PropertyValue.ComponentCount = GetGraphComponentCountForProperty(Property);
 			PropertyValue.bIsTextureObject = Property.Type == ETextShaderPropertyType::Texture2D;
+			PropertyValue.bIsMaterialAttributes = false;
+			PropertyValue.bIsSubstrate = false;
 			GeneratedCodeValues.Add(Property.Name, PropertyValue);
 			ParameterPositionY += 220;
 		}
@@ -1927,9 +1960,11 @@ namespace UE::DreamShader::Editor
 				if (Private::TryResolveOutputVariableComponentCount(Definition, Binding.SourceText, DeclaredComponents, bDeclaredTexture))
 				{
 					const bool bDeclaredMaterialAttributes = DeclaredComponents == 0 && !bDeclaredTexture;
+					const bool bDeclaredSubstrate = DeclaredComponents == -1 && !bDeclaredTexture;
 					if (bDeclaredTexture
 						|| OutputValue.bIsTextureObject
 						|| bDeclaredMaterialAttributes != OutputValue.bIsMaterialAttributes
+						|| bDeclaredSubstrate != OutputValue.bIsSubstrate
 						|| DeclaredComponents != OutputValue.ComponentCount)
 					{
 						OutMessage = FString::Printf(
@@ -1944,7 +1979,18 @@ namespace UE::DreamShader::Editor
 				{
 					Private::FResolvedMaterialProperty ResolvedProperty;
 					verify(Private::ResolveMaterialProperty(Binding.MaterialProperty, ResolvedProperty));
-					if (ResolvedProperty.OutputType == CMOT_MaterialAttributes)
+					if (ResolvedProperty.bIsSubstrate)
+					{
+						if (!OutputValue.bIsSubstrate)
+						{
+							OutMessage = FString::Printf(
+								TEXT("%s: Material output '%s' expects a Substrate value."),
+								*SourceFilePath,
+								*Binding.MaterialProperty);
+							return false;
+						}
+					}
+					else if (ResolvedProperty.OutputType == CMOT_MaterialAttributes)
 					{
 						if (!OutputValue.bIsMaterialAttributes)
 						{
@@ -1998,6 +2044,18 @@ namespace UE::DreamShader::Editor
 		}
 		else
 		{
+			for (const Private::FResolvedNamedOutput& OutputDefinition : NamedOutputs)
+			{
+				if (OutputDefinition.bIsSubstrate)
+				{
+					OutMessage = FString::Printf(
+						TEXT("%s: Substrate output '%s' requires a Graph block; Custom HLSL outputs cannot return Substrate values."),
+						*SourceFilePath,
+						*OutputDefinition.Name);
+					return false;
+				}
+			}
+
 			auto* CustomExpression = Cast<UMaterialExpressionCustom>(
 				UMaterialEditingLibrary::CreateMaterialExpression(Material, UMaterialExpressionCustom::StaticClass(), 0, 0));
 			if (!CustomExpression)
@@ -2069,6 +2127,14 @@ namespace UE::DreamShader::Editor
 				{
 					Private::FResolvedMaterialProperty ResolvedProperty;
 					verify(Private::ResolveMaterialProperty(Binding.MaterialProperty, ResolvedProperty));
+					if (ResolvedProperty.bIsSubstrate)
+					{
+						OutMessage = FString::Printf(
+							TEXT("%s: Material output '%s' requires a Graph Substrate expression; Custom HLSL outputs cannot connect to FrontMaterial."),
+							*SourceFilePath,
+							*Binding.MaterialProperty);
+						return false;
+					}
 					if (ResolvedProperty.OutputType == CMOT_MaterialAttributes)
 					{
 						Material->bUseMaterialAttributes = true;
