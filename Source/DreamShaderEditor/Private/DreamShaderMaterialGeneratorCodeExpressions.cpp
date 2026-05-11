@@ -1339,21 +1339,6 @@ namespace UE::DreamShader::Editor::Private
 		FCodeValue& OutValue,
 		FString& OutError)
 	{
-		static const TCHAR* ChannelNames[] = { TEXT("R"), TEXT("G"), TEXT("B"), TEXT("A") };
-		if (ChannelIndex >= 0 && ChannelIndex < UE_ARRAY_COUNT(ChannelNames))
-		{
-			int32 DirectOutputIndex = INDEX_NONE;
-			if (TryResolveExpressionOutputIndex(BaseValue.Expression, ChannelNames[ChannelIndex], DirectOutputIndex))
-			{
-				OutValue.Expression = BaseValue.Expression;
-				OutValue.OutputIndex = DirectOutputIndex;
-				OutValue.ComponentCount = 1;
-				OutValue.bIsTextureObject = false;
-				OutValue.bIsMaterialAttributes = false;
-				return true;
-			}
-		}
-
 		auto* MaskExpression = Cast<UMaterialExpressionComponentMask>(
 			CreateExpression(UMaterialExpressionComponentMask::StaticClass(), 320, ConsumeNodeY()));
 		if (!MaskExpression)
@@ -1803,15 +1788,18 @@ namespace UE::DreamShader::Editor::Private
 		OutValue.OutputIndex = 0;
 		if (Property->Type == ETextShaderPropertyType::Vector && !Property->bConst)
 		{
+			static const TCHAR* ComponentOutputs[] = { TEXT(""), TEXT("R"), TEXT("RG"), TEXT("RGB"), TEXT("RGBA") };
 			int32 OutputIndex = 0;
-			if (TryResolveExpressionOutputIndex(PropertyExpression, TEXT("RGBA"), OutputIndex))
+			if (Property->ComponentCount > 0
+				&& Property->ComponentCount < UE_ARRAY_COUNT(ComponentOutputs)
+				&& TryResolveExpressionOutputIndex(PropertyExpression, ComponentOutputs[Property->ComponentCount], OutputIndex))
 			{
 				OutValue.OutputIndex = OutputIndex;
 			}
 		}
 		OutValue.ComponentCount = Property->Type == ETextShaderPropertyType::Texture2D
 			? 0
-			: ((Property->Type == ETextShaderPropertyType::Vector && !Property->bConst) ? 4 : Property->ComponentCount);
+			: Property->ComponentCount;
 		OutValue.bIsTextureObject = Property->Type == ETextShaderPropertyType::Texture2D;
 		OutValue.bIsMaterialAttributes = false;
 		Values->Add(Property->Name, OutValue);

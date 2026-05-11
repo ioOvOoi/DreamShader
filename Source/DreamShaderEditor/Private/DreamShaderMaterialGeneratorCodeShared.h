@@ -73,6 +73,21 @@ namespace UE::DreamShader::Editor::Private
 				continue;
 			}
 
+			if (Output.MaskR && Output.MaskG && !Output.MaskB && !Output.MaskA && DesiredOutput == FName(TEXT("RG")))
+			{
+				OutIndex = OutputIndex;
+				return true;
+			}
+			if (Output.MaskR && Output.MaskG && Output.MaskB && !Output.MaskA && DesiredOutput == FName(TEXT("RGB")))
+			{
+				OutIndex = OutputIndex;
+				return true;
+			}
+			if (Output.MaskR && Output.MaskG && Output.MaskB && Output.MaskA && DesiredOutput == FName(TEXT("RGBA")))
+			{
+				OutIndex = OutputIndex;
+				return true;
+			}
 			if (Output.MaskR && !Output.MaskG && !Output.MaskB && !Output.MaskA && DesiredOutput == FName(TEXT("R")))
 			{
 				OutIndex = OutputIndex;

@@ -1,5 +1,12 @@
 # DreamShader ChangeLog
 
+## 1.3.3 - 2026-05-11
+
+### Graph Swizzles
+
+- Fixed vector property component counts so declared `vec2` / `vec3` properties bind through `RG` / `RGB` instead of always using `RGBA`.
+- Fixed non-sequential swizzles such as `.gbr` by generating explicit `ComponentMask` and `AppendVector` nodes.
+
 ## 1.3.2 - 2026-05-11
 
 ### Material Function Generation

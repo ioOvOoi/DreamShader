@@ -4,7 +4,7 @@
 
 DreamShader is an Unreal Engine plugin for authoring materials and material functions with text source files. It introduces `DreamShaderLang`, a compact DSL that turns `.dsm` and `.dsh` files into Unreal `UMaterial`, `UMaterialFunction`, Material Layer, and Material Layer Blend assets.
 
-> Current version: `1.3.2`.
+> Current version: `1.3.3`.
 >
 > DreamShader is actively developed. The core authoring workflow is usable, but you should keep all `.dsm` / `.dsh` files in source control.
 >
@@ -303,8 +303,8 @@ The extension releases are available from [dreamshader-language-support](https:/
 The repository includes a GitHub Actions release workflow. Push a tag that matches `VersionName` in `DreamShader.uplugin`:
 
 ```powershell
-git tag v1.3.2
-git push origin v1.3.2
+git tag v1.3.3
+git push origin v1.3.3
 ```
 
 The release archive is named `DreamShader-<Version>.zip` and contains the plugin source, resources, built-in libraries, documentation, README, CHANGELOG, and LICENSE. It excludes `Binaries` and `Intermediate`. The release workflow also attaches the latest VSCode extension assets from `TypeDreamMoon/dreamshader-language-support`.
@@ -313,7 +313,7 @@ The release archive is named `DreamShader-<Version>.zip` and contains the plugin
 
 | Item | Value |
 | --- | --- |
-| Version | `1.3.2` |
+| Version | `1.3.3` |
 | Language | `DreamShaderLang` |
 | Author | TypeDreamMoon |
 | GitHub | <https://github.com/TypeDreamMoon> |

@@ -1170,8 +1170,11 @@ namespace UE::DreamShader::Editor
 		{
 			if (Property.Type == ETextShaderPropertyType::Vector && !Property.bConst)
 			{
+				static const TCHAR* ComponentOutputs[] = { TEXT(""), TEXT("R"), TEXT("RG"), TEXT("RGB"), TEXT("RGBA") };
 				int32 OutputIndex = 0;
-				if (TryResolveExpressionOutputIndexByName(Expression, TEXT("RGBA"), OutputIndex))
+				if (Property.ComponentCount > 0
+					&& Property.ComponentCount < UE_ARRAY_COUNT(ComponentOutputs)
+					&& TryResolveExpressionOutputIndexByName(Expression, ComponentOutputs[Property.ComponentCount], OutputIndex))
 				{
 					return OutputIndex;
 				}
