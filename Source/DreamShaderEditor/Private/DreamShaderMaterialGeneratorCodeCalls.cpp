@@ -2,6 +2,51 @@
 
 namespace UE::DreamShader::Editor::Private
 {
+	namespace
+	{
+		bool ApplyFunctionCallOutputType(
+			UMaterialExpressionMaterialFunctionCall* FunctionCall,
+			const int32 FunctionOutputIndex,
+			int32& InOutComponentCount,
+			bool& bInOutIsTextureObject)
+		{
+			if (!FunctionCall || !FunctionCall->FunctionOutputs.IsValidIndex(FunctionOutputIndex))
+			{
+				return false;
+			}
+
+			int32 ResolvedComponentCount = 0;
+			bool bResolvedIsTextureObject = false;
+			if (TryResolveMaterialValueType(
+				FunctionCall->GetOutputValueType(FunctionOutputIndex),
+				ResolvedComponentCount,
+				bResolvedIsTextureObject))
+			{
+				InOutComponentCount = ResolvedComponentCount;
+				bInOutIsTextureObject = bResolvedIsTextureObject;
+				return true;
+			}
+
+			const FFunctionExpressionOutput& FunctionOutput = FunctionCall->FunctionOutputs[FunctionOutputIndex];
+			if (FunctionOutput.Output.Mask)
+			{
+				const int32 MaskComponentCount =
+					(FunctionOutput.Output.MaskR ? 1 : 0)
+					+ (FunctionOutput.Output.MaskG ? 1 : 0)
+					+ (FunctionOutput.Output.MaskB ? 1 : 0)
+					+ (FunctionOutput.Output.MaskA ? 1 : 0);
+				if (MaskComponentCount > 0)
+				{
+					InOutComponentCount = MaskComponentCount;
+					bInOutIsTextureObject = false;
+					return true;
+				}
+			}
+
+			return false;
+		}
+	}
+
 	const FTextShaderFunctionDefinition* FCodeGraphBuilder::FindFunctionDefinition(const FString& FunctionName) const
 	{
 		for (const FTextShaderFunctionDefinition& Function : Definition.Functions)
@@ -1384,6 +1429,7 @@ namespace UE::DreamShader::Editor::Private
 				OutError = FString::Printf(TEXT("%s '%s' output '%s' does not exist on MaterialFunction asset '%s'."), *CallKind, *FunctionName, *Outputs[OutputIndex].Name, *ObjectPath);
 				return false;
 			}
+			ApplyFunctionCallOutputType(FunctionCall, FunctionOutputIndex, OutputComponents, bIsTextureObject);
 
 			FCodeValue OutputValue;
 			OutputValue.Expression = FunctionCall;
@@ -1522,6 +1568,7 @@ namespace UE::DreamShader::Editor::Private
 			OutError = FString::Printf(TEXT("%s '%s' output '%s' does not exist on MaterialFunction asset '%s'."), *CallKind, *FunctionName, *Outputs[OutputIndex].Name, *ObjectPath);
 			return false;
 		}
+		ApplyFunctionCallOutputType(FunctionCall, FunctionOutputIndex, OutputComponents, bIsTextureObject);
 
 		OutValue.Expression = FunctionCall;
 		OutValue.OutputIndex = FunctionOutputIndex;

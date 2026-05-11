@@ -1292,6 +1292,297 @@ namespace UE::DreamShader::Editor::Private
 		return true;
 	}
 
+	bool FCodeGraphBuilder::EvaluateMathBuiltinCall(
+		const FString& FunctionName,
+		const TArray<FCodeCallArgument>& Arguments,
+		FCodeValue& OutValue,
+		FString& OutError)
+	{
+		const auto ValidatePositionalArguments = [&]()
+		{
+			for (const FCodeCallArgument& Argument : Arguments)
+			{
+				if (Argument.bIsNamed)
+				{
+					OutError = FString::Printf(TEXT("Math function '%s' only accepts positional arguments."), *FunctionName);
+					return false;
+				}
+			}
+			return true;
+		};
+
+		const auto EvaluateArgument = [&](const int32 ArgumentIndex, FCodeValue& OutArgumentValue)
+		{
+			if (!Arguments.IsValidIndex(ArgumentIndex))
+			{
+				OutError = FString::Printf(TEXT("Math function '%s' is missing argument %d."), *FunctionName, ArgumentIndex + 1);
+				return false;
+			}
+			if (!EvaluateExpression(Arguments[ArgumentIndex].Expression, OutArgumentValue, OutError))
+			{
+				OutError = FString::Printf(TEXT("Math function '%s' argument %d: %s"), *FunctionName, ArgumentIndex + 1, *OutError);
+				return false;
+			}
+			if (OutArgumentValue.bIsTextureObject || OutArgumentValue.bIsMaterialAttributes)
+			{
+				OutError = FString::Printf(TEXT("Math function '%s' does not accept Texture2D or MaterialAttributes arguments."), *FunctionName);
+				return false;
+			}
+			return true;
+		};
+
+		const auto EvaluateUnary = [&](
+			const TSubclassOf<UMaterialExpression> ExpressionClass,
+			const TCHAR* InputName,
+			const int32 OutputComponentCount) -> bool
+		{
+			if (Arguments.Num() != 1 || !ValidatePositionalArguments())
+			{
+				OutError = FString::Printf(TEXT("Math function '%s' expects exactly 1 argument."), *FunctionName);
+				return false;
+			}
+
+			FCodeValue InputValue;
+			if (!EvaluateArgument(0, InputValue))
+			{
+				return false;
+			}
+
+			UMaterialExpression* Expression = CreateExpression(ExpressionClass, 360, ConsumeNodeY());
+			if (!Expression)
+			{
+				OutError = FString::Printf(TEXT("Failed to create math function '%s'."), *FunctionName);
+				return false;
+			}
+
+			FProperty* InputProperty = FindMaterialExpressionArgumentProperty(Expression->GetClass(), InputName);
+			if (!InputProperty || !IsMaterialExpressionInputProperty(InputProperty))
+			{
+				OutError = FString::Printf(TEXT("Math function '%s' could not bind input '%s'."), *FunctionName, InputName);
+				return false;
+			}
+
+			FExpressionInput* Input = InputProperty->ContainerPtrToValuePtr<FExpressionInput>(Expression);
+			if (!Input)
+			{
+				OutError = FString::Printf(TEXT("Math function '%s' failed to access input '%s'."), *FunctionName, InputName);
+				return false;
+			}
+
+			ConnectCodeValueToInput(*Input, InputValue);
+			OutValue.Expression = Expression;
+			OutValue.ComponentCount = OutputComponentCount > 0 ? OutputComponentCount : InputValue.ComponentCount;
+			OutValue.bIsTextureObject = false;
+			OutValue.bIsMaterialAttributes = false;
+			return true;
+		};
+
+		if (FunctionName.Equals(TEXT("lerp"), ESearchCase::IgnoreCase)
+			|| FunctionName.Equals(TEXT("mix"), ESearchCase::IgnoreCase))
+		{
+			if (Arguments.Num() != 3 || !ValidatePositionalArguments())
+			{
+				OutError = FString::Printf(TEXT("Math function '%s' expects exactly 3 arguments."), *FunctionName);
+				return false;
+			}
+
+			FCodeValue A;
+			FCodeValue B;
+			FCodeValue Alpha;
+			if (!EvaluateArgument(0, A) || !EvaluateArgument(1, B) || !EvaluateArgument(2, Alpha))
+			{
+				return false;
+			}
+
+			auto* Expression = Cast<UMaterialExpressionLinearInterpolate>(
+				CreateExpression(UMaterialExpressionLinearInterpolate::StaticClass(), 360, ConsumeNodeY()));
+			if (!Expression)
+			{
+				OutError = FString::Printf(TEXT("Failed to create math function '%s'."), *FunctionName);
+				return false;
+			}
+
+			ConnectCodeValueToInput(Expression->A, A);
+			ConnectCodeValueToInput(Expression->B, B);
+			ConnectCodeValueToInput(Expression->Alpha, Alpha);
+			OutValue.Expression = Expression;
+			OutValue.ComponentCount = FMath::Max(A.ComponentCount, B.ComponentCount);
+			return true;
+		}
+
+		if (FunctionName.Equals(TEXT("dot"), ESearchCase::IgnoreCase))
+		{
+			if (Arguments.Num() != 2 || !ValidatePositionalArguments())
+			{
+				OutError = FString::Printf(TEXT("Math function '%s' expects exactly 2 arguments."), *FunctionName);
+				return false;
+			}
+
+			FCodeValue A;
+			FCodeValue B;
+			if (!EvaluateArgument(0, A) || !EvaluateArgument(1, B))
+			{
+				return false;
+			}
+
+			auto* Expression = Cast<UMaterialExpressionDotProduct>(
+				CreateExpression(UMaterialExpressionDotProduct::StaticClass(), 360, ConsumeNodeY()));
+			if (!Expression)
+			{
+				OutError = FString::Printf(TEXT("Failed to create math function '%s'."), *FunctionName);
+				return false;
+			}
+
+			ConnectCodeValueToInput(Expression->A, A);
+			ConnectCodeValueToInput(Expression->B, B);
+			OutValue.Expression = Expression;
+			OutValue.ComponentCount = 1;
+			return true;
+		}
+
+		if (FunctionName.Equals(TEXT("pow"), ESearchCase::IgnoreCase))
+		{
+			if (Arguments.Num() != 2 || !ValidatePositionalArguments())
+			{
+				OutError = FString::Printf(TEXT("Math function '%s' expects exactly 2 arguments."), *FunctionName);
+				return false;
+			}
+
+			FCodeValue Base;
+			FCodeValue Exponent;
+			if (!EvaluateArgument(0, Base) || !EvaluateArgument(1, Exponent))
+			{
+				return false;
+			}
+
+			auto* Expression = Cast<UMaterialExpressionPower>(
+				CreateExpression(UMaterialExpressionPower::StaticClass(), 360, ConsumeNodeY()));
+			if (!Expression)
+			{
+				OutError = FString::Printf(TEXT("Failed to create math function '%s'."), *FunctionName);
+				return false;
+			}
+
+			ConnectCodeValueToInput(Expression->Base, Base);
+			ConnectCodeValueToInput(Expression->Exponent, Exponent);
+			OutValue.Expression = Expression;
+			OutValue.ComponentCount = Base.ComponentCount;
+			return true;
+		}
+
+		if (FunctionName.Equals(TEXT("min"), ESearchCase::IgnoreCase)
+			|| FunctionName.Equals(TEXT("max"), ESearchCase::IgnoreCase))
+		{
+			if (Arguments.Num() != 2 || !ValidatePositionalArguments())
+			{
+				OutError = FString::Printf(TEXT("Math function '%s' expects exactly 2 arguments."), *FunctionName);
+				return false;
+			}
+
+			FCodeValue A;
+			FCodeValue B;
+			if (!EvaluateArgument(0, A) || !EvaluateArgument(1, B))
+			{
+				return false;
+			}
+
+			UMaterialExpression* RawExpression = FunctionName.Equals(TEXT("min"), ESearchCase::IgnoreCase)
+				? CreateExpression(UMaterialExpressionMin::StaticClass(), 360, ConsumeNodeY())
+				: CreateExpression(UMaterialExpressionMax::StaticClass(), 360, ConsumeNodeY());
+			if (!RawExpression)
+			{
+				OutError = FString::Printf(TEXT("Failed to create math function '%s'."), *FunctionName);
+				return false;
+			}
+
+			if (auto* MinExpression = Cast<UMaterialExpressionMin>(RawExpression))
+			{
+				ConnectCodeValueToInput(MinExpression->A, A);
+				ConnectCodeValueToInput(MinExpression->B, B);
+			}
+			else if (auto* MaxExpression = Cast<UMaterialExpressionMax>(RawExpression))
+			{
+				ConnectCodeValueToInput(MaxExpression->A, A);
+				ConnectCodeValueToInput(MaxExpression->B, B);
+			}
+
+			OutValue.Expression = RawExpression;
+			OutValue.ComponentCount = FMath::Max(A.ComponentCount, B.ComponentCount);
+			return true;
+		}
+
+		if (FunctionName.Equals(TEXT("clamp"), ESearchCase::IgnoreCase))
+		{
+			if (Arguments.Num() != 3 || !ValidatePositionalArguments())
+			{
+				OutError = FString::Printf(TEXT("Math function '%s' expects exactly 3 arguments."), *FunctionName);
+				return false;
+			}
+
+			FCodeValue Input;
+			FCodeValue Min;
+			FCodeValue Max;
+			if (!EvaluateArgument(0, Input) || !EvaluateArgument(1, Min) || !EvaluateArgument(2, Max))
+			{
+				return false;
+			}
+
+			auto* Expression = Cast<UMaterialExpressionClamp>(
+				CreateExpression(UMaterialExpressionClamp::StaticClass(), 360, ConsumeNodeY()));
+			if (!Expression)
+			{
+				OutError = FString::Printf(TEXT("Failed to create math function '%s'."), *FunctionName);
+				return false;
+			}
+
+			ConnectCodeValueToInput(Expression->Input, Input);
+			ConnectCodeValueToInput(Expression->Min, Min);
+			ConnectCodeValueToInput(Expression->Max, Max);
+			OutValue.Expression = Expression;
+			OutValue.ComponentCount = Input.ComponentCount;
+			return true;
+		}
+
+		if (FunctionName.Equals(TEXT("saturate"), ESearchCase::IgnoreCase))
+		{
+			return EvaluateUnary(UMaterialExpressionSaturate::StaticClass(), TEXT("Input"), 0);
+		}
+		if (FunctionName.Equals(TEXT("sin"), ESearchCase::IgnoreCase))
+		{
+			return EvaluateUnary(UMaterialExpressionSine::StaticClass(), TEXT("Input"), 0);
+		}
+		if (FunctionName.Equals(TEXT("cos"), ESearchCase::IgnoreCase))
+		{
+			return EvaluateUnary(UMaterialExpressionCosine::StaticClass(), TEXT("Input"), 0);
+		}
+		if (FunctionName.Equals(TEXT("abs"), ESearchCase::IgnoreCase))
+		{
+			return EvaluateUnary(UMaterialExpressionAbs::StaticClass(), TEXT("Input"), 0);
+		}
+		if (FunctionName.Equals(TEXT("floor"), ESearchCase::IgnoreCase))
+		{
+			return EvaluateUnary(UMaterialExpressionFloor::StaticClass(), TEXT("Input"), 0);
+		}
+		if (FunctionName.Equals(TEXT("ceil"), ESearchCase::IgnoreCase))
+		{
+			return EvaluateUnary(UMaterialExpressionCeil::StaticClass(), TEXT("Input"), 0);
+		}
+		if (FunctionName.Equals(TEXT("frac"), ESearchCase::IgnoreCase))
+		{
+			return EvaluateUnary(UMaterialExpressionFrac::StaticClass(), TEXT("Input"), 0);
+		}
+		if (FunctionName.Equals(TEXT("sqrt"), ESearchCase::IgnoreCase))
+		{
+			return EvaluateUnary(UMaterialExpressionSquareRoot::StaticClass(), TEXT("Input"), 0);
+		}
+		if (FunctionName.Equals(TEXT("normalize"), ESearchCase::IgnoreCase))
+		{
+			return EvaluateUnary(UMaterialExpressionNormalize::StaticClass(), TEXT("VectorInput"), 0);
+		}
+
+		return false;
+	}
+
 	bool FCodeGraphBuilder::EvaluateMemberAccess(const TSharedPtr<FCodeExpression>& Expression, FCodeValue& OutValue, FString& OutError)
 	{
 		FCodeValue BaseValue;
@@ -1441,6 +1732,41 @@ namespace UE::DreamShader::Editor::Private
 		}
 
 		TArray<FCodeValue> Channels;
+		if (BaseValue.ComponentCount == 1)
+		{
+			for (int32 Index = 0; Index < Swizzle.Len(); ++Index)
+			{
+				const TCHAR ChannelChar = FChar::ToLower(Swizzle[Index]);
+				if (ChannelChar != TCHAR('x')
+					&& ChannelChar != TCHAR('r')
+					&& ChannelChar != TCHAR('y')
+					&& ChannelChar != TCHAR('g')
+					&& ChannelChar != TCHAR('z')
+					&& ChannelChar != TCHAR('b')
+					&& ChannelChar != TCHAR('w')
+					&& ChannelChar != TCHAR('a'))
+				{
+					OutError = FString::Printf(TEXT("Swizzle '%s' is invalid for a value with %d components."), *Swizzle, BaseValue.ComponentCount);
+					return false;
+				}
+				Channels.Add(BaseValue);
+			}
+
+			if (Channels.Num() == 1)
+			{
+				OutValue = Channels[0];
+				return true;
+			}
+
+			if (!AppendValues(Channels, OutValue, OutError))
+			{
+				return false;
+			}
+
+			OutValue.ComponentCount = Channels.Num();
+			return true;
+		}
+
 		for (int32 Index = 0; Index < Swizzle.Len(); ++Index)
 		{
 			const TCHAR ChannelChar = FChar::ToLower(Swizzle[Index]);
@@ -1513,6 +1839,17 @@ namespace UE::DreamShader::Editor::Private
 		if (CalleeName.StartsWith(TEXT("UE."), ESearchCase::IgnoreCase))
 		{
 			return EvaluateUEBuiltinCall(CalleeName, Expression->Arguments, OutValue, OutError);
+		}
+
+		FString MathBuiltinError;
+		if (EvaluateMathBuiltinCall(CalleeName, Expression->Arguments, OutValue, MathBuiltinError))
+		{
+			return true;
+		}
+		if (!MathBuiltinError.IsEmpty())
+		{
+			OutError = MathBuiltinError;
+			return false;
 		}
 
 		if (const FTextShaderPropertyDefinition* Property = FindPropertyDefinition(CalleeName))
@@ -1911,10 +2248,15 @@ namespace UE::DreamShader::Editor::Private
 		}
 
 		SwitchExpression->ParameterName = FName(*Property.Name);
-		SwitchExpression->DefaultValue = Property.ScalarDefaultValue != 0.0 ? 1U : 0U;
+		const bool bDefaultValue = Property.bHasDefaultValue && Property.ScalarDefaultValue != 0.0;
+		SwitchExpression->DefaultValue = bDefaultValue ? 1U : 0U;
 		if (!SwitchExpression->ExpressionGUID.IsValid())
 		{
 			SwitchExpression->ExpressionGUID = FGuid::NewGuid();
+		}
+		if (Material)
+		{
+			Material->SetStaticSwitchParameterValueEditorOnly(SwitchExpression->ParameterName, bDefaultValue, SwitchExpression->ExpressionGUID);
 		}
 		if (!ApplyExpressionMetadata(SwitchExpression, Property.Metadata, OutError))
 		{

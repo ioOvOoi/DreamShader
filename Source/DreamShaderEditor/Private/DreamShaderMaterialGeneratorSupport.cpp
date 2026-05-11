@@ -6,6 +6,7 @@
 #include "Misc/Crc.h"
 
 #include "AssetRegistry/AssetRegistryModule.h"
+#include "EdGraph/EdGraphNode.h"
 #include "Factories/MaterialFactoryNew.h"
 #include "FileHelpers.h"
 #include "Interfaces/IPluginManager.h"
@@ -2791,6 +2792,278 @@ namespace UE::DreamShader::Editor::Private
 			}
 
 			++SafetyCounter;
+		}
+	}
+
+	namespace
+	{
+		static void CollectMaterialExpressions(UMaterial* Material, UMaterialFunction* MaterialFunction, TArray<UMaterialExpression*>& OutExpressions)
+		{
+			OutExpressions.Reset();
+			if (Material)
+			{
+				OutExpressions.Reserve(Material->GetExpressions().Num());
+				for (const TObjectPtr<UMaterialExpression>& Expression : Material->GetExpressions())
+				{
+					if (Expression)
+					{
+						OutExpressions.Add(Expression.Get());
+					}
+				}
+				return;
+			}
+
+			if (MaterialFunction)
+			{
+				OutExpressions.Reserve(MaterialFunction->GetExpressions().Num());
+				for (const TObjectPtr<UMaterialExpression>& Expression : MaterialFunction->GetExpressions())
+				{
+					if (Expression)
+					{
+						OutExpressions.Add(Expression.Get());
+					}
+				}
+			}
+		}
+
+		static bool TryAddUniqueExpression(TArray<UMaterialExpression*>& Expressions, UMaterialExpression* Expression)
+		{
+			if (!Expression || Expressions.Contains(Expression))
+			{
+				return false;
+			}
+
+			Expressions.Add(Expression);
+			return true;
+		}
+
+		static UMaterialExpression* GetDirectInputExpression(const FExpressionInput& Input)
+		{
+			if (Input.Expression)
+			{
+				return Input.Expression;
+			}
+
+			const FExpressionInput TracedInput = Input.GetTracedInput();
+			return TracedInput.Expression;
+		}
+
+		static void SetGeneratedExpressionPosition(UMaterialExpression* Expression, const int32 PositionX, const int32 PositionY)
+		{
+			if (!Expression)
+			{
+				return;
+			}
+
+			Expression->MaterialExpressionEditorX = PositionX;
+			Expression->MaterialExpressionEditorY = PositionY;
+			if (Expression->GraphNode)
+			{
+				Expression->GraphNode->NodePosX = PositionX;
+				Expression->GraphNode->NodePosY = PositionY;
+			}
+		}
+	}
+
+	void LayoutGeneratedExpressions(UMaterial* Material, UMaterialFunction* MaterialFunction)
+	{
+		TArray<UMaterialExpression*> Expressions;
+		CollectMaterialExpressions(Material, MaterialFunction, Expressions);
+		if (Expressions.Num() < 2)
+		{
+			return;
+		}
+
+		TSet<UMaterialExpression*> ExpressionSet;
+		TMap<UMaterialExpression*, int32> OriginalOrder;
+		ExpressionSet.Reserve(Expressions.Num());
+		OriginalOrder.Reserve(Expressions.Num());
+		for (int32 Index = 0; Index < Expressions.Num(); ++Index)
+		{
+			ExpressionSet.Add(Expressions[Index]);
+			OriginalOrder.Add(Expressions[Index], Index);
+		}
+
+		TMap<UMaterialExpression*, TArray<UMaterialExpression*>> Dependencies;
+		TMap<UMaterialExpression*, TArray<UMaterialExpression*>> Consumers;
+		for (UMaterialExpression* Expression : Expressions)
+		{
+			if (!Expression)
+			{
+				continue;
+			}
+
+			for (int32 InputIndex = 0; InputIndex < Expression->CountInputs(); ++InputIndex)
+			{
+				FExpressionInput* Input = Expression->GetInput(InputIndex);
+				if (!Input)
+				{
+					continue;
+				}
+
+				UMaterialExpression* SourceExpression = GetDirectInputExpression(*Input);
+				if (!SourceExpression || SourceExpression == Expression || !ExpressionSet.Contains(SourceExpression))
+				{
+					continue;
+				}
+
+				TryAddUniqueExpression(Dependencies.FindOrAdd(Expression), SourceExpression);
+				TryAddUniqueExpression(Consumers.FindOrAdd(SourceExpression), Expression);
+			}
+		}
+
+		TMap<UMaterialExpression*, int32> RankByExpression;
+		TSet<UMaterialExpression*> Resolving;
+		TFunction<int32(UMaterialExpression*)> ResolveRank;
+		ResolveRank = [&](UMaterialExpression* Expression) -> int32
+		{
+			if (!Expression)
+			{
+				return 0;
+			}
+
+			if (const int32* ExistingRank = RankByExpression.Find(Expression))
+			{
+				return *ExistingRank;
+			}
+
+			if (Resolving.Contains(Expression))
+			{
+				return 0;
+			}
+
+			Resolving.Add(Expression);
+			int32 Rank = 0;
+			if (const TArray<UMaterialExpression*>* ExpressionConsumers = Consumers.Find(Expression))
+			{
+				for (UMaterialExpression* Consumer : *ExpressionConsumers)
+				{
+					Rank = FMath::Max(Rank, ResolveRank(Consumer) + 1);
+				}
+			}
+			Resolving.Remove(Expression);
+
+			RankByExpression.Add(Expression, Rank);
+			return Rank;
+		};
+
+		int32 MaxRank = 0;
+		for (UMaterialExpression* Expression : Expressions)
+		{
+			MaxRank = FMath::Max(MaxRank, ResolveRank(Expression));
+		}
+
+		TMap<int32, TArray<UMaterialExpression*>> Layers;
+		for (UMaterialExpression* Expression : Expressions)
+		{
+			const int32 Rank = RankByExpression.FindRef(Expression);
+			Layers.FindOrAdd(Rank).Add(Expression);
+		}
+
+		for (TPair<int32, TArray<UMaterialExpression*>>& LayerPair : Layers)
+		{
+			LayerPair.Value.StableSort([&OriginalOrder](UMaterialExpression& Left, UMaterialExpression& Right)
+			{
+				if (Left.MaterialExpressionEditorY != Right.MaterialExpressionEditorY)
+				{
+					return Left.MaterialExpressionEditorY < Right.MaterialExpressionEditorY;
+				}
+				return OriginalOrder.FindRef(&Left) < OriginalOrder.FindRef(&Right);
+			});
+		}
+
+		TMap<UMaterialExpression*, int32> OrderInLayer;
+		auto RefreshOrder = [&]()
+		{
+			OrderInLayer.Reset();
+			for (const TPair<int32, TArray<UMaterialExpression*>>& LayerPair : Layers)
+			{
+				const TArray<UMaterialExpression*>& Layer = LayerPair.Value;
+				for (int32 Index = 0; Index < Layer.Num(); ++Index)
+				{
+					OrderInLayer.Add(Layer[Index], Index);
+				}
+			}
+		};
+
+		auto AverageNeighborOrder = [&OrderInLayer, &OriginalOrder](
+			UMaterialExpression* Expression,
+			const TArray<UMaterialExpression*>* Neighbors) -> float
+		{
+			if (!Expression || !Neighbors || Neighbors->IsEmpty())
+			{
+				return static_cast<float>(OriginalOrder.FindRef(Expression));
+			}
+
+			float Sum = 0.0f;
+			int32 Count = 0;
+			for (UMaterialExpression* Neighbor : *Neighbors)
+			{
+				if (const int32* NeighborOrder = OrderInLayer.Find(Neighbor))
+				{
+					Sum += static_cast<float>(*NeighborOrder);
+					++Count;
+				}
+			}
+
+			return Count > 0
+				? Sum / static_cast<float>(Count)
+				: static_cast<float>(OriginalOrder.FindRef(Expression));
+		};
+
+		RefreshOrder();
+		for (int32 Iteration = 0; Iteration < 4; ++Iteration)
+		{
+			for (int32 Rank = MaxRank - 1; Rank >= 0; --Rank)
+			{
+				if (TArray<UMaterialExpression*>* Layer = Layers.Find(Rank))
+				{
+					Layer->StableSort([&](UMaterialExpression& Left, UMaterialExpression& Right)
+					{
+						const float LeftOrder = AverageNeighborOrder(&Left, Consumers.Find(&Left));
+						const float RightOrder = AverageNeighborOrder(&Right, Consumers.Find(&Right));
+						return LeftOrder == RightOrder
+							? OriginalOrder.FindRef(&Left) < OriginalOrder.FindRef(&Right)
+							: LeftOrder < RightOrder;
+					});
+				}
+			}
+			RefreshOrder();
+
+			for (int32 Rank = 1; Rank <= MaxRank; ++Rank)
+			{
+				if (TArray<UMaterialExpression*>* Layer = Layers.Find(Rank))
+				{
+					Layer->StableSort([&](UMaterialExpression& Left, UMaterialExpression& Right)
+					{
+						const float LeftOrder = AverageNeighborOrder(&Left, Dependencies.Find(&Left));
+						const float RightOrder = AverageNeighborOrder(&Right, Dependencies.Find(&Right));
+						return LeftOrder == RightOrder
+							? OriginalOrder.FindRef(&Left) < OriginalOrder.FindRef(&Right)
+							: LeftOrder < RightOrder;
+					});
+				}
+			}
+			RefreshOrder();
+		}
+
+		constexpr int32 OutputX = 900;
+		constexpr int32 ColumnSpacing = 380;
+		constexpr int32 RowSpacing = 190;
+		for (int32 Rank = 0; Rank <= MaxRank; ++Rank)
+		{
+			TArray<UMaterialExpression*>* Layer = Layers.Find(Rank);
+			if (!Layer || Layer->IsEmpty())
+			{
+				continue;
+			}
+
+			const int32 PositionX = OutputX - Rank * ColumnSpacing;
+			const int32 StartY = -((Layer->Num() - 1) * RowSpacing) / 2;
+			for (int32 Index = 0; Index < Layer->Num(); ++Index)
+			{
+				SetGeneratedExpressionPosition((*Layer)[Index], PositionX, StartY + Index * RowSpacing);
+			}
 		}
 	}
 

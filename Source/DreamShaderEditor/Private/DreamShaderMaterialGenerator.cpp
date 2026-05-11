@@ -1895,6 +1895,7 @@ namespace UE::DreamShader::Editor
 				OutputPositionY += 180;
 			}
 
+			Private::LayoutGeneratedExpressions(nullptr, MaterialFunction);
 			UMaterialEditingLibrary::UpdateMaterialFunction(MaterialFunction, nullptr);
 			MaterialFunction->PostEditChange();
 			MaterialFunction->MarkPackageDirty();
@@ -2437,6 +2438,7 @@ namespace UE::DreamShader::Editor
 			}
 		}
 
+		Private::LayoutGeneratedExpressions(Material, nullptr);
 		UMaterialEditingLibrary::RecompileMaterial(Material);
 		Material->PostEditChange();
 		Material->MarkPackageDirty();

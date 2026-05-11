@@ -153,6 +153,7 @@ namespace UE::DreamShader::Editor::Private
 	bool WriteGeneratedInclude(const FString& SourceFilePath, const FTextShaderDefinition& Definition, FString& OutError);
 	void ClearMaterialExpressions(UMaterial* Material);
 	void ClearMaterialFunctionExpressions(UMaterialFunction* MaterialFunction);
+	void LayoutGeneratedExpressions(UMaterial* Material, UMaterialFunction* MaterialFunction);
 	void ResetMaterialToDefaults(UMaterial* Material);
 	bool ValidateSettings(const FTextShaderDefinition& Definition, FString& OutError);
 	bool ApplySettings(UMaterial* Material, const FTextShaderDefinition& Definition, FString& OutError);
@@ -272,6 +273,7 @@ namespace UE::DreamShader::Editor::Private
 			const FCodeValue& RightValue,
 			FCodeValue& OutValue,
 			FString& OutError);
+		bool EvaluateMathBuiltinCall(const FString& FunctionName, const TArray<FCodeCallArgument>& Arguments, FCodeValue& OutValue, FString& OutError);
 		bool EvaluateMemberAccess(const TSharedPtr<FCodeExpression>& Expression, FCodeValue& OutValue, FString& OutError);
 		bool CreateSingleChannelMask(
 			const FCodeValue& BaseValue,

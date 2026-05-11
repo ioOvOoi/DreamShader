@@ -264,12 +264,17 @@ namespace UE::DreamShader::Editor::Private
 			FTextShaderPropertyDefinition SwitchProperty;
 			SwitchProperty.Name = ParameterName.TrimStartAndEnd();
 			SwitchProperty.ParameterNodeType = TEXT("StaticSwitchParameter");
-			if (const FCodeCallArgument* DefaultArgument = FindNamedArgument(Arguments, TEXT("Default")))
+			const FCodeCallArgument* DefaultArgument = FindNamedArgument(Arguments, TEXT("Default"));
+			if (!DefaultArgument)
+			{
+				DefaultArgument = FindNamedArgument(Arguments, TEXT("DefaultValue"));
+			}
+			if (DefaultArgument)
 			{
 				bool bDefault = false;
 				if (!TryExtractBooleanLiteral(DefaultArgument->Expression, bDefault))
 				{
-					OutError = TEXT("UE.StaticSwitchParameter Default must be true or false.");
+					OutError = TEXT("UE.StaticSwitchParameter Default/DefaultValue must be true or false.");
 					return false;
 				}
 				SwitchProperty.bHasDefaultValue = true;
@@ -672,6 +677,7 @@ namespace UE::DreamShader::Editor::Private
 			return false;
 		}
 
+		TArray<TPair<FName, FCodeValue>> BoundInputValues;
 		for (const FCodeCallArgument& Argument : Arguments)
 		{
 			const FString NormalizedArgumentName = UE::DreamShader::NormalizeSettingKey(Argument.Name);
@@ -685,14 +691,28 @@ namespace UE::DreamShader::Editor::Private
 				continue;
 			}
 
-			FProperty* BoundProperty = FindMaterialExpressionArgumentProperty(ExpressionClass, Argument.Name);
-			if (!BoundProperty)
+			FExpressionInput* BoundInputByPinName = nullptr;
+			for (int32 InputIndex = 0; InputIndex < Expression->CountInputs(); ++InputIndex)
+			{
+				FExpressionInput* CandidateInput = Expression->GetInput(InputIndex);
+				const FName InputName = Expression->GetInputName(InputIndex);
+				if (CandidateInput
+					&& !InputName.IsNone()
+					&& UE::DreamShader::NormalizeSettingKey(InputName.ToString()) == NormalizedArgumentName)
+				{
+					BoundInputByPinName = CandidateInput;
+					break;
+				}
+			}
+
+			FProperty* BoundProperty = BoundInputByPinName ? nullptr : FindMaterialExpressionArgumentProperty(ExpressionClass, Argument.Name);
+			if (!BoundInputByPinName && !BoundProperty)
 			{
 				OutError = FString::Printf(TEXT("UE.%s: '%s' is not a property on '%s'."), *FunctionName, *Argument.Name, *ExpressionClass->GetName());
 				return false;
 			}
 
-			if (IsMaterialExpressionInputProperty(BoundProperty))
+			if (BoundInputByPinName || IsMaterialExpressionInputProperty(BoundProperty))
 			{
 				FCodeValue InputValue;
 				if (!EvaluateExpression(Argument.Expression, InputValue, OutError))
@@ -701,7 +721,9 @@ namespace UE::DreamShader::Editor::Private
 					return false;
 				}
 
-				FExpressionInput* Input = BoundProperty->ContainerPtrToValuePtr<FExpressionInput>(Expression);
+				FExpressionInput* Input = BoundInputByPinName
+					? BoundInputByPinName
+					: BoundProperty->ContainerPtrToValuePtr<FExpressionInput>(Expression);
 				if (!Input)
 				{
 					OutError = FString::Printf(TEXT("UE.%s failed to bind input '%s'."), *FunctionName, *Argument.Name);
@@ -709,6 +731,7 @@ namespace UE::DreamShader::Editor::Private
 				}
 
 				ConnectCodeValueToInput(*Input, InputValue);
+				BoundInputValues.Add(TPair<FName, FCodeValue>(FName(*NormalizedArgumentName), InputValue));
 			}
 			else
 			{
@@ -779,6 +802,94 @@ namespace UE::DreamShader::Editor::Private
 		{
 			OutError = FString::Printf(TEXT("UE.%s created '%s', but it has no material outputs."), *FunctionName, *ExpressionClass->GetName());
 			return false;
+		}
+
+		if (UMaterialExpressionStaticSwitchParameter* StaticSwitchExpression = Cast<UMaterialExpressionStaticSwitchParameter>(Expression))
+		{
+			if (Material && !StaticSwitchExpression->ParameterName.IsNone())
+			{
+				if (!StaticSwitchExpression->ExpressionGUID.IsValid())
+				{
+					StaticSwitchExpression->ExpressionGUID = FGuid::NewGuid();
+				}
+				Material->SetStaticSwitchParameterValueEditorOnly(
+					StaticSwitchExpression->ParameterName,
+					StaticSwitchExpression->DefaultValue != 0,
+					StaticSwitchExpression->ExpressionGUID);
+			}
+		}
+
+		auto FindBoundInputValue = [&BoundInputValues](const TCHAR* InputName) -> const FCodeValue*
+		{
+			const FName NormalizedInputName(*UE::DreamShader::NormalizeSettingKey(InputName));
+			for (const TPair<FName, FCodeValue>& BoundInputValue : BoundInputValues)
+			{
+				if (BoundInputValue.Key == NormalizedInputName)
+				{
+					return &BoundInputValue.Value;
+				}
+			}
+			return nullptr;
+		};
+
+		auto ApplyNumericInputComponentCount = [&OutputComponents, &bIsTextureObject](const FCodeValue* InputValue)
+		{
+			if (InputValue && !InputValue->bIsTextureObject && !InputValue->bIsMaterialAttributes && InputValue->ComponentCount > 0)
+			{
+				OutputComponents = InputValue->ComponentCount;
+				bIsTextureObject = false;
+			}
+		};
+
+		auto ApplyMaxNumericInputComponentCount = [&OutputComponents, &bIsTextureObject](const FCodeValue* FirstInput, const FCodeValue* SecondInput)
+		{
+			int32 MaxComponentCount = 0;
+			for (const FCodeValue* InputValue : { FirstInput, SecondInput })
+			{
+				if (InputValue && !InputValue->bIsTextureObject && !InputValue->bIsMaterialAttributes)
+				{
+					MaxComponentCount = FMath::Max(MaxComponentCount, InputValue->ComponentCount);
+				}
+			}
+			if (MaxComponentCount > 0)
+			{
+				OutputComponents = MaxComponentCount;
+				bIsTextureObject = false;
+			}
+		};
+
+		auto ApplyGenericExpressionOutputType = [&OutputComponents, &bIsTextureObject, Expression, ResolvedOutputIndex]()
+		{
+			int32 ResolvedComponentCount = 0;
+			bool bResolvedIsTextureObject = false;
+			if (TryResolveMaterialValueType(
+				Expression->GetOutputValueType(ResolvedOutputIndex),
+				ResolvedComponentCount,
+				bResolvedIsTextureObject))
+			{
+				OutputComponents = ResolvedComponentCount;
+				bIsTextureObject = bResolvedIsTextureObject;
+			}
+		};
+
+		if (Expression->IsA<UMaterialExpressionTextureCoordinate>()
+			|| Expression->IsA<UMaterialExpressionPanner>()
+			|| Expression->GetClass()->GetName().Equals(TEXT("MaterialExpressionRotator"), ESearchCase::IgnoreCase))
+		{
+			OutputComponents = 2;
+			bIsTextureObject = false;
+		}
+		else if (Expression->IsA<UMaterialExpressionSaturate>())
+		{
+			ApplyNumericInputComponentCount(FindBoundInputValue(TEXT("Input")));
+		}
+		else if (Expression->IsA<UMaterialExpressionStaticSwitchParameter>())
+		{
+			ApplyMaxNumericInputComponentCount(FindBoundInputValue(TEXT("True")), FindBoundInputValue(TEXT("False")));
+		}
+		else
+		{
+			ApplyGenericExpressionOutputType();
 		}
 
 		OutValue.Expression = Expression;

@@ -751,6 +751,29 @@ namespace UE::DreamShader::Editor::Private
 						if (Source[Index] == TCHAR('\\') && Index + 1 < Source.Len())
 						{
 							++Index;
+							const TCHAR EscapedChar = Source[Index++];
+							switch (EscapedChar)
+							{
+							case TCHAR('n'):
+								Value.AppendChar(TCHAR('\n'));
+								break;
+							case TCHAR('r'):
+								Value.AppendChar(TCHAR('\r'));
+								break;
+							case TCHAR('t'):
+								Value.AppendChar(TCHAR('\t'));
+								break;
+							case TCHAR('"'):
+								Value.AppendChar(TCHAR('"'));
+								break;
+							case TCHAR('\\'):
+								Value.AppendChar(TCHAR('\\'));
+								break;
+							default:
+								Value.AppendChar(EscapedChar);
+								break;
+							}
+							continue;
 						}
 						Value.AppendChar(Source[Index++]);
 					}

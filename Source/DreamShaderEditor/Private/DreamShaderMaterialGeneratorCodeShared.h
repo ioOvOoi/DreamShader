@@ -7,23 +7,39 @@
 #include "Materials/Material.h"
 #include "Materials/MaterialExpressionAdd.h"
 #include "Materials/MaterialExpressionAppendVector.h"
+#include "Materials/MaterialExpressionAbs.h"
 #include "Materials/MaterialExpressionBreakMaterialAttributes.h"
 #include "Materials/MaterialExpressionCameraVectorWS.h"
+#include "Materials/MaterialExpressionCeil.h"
+#include "Materials/MaterialExpressionClamp.h"
 #include "Materials/MaterialExpressionCollectionParameter.h"
 #include "Materials/MaterialExpressionComponentMask.h"
 #include "Materials/MaterialExpressionConstant.h"
+#include "Materials/MaterialExpressionCosine.h"
 #include "Materials/MaterialExpressionCustom.h"
 #include "Materials/MaterialExpressionDivide.h"
+#include "Materials/MaterialExpressionDotProduct.h"
+#include "Materials/MaterialExpressionFloor.h"
+#include "Materials/MaterialExpressionFrac.h"
 #include "Materials/MaterialExpressionFunctionInput.h"
 #include "Materials/MaterialExpressionFunctionOutput.h"
 #include "Materials/MaterialExpressionIf.h"
+#include "Materials/MaterialExpressionLinearInterpolate.h"
 #include "Materials/MaterialExpressionMakeMaterialAttributes.h"
 #include "Materials/MaterialExpressionMaterialFunctionCall.h"
+#include "Materials/MaterialExpressionMax.h"
+#include "Materials/MaterialExpressionMin.h"
 #include "Materials/MaterialExpressionMultiply.h"
+#include "Materials/MaterialExpressionNormalize.h"
 #include "Materials/MaterialExpressionObjectPositionWS.h"
 #include "Materials/MaterialExpressionPanner.h"
+#include "Materials/MaterialExpressionPower.h"
+#include "Materials/MaterialExpressionRotator.h"
+#include "Materials/MaterialExpressionSaturate.h"
 #include "Materials/MaterialExpressionScreenPosition.h"
 #include "Materials/MaterialExpressionSetMaterialAttributes.h"
+#include "Materials/MaterialExpressionSine.h"
+#include "Materials/MaterialExpressionSquareRoot.h"
 #include "Materials/MaterialExpressionStaticSwitchParameter.h"
 #include "Materials/MaterialExpressionSubtract.h"
 #include "Materials/MaterialExpressionTextureCoordinate.h"
@@ -34,6 +50,7 @@
 #include "Materials/MaterialExpressionWorldPosition.h"
 #include "Materials/MaterialFunction.h"
 #include "Materials/MaterialParameterCollection.h"
+#include "MaterialValueType.h"
 #include "UObject/UnrealType.h"
 
 namespace UE::DreamShader::Editor::Private
@@ -116,6 +133,75 @@ namespace UE::DreamShader::Editor::Private
 	inline bool IsMaterialAttributesComponentType(const int32 ComponentCount, const bool bIsTextureObject)
 	{
 		return ComponentCount == 0 && !bIsTextureObject;
+	}
+
+	inline bool IsTextureMaterialValueType(const EMaterialValueType ValueType)
+	{
+		switch (ValueType)
+		{
+		case MCT_Texture:
+		case MCT_Texture2D:
+		case MCT_TextureCube:
+		case MCT_Texture2DArray:
+		case MCT_TextureExternal:
+		case MCT_VolumeTexture:
+			return true;
+		default:
+			return false;
+		}
+	}
+
+	inline int32 GetComponentCountForMaterialValueType(const EMaterialValueType ValueType)
+	{
+		switch (ValueType)
+		{
+		case MCT_Float:
+		case MCT_Float1:
+		case MCT_LWCScalar:
+		case MCT_StaticBool:
+		case MCT_Bool:
+			return 1;
+		case MCT_Float2:
+		case MCT_LWCVector2:
+			return 2;
+		case MCT_Float3:
+		case MCT_LWCVector3:
+			return 3;
+		case MCT_Float4:
+		case MCT_LWCVector4:
+			return 4;
+		default:
+			return 0;
+		}
+	}
+
+	inline bool TryResolveMaterialValueType(
+		const EMaterialValueType ValueType,
+		int32& OutComponentCount,
+		bool& bOutIsTextureObject)
+	{
+		if (IsTextureMaterialValueType(ValueType))
+		{
+			OutComponentCount = 0;
+			bOutIsTextureObject = true;
+			return true;
+		}
+		if (ValueType == MCT_MaterialAttributes)
+		{
+			OutComponentCount = 0;
+			bOutIsTextureObject = false;
+			return true;
+		}
+
+		const int32 ComponentCount = GetComponentCountForMaterialValueType(ValueType);
+		if (ComponentCount > 0)
+		{
+			OutComponentCount = ComponentCount;
+			bOutIsTextureObject = false;
+			return true;
+		}
+
+		return false;
 	}
 
 	inline bool TrySplitMemberTarget(const FString& TargetText, FString& OutBaseName, FString& OutMemberName)

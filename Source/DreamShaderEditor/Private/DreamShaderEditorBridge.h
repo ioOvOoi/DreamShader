@@ -53,7 +53,7 @@ namespace UE::DreamShader::Editor::Private
 		void RegisterMenus();
 		void PopulateMaterialAssetMenu(FToolMenuSection& InSection);
 		void PopulateMaterialFunctionAssetMenu(FToolMenuSection& InSection);
-		void PopulateMaterialFunctionEditorToolbar(FToolMenuSection& InSection);
+		void PopulateMaterialEditorToolbar(FToolMenuSection& InSection);
 		void PopulateMaterialDreamShaderMenu(UToolMenu* InMenu, TWeakObjectPtr<UMaterial> Material);
 		void PopulateMaterialFunctionDreamShaderMenu(UToolMenu* InMenu, TWeakObjectPtr<UMaterialFunction> MaterialFunction);
 		void RequestRecompileAll();
