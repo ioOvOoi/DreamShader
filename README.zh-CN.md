@@ -24,6 +24,7 @@ DreamShader 是一个 Unreal Engine 材质生成插件。它提供 `DreamShaderL
 - 支持 `MaterialAttributes` 聚合值，以及 `Attrs.BaseColor = ...` 形式的成员写入。
 - 支持 typed `Properties`，包括参数节点、常量 helper、Texture Object、Static Switch、Material Parameter Collection 和 Unreal 反射属性块。
 - 支持 `.dsh` header、`.dsf` 函数文件 import graph 和 `DShader/Packages` 可复用包。
+- 支持从 Content Browser 将已有 `UMaterial` / `UMaterialFunction` 导出为 `.dsm` / `.dsf` 初稿，便于把手工节点图迁移到 DreamShader。
 - 配套 VSCode 扩展提供语法高亮、补全、跳转、Hover、Signature Help、诊断、Package 命令和 Unreal 桥接诊断。
 
 ## 文件模型
@@ -76,6 +77,12 @@ MyProject/
 | `SaveDebounceSeconds` | `0.25` | 文件保存防抖时间。 |
 | `VerboseLogs` | `false` | 输出更详细日志。 |
 | `OpenInNewWindow` | `true` | 打开 DreamShader VSCode workspace 时默认使用新窗口。 |
+
+## 反编译导出
+
+在 Content Browser 右键 `Material` 或 `Material Function`，选择 `DreamShader > Export DSM/DSF`。导出的源文件会写入 `DShader/Decompiled/Materials` 或 `DShader/Decompiled/Functions`，并自动打开。
+
+第一版反编译面向迁移和二次编辑：常见参数、常量、算术、swizzle、纹理采样、Custom 节点和 MaterialFunctionCall 会尽量导出为 DreamShader 图代码；少见节点会用 `UE.Expression(...)` 保留可生成结构，复杂材质仍建议导出后人工整理。
 
 ## 最小材质
 

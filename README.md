@@ -24,6 +24,7 @@ For bug reports and feature requests, open an [issue](https://github.com/TypeDre
 - Use `MaterialAttributes` values, including `Attrs.BaseColor = ...` style member writes.
 - Use typed `Properties` for parameters, constants, texture objects, static switches, Material Parameter Collections, and reflected Unreal expression properties.
 - Import shared `.dsh` headers, reusable `.dsf` function files, and DreamShader packages under `DShader/Packages`.
+- Export existing `UMaterial` / `UMaterialFunction` assets from the Content Browser into starter `.dsm` / `.dsf` source files for migration.
 - Work with a VSCode extension that provides syntax highlighting, completion, hover, signature help, diagnostics, package commands, and Unreal bridge diagnostics.
 
 ## Source Model
@@ -76,6 +77,12 @@ Project settings are available under `Project Settings > DreamPlugin > Dream Sha
 | `SaveDebounceSeconds` | `0.25` | File-save debounce time. |
 | `VerboseLogs` | `false` | Print more detailed logs. |
 | `OpenInNewWindow` | `true` | Open the generated VSCode workspace in a new window by default. |
+
+## Decompiler Export
+
+Right-click a `Material` or `Material Function` in the Content Browser and choose `DreamShader > Export DSM/DSF`. Exported files are written to `DShader/Decompiled/Materials` or `DShader/Decompiled/Functions` and opened in your preferred text editor.
+
+This first exporter is intended as a migration starting point: common parameters, constants, arithmetic, swizzles, texture samples, Custom nodes, and MaterialFunctionCall nodes are emitted as DreamShader graph text, while less common reflected nodes fall back to `UE.Expression(...)` so the graph structure remains regeneratable.
 
 ## Minimal Material
 

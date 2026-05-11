@@ -12,6 +12,12 @@
 - Allowed `.dsm` and `.dsf` files to import `.dsf` files so generated functions can be reused across DreamShader sources.
 - Added `.dsf` source discovery, dependency tracking, and VSCode workspace file association.
 
+### Decompiler
+
+- Added Content Browser export actions for `UMaterial` -> `.dsm` and `UMaterialFunction` -> `.dsf`.
+- Decompiled files are written under `DShader/Decompiled/Materials` or `DShader/Decompiled/Functions` with unique file names.
+- Common constants, parameters, arithmetic nodes, swizzles, texture samples, Custom nodes, and MaterialFunction calls are exported to DreamShader graph text; less common reflected nodes fall back to `UE.Expression(...)`.
+
 ## 1.3.4 - 2026-05-11
 
 ### Output Initializers

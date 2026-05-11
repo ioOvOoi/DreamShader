@@ -703,7 +703,17 @@ DreamShader 会维护源文件和资产之间的关系：
 - 生成资产会写入 `DreamShader.SourceFile`、`DreamShader.SourceHash`、`DreamShader.GeneratedAtUtc`。
 - source hash 未变化时会跳过重复生成。
 
-## 12. Project Settings
+## 12. 反编译导出
+
+Content Browser 中右键 `Material` 或 `Material Function`，可以通过 `DreamShader > Export DSM/DSF` 导出 DreamShader 源文件：
+
+- `UMaterial` 导出到 `DShader/Decompiled/Materials/*.dsm`。
+- `UMaterialFunction` 导出到 `DShader/Decompiled/Functions/*.dsf`。
+- 文件名会自动避让已有文件，导出的 `Name` 默认指向 `Decompiled/...`，避免直接覆盖原始资产。
+- 常见参数、常量、算术、swizzle、Texture Sample、Custom、MaterialFunctionCall 会尽量导出为可读 Graph。
+- 不常见节点会降级为 `UE.Expression(Class="...", OutputType="...", ...)`，导出后建议按项目命名和风格人工整理。
+
+## 13. Project Settings
 
 Project Settings > Plugins > DreamShader：
 
@@ -715,7 +725,7 @@ Project Settings > Plugins > DreamShader：
 | `SaveDebounceSeconds` | `0.25` | 保存防抖时间。 |
 | `VerboseLogs` | `false` | 输出详细日志。 |
 
-## 13. 当前限制
+## 14. 当前限制
 
 - `Graph` 不是完整通用语言。
 - `Graph` 支持基础 `if` / `else`，不支持 `for` / `while`。

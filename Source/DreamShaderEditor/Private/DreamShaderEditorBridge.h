@@ -5,6 +5,7 @@
 #include "Containers/Ticker.h"
 
 class UMaterialInterface;
+class UMaterial;
 class UMaterialFunction;
 class UToolMenu;
 struct FFileChangeData;
@@ -50,12 +51,16 @@ namespace UE::DreamShader::Editor::Private
 		void ProcessSourceFile(const FString& SourceFilePath);
 		void OnMaterialCompilationFinished(UMaterialInterface* MaterialInterface);
 		void RegisterMenus();
+		void PopulateMaterialAssetMenu(FToolMenuSection& InSection);
 		void PopulateMaterialFunctionAssetMenu(FToolMenuSection& InSection);
 		void PopulateMaterialFunctionEditorToolbar(FToolMenuSection& InSection);
+		void PopulateMaterialDreamShaderMenu(UToolMenu* InMenu, TWeakObjectPtr<UMaterial> Material);
 		void PopulateMaterialFunctionDreamShaderMenu(UToolMenu* InMenu, TWeakObjectPtr<UMaterialFunction> MaterialFunction);
 		void RequestRecompileAll();
 		void RequestCleanGeneratedShaders();
 		void OpenDreamShaderWorkspace();
+		void ExportMaterialToDreamShaderFile(TWeakObjectPtr<UMaterial> Material);
+		void ExportMaterialFunctionToDreamShaderFile(TWeakObjectPtr<UMaterialFunction> MaterialFunction);
 		void CopyVirtualFunctionDefinition(TWeakObjectPtr<UMaterialFunction> MaterialFunction);
 		void CreateVirtualFunctionDefinitionFile(TWeakObjectPtr<UMaterialFunction> MaterialFunction);
 		void OpenVirtualFunctionDefinitionFile(TWeakObjectPtr<UMaterialFunction> MaterialFunction);

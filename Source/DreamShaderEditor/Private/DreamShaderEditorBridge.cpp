@@ -22,13 +22,58 @@
 #include "Interfaces/IPluginManager.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialExpression.h"
+#include "Materials/MaterialExpressionAbs.h"
+#include "Materials/MaterialExpressionAdd.h"
+#include "Materials/MaterialExpressionAppendVector.h"
+#include "Materials/MaterialExpressionCameraVectorWS.h"
+#include "Materials/MaterialExpressionCeil.h"
+#include "Materials/MaterialExpressionClamp.h"
+#include "Materials/MaterialExpressionComponentMask.h"
+#include "Materials/MaterialExpressionConstant.h"
+#include "Materials/MaterialExpressionConstant2Vector.h"
+#include "Materials/MaterialExpressionConstant3Vector.h"
+#include "Materials/MaterialExpressionConstant4Vector.h"
+#include "Materials/MaterialExpressionCosine.h"
+#include "Materials/MaterialExpressionCustom.h"
+#include "Materials/MaterialExpressionDesaturation.h"
+#include "Materials/MaterialExpressionDivide.h"
+#include "Materials/MaterialExpressionDotProduct.h"
+#include "Materials/MaterialExpressionFloor.h"
+#include "Materials/MaterialExpressionFrac.h"
 #include "Materials/MaterialExpressionFunctionInput.h"
 #include "Materials/MaterialExpressionFunctionOutput.h"
+#include "Materials/MaterialExpressionIf.h"
+#include "Materials/MaterialExpressionLinearInterpolate.h"
 #include "Materials/MaterialExpressionMaterialFunctionCall.h"
+#include "Materials/MaterialExpressionMax.h"
+#include "Materials/MaterialExpressionMin.h"
+#include "Materials/MaterialExpressionMultiply.h"
+#include "Materials/MaterialExpressionNormalize.h"
+#include "Materials/MaterialExpressionObjectPositionWS.h"
+#include "Materials/MaterialExpressionOneMinus.h"
+#include "Materials/MaterialExpressionPanner.h"
+#include "Materials/MaterialExpressionPower.h"
+#include "Materials/MaterialExpressionScalarParameter.h"
+#include "Materials/MaterialExpressionScreenPosition.h"
+#include "Materials/MaterialExpressionSine.h"
+#include "Materials/MaterialExpressionSquareRoot.h"
+#include "Materials/MaterialExpressionSubtract.h"
+#include "Materials/MaterialExpressionTextureBase.h"
+#include "Materials/MaterialExpressionTextureCoordinate.h"
+#include "Materials/MaterialExpressionTextureObjectParameter.h"
+#include "Materials/MaterialExpressionTextureSample.h"
+#include "Materials/MaterialExpressionTextureSampleParameter.h"
+#include "Materials/MaterialExpressionTextureSampleParameter2D.h"
+#include "Materials/MaterialExpressionTime.h"
+#include "Materials/MaterialExpressionVectorParameter.h"
+#include "Materials/MaterialExpressionVertexColor.h"
+#include "Materials/MaterialExpressionWorldPosition.h"
 #include "Materials/MaterialFunction.h"
+#include "Materials/MaterialFunctionInterface.h"
 #include "MaterialEditorContext.h"
 #include "MaterialShared.h"
 #include "MaterialValueType.h"
+#include "Engine/Texture.h"
 #include "Misc/Crc.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
@@ -134,6 +179,7 @@ namespace UE::DreamShader::Editor::Private
 			case MCT_LWCVector4:
 				return TEXT("float4");
 			case MCT_Texture2D:
+			case MCT_Texture:
 				return TEXT("Texture2D");
 			case MCT_TextureCube:
 				return TEXT("TextureCube");
@@ -473,6 +519,1350 @@ namespace UE::DreamShader::Editor::Private
 				DefinitionDirectory,
 				FString::Printf(TEXT("%s_%08x.dsh"), *BaseName, AssetPathHash)));
 		}
+
+		FString FormatDreamShaderFloat(const double Value)
+		{
+			return FString::SanitizeFloat(Value);
+		}
+
+		FString FormatDreamShaderVector2(const double X, const double Y)
+		{
+			return FString::Printf(TEXT("float2(%s, %s)"), *FormatDreamShaderFloat(X), *FormatDreamShaderFloat(Y));
+		}
+
+		FString FormatDreamShaderVector3(const double X, const double Y, const double Z)
+		{
+			return FString::Printf(
+				TEXT("float3(%s, %s, %s)"),
+				*FormatDreamShaderFloat(X),
+				*FormatDreamShaderFloat(Y),
+				*FormatDreamShaderFloat(Z));
+		}
+
+		FString FormatDreamShaderVector4(const double X, const double Y, const double Z, const double W)
+		{
+			return FString::Printf(
+				TEXT("float4(%s, %s, %s, %s)"),
+				*FormatDreamShaderFloat(X),
+				*FormatDreamShaderFloat(Y),
+				*FormatDreamShaderFloat(Z),
+				*FormatDreamShaderFloat(W));
+		}
+
+		FString FormatDreamShaderColor(const FLinearColor& Color)
+		{
+			return FormatDreamShaderVector4(Color.R, Color.G, Color.B, Color.A);
+		}
+
+		FString WrapExpressionForSuffix(const FString& ExpressionText)
+		{
+			const FString Trimmed = ExpressionText.TrimStartAndEnd();
+			const bool bSimple =
+				!Trimmed.IsEmpty()
+				&& !Trimmed.Contains(TEXT(" "))
+				&& !Trimmed.Contains(TEXT("+"))
+				&& !Trimmed.Contains(TEXT("-"))
+				&& !Trimmed.Contains(TEXT("*"))
+				&& !Trimmed.Contains(TEXT("/"));
+			return bSimple ? Trimmed : FString::Printf(TEXT("(%s)"), *Trimmed);
+		}
+
+		FString MakeInputMaskSuffix(const FExpressionInput& Input)
+		{
+			if (!Input.Mask)
+			{
+				return FString();
+			}
+
+			FString Suffix;
+			if (Input.MaskR)
+			{
+				Suffix += TEXT("r");
+			}
+			if (Input.MaskG)
+			{
+				Suffix += TEXT("g");
+			}
+			if (Input.MaskB)
+			{
+				Suffix += TEXT("b");
+			}
+			if (Input.MaskA)
+			{
+				Suffix += TEXT("a");
+			}
+			return Suffix;
+		}
+
+		FString MakeSwizzleExpression(const FString& ExpressionText, const FString& SwizzleText)
+		{
+			if (SwizzleText.IsEmpty())
+			{
+				return ExpressionText;
+			}
+			if (SwizzleText.Len() == 1)
+			{
+				return FString::Printf(TEXT("%s.%s"), *WrapExpressionForSuffix(ExpressionText), *SwizzleText);
+			}
+
+			TArray<FString> Channels;
+			Channels.Reserve(SwizzleText.Len());
+			for (int32 Index = 0; Index < SwizzleText.Len(); ++Index)
+			{
+				Channels.Add(FString::Printf(
+					TEXT("%s.%c"),
+					*WrapExpressionForSuffix(ExpressionText),
+					SwizzleText[Index]));
+			}
+
+			return FString::Printf(TEXT("float%d(%s)"), SwizzleText.Len(), *FString::Join(Channels, TEXT(", ")));
+		}
+
+		FString ApplyInputMask(const FString& ExpressionText, const FExpressionInput& Input)
+		{
+			const FString MaskSuffix = MakeInputMaskSuffix(Input);
+			if (MaskSuffix.IsEmpty())
+			{
+				return ExpressionText;
+			}
+
+			return MakeSwizzleExpression(ExpressionText, MaskSuffix);
+		}
+
+		FString MakeDreamShaderObjectPathLiteral(const UObject* Object)
+		{
+			if (!Object)
+			{
+				return FString();
+			}
+
+			FString PackageName = Object->GetOutermost() ? Object->GetOutermost()->GetName() : FString();
+			PackageName.TrimStartAndEndInline();
+			PackageName.ReplaceInline(TEXT("\\"), TEXT("/"));
+			if (PackageName.IsEmpty())
+			{
+				return Object->GetPathName();
+			}
+
+			const auto BuildRootedLiteral = [](const TCHAR* RootName, const FString& RelativePath)
+			{
+				return FString::Printf(TEXT("Path(%s, \"%s\")"), RootName, *EscapeDreamShaderString(RelativePath));
+			};
+
+			if (PackageName.StartsWith(TEXT("/Game/"), ESearchCase::IgnoreCase))
+			{
+				return BuildRootedLiteral(TEXT("Game"), PackageName.Mid(6));
+			}
+			if (PackageName.StartsWith(TEXT("/Engine/"), ESearchCase::IgnoreCase))
+			{
+				return BuildRootedLiteral(TEXT("Engine"), PackageName.Mid(8));
+			}
+
+			FString BestPluginName;
+			FString BestMountedPath;
+			for (const TSharedRef<IPlugin>& Plugin : IPluginManager::Get().GetEnabledPluginsWithContent())
+			{
+				FString MountedPath = Plugin->GetMountedAssetPath();
+				MountedPath.TrimStartAndEndInline();
+				MountedPath.ReplaceInline(TEXT("\\"), TEXT("/"));
+				while (MountedPath.EndsWith(TEXT("/")))
+				{
+					MountedPath.LeftChopInline(1, EAllowShrinking::No);
+				}
+				if (!MountedPath.StartsWith(TEXT("/")))
+				{
+					MountedPath = TEXT("/") + MountedPath;
+				}
+				if (MountedPath.IsEmpty() || MountedPath == TEXT("/"))
+				{
+					MountedPath = TEXT("/") + Plugin->GetName();
+				}
+
+				if ((PackageName.Equals(MountedPath, ESearchCase::IgnoreCase)
+					|| PackageName.StartsWith(MountedPath + TEXT("/"), ESearchCase::IgnoreCase))
+					&& MountedPath.Len() > BestMountedPath.Len())
+				{
+					BestMountedPath = MountedPath;
+					BestPluginName = Plugin->GetName();
+				}
+			}
+
+			if (!BestPluginName.IsEmpty())
+			{
+				FString RelativePath = PackageName.Mid(BestMountedPath.Len());
+				while (RelativePath.StartsWith(TEXT("/")))
+				{
+					RelativePath.RightChopInline(1, EAllowShrinking::No);
+				}
+				return FString::Printf(
+					TEXT("Path(Plugins.%s, \"%s\")"),
+					*BestPluginName,
+					*EscapeDreamShaderString(RelativePath));
+			}
+
+			return FString::Printf(TEXT("Path(\"%s\")"), *EscapeDreamShaderString(PackageName));
+		}
+
+		FString GetDreamShaderTypeForCustomOutputType(const ECustomMaterialOutputType OutputType)
+		{
+			switch (OutputType)
+			{
+			case CMOT_Float1:
+				return TEXT("float");
+			case CMOT_Float2:
+				return TEXT("float2");
+			case CMOT_Float3:
+				return TEXT("float3");
+			case CMOT_Float4:
+				return TEXT("float4");
+			case CMOT_MaterialAttributes:
+				return TEXT("MaterialAttributes");
+			default:
+				return TEXT("float4");
+			}
+		}
+
+		FString GetDreamShaderTypeForFunctionOutput(const UMaterialExpressionFunctionOutput* OutputExpression)
+		{
+			if (!OutputExpression)
+			{
+				return TEXT("float4");
+			}
+
+			const EMaterialValueType OutputType = const_cast<UMaterialExpressionFunctionOutput*>(OutputExpression)->GetInputValueType(0);
+			if (OutputType == MCT_MaterialAttributes)
+			{
+				return TEXT("MaterialAttributes");
+			}
+			return GetDreamShaderTypeForMaterialValueType(OutputType);
+		}
+
+		FString GetDreamShaderTypeForExpressionOutput(UMaterialExpression* Expression, const int32 OutputIndex)
+		{
+			if (!Expression)
+			{
+				return TEXT("float4");
+			}
+
+			const EMaterialValueType OutputType = Expression->GetOutputValueType(OutputIndex);
+			if (OutputType == MCT_MaterialAttributes)
+			{
+				return TEXT("MaterialAttributes");
+			}
+			return GetDreamShaderTypeForMaterialValueType(OutputType);
+		}
+
+		FString GetCustomOutputName(const UMaterialExpressionCustom* CustomExpression, const int32 OutputIndex)
+		{
+			if (!CustomExpression || OutputIndex <= 0)
+			{
+				return FString();
+			}
+
+			const int32 AdditionalOutputIndex = OutputIndex - 1;
+			if (!CustomExpression->AdditionalOutputs.IsValidIndex(AdditionalOutputIndex))
+			{
+				return FString();
+			}
+
+			return CustomExpression->AdditionalOutputs[AdditionalOutputIndex].OutputName.ToString();
+		}
+
+		FString GetFunctionCallOutputName(const UMaterialExpressionMaterialFunctionCall* FunctionCall, const int32 OutputIndex)
+		{
+			if (!FunctionCall || !FunctionCall->FunctionOutputs.IsValidIndex(OutputIndex))
+			{
+				return FString();
+			}
+
+			const FFunctionExpressionOutput& Output = FunctionCall->FunctionOutputs[OutputIndex];
+			if (Output.ExpressionOutput)
+			{
+				return Output.ExpressionOutput->OutputName.ToString();
+			}
+			return Output.Output.OutputName.ToString();
+		}
+
+		FString MakeUniqueDecompiledSourcePath(const FString& Directory, const FString& BaseName, const TCHAR* Extension)
+		{
+			const FString SanitizedBaseName = MakeDreamShaderDeclarationName(BaseName, TEXT("Export"), 0);
+			FString Candidate = FPaths::Combine(Directory, SanitizedBaseName + Extension);
+			if (!IFileManager::Get().FileExists(*Candidate))
+			{
+				return UE::DreamShader::NormalizeSourceFilePath(Candidate);
+			}
+
+			for (int32 Index = 1; Index < 10000; ++Index)
+			{
+				Candidate = FPaths::Combine(Directory, FString::Printf(TEXT("%s_%d%s"), *SanitizedBaseName, Index, Extension));
+				if (!IFileManager::Get().FileExists(*Candidate))
+				{
+					return UE::DreamShader::NormalizeSourceFilePath(Candidate);
+				}
+			}
+
+			const uint32 PathHash = FCrc::StrCrc32(*Candidate);
+			return UE::DreamShader::NormalizeSourceFilePath(FPaths::Combine(
+				Directory,
+				FString::Printf(TEXT("%s_%08x%s"), *SanitizedBaseName, PathHash, Extension)));
+		}
+
+		FString MakeDecompiledMaterialFilePath(const UMaterial* Material)
+		{
+			return MakeUniqueDecompiledSourcePath(
+				FPaths::Combine(UE::DreamShader::GetSourceShaderDirectory(), TEXT("Decompiled/Materials")),
+				Material ? Material->GetName() : FString(),
+				TEXT(".dsm"));
+		}
+
+		FString MakeDecompiledFunctionFilePath(const UMaterialFunction* MaterialFunction)
+		{
+			return MakeUniqueDecompiledSourcePath(
+				FPaths::Combine(UE::DreamShader::GetSourceShaderDirectory(), TEXT("Decompiled/Functions")),
+				MaterialFunction ? MaterialFunction->GetName() : FString(),
+				TEXT(".dsf"));
+		}
+
+		FString MakeDecompiledAssetName(const UObject* Asset, const TCHAR* Category)
+		{
+			return FString::Printf(
+				TEXT("Decompiled/%s/%s"),
+				Category,
+				*MakeDreamShaderDeclarationName(Asset ? Asset->GetName() : FString(), TEXT("Asset"), 0));
+		}
+
+		FString GetMaterialExpressionShortName(const UClass* Class);
+
+		FString GetMaterialDomainText(const EMaterialDomain Domain)
+		{
+			switch (Domain)
+			{
+			case MD_Surface:
+				return TEXT("Surface");
+			case MD_DeferredDecal:
+				return TEXT("DeferredDecal");
+			case MD_LightFunction:
+				return TEXT("LightFunction");
+			case MD_Volume:
+				return TEXT("Volume");
+			case MD_PostProcess:
+				return TEXT("PostProcess");
+			case MD_UI:
+				return TEXT("UI");
+			case MD_RuntimeVirtualTexture:
+				return TEXT("RuntimeVirtualTexture");
+			default:
+				return TEXT("Surface");
+			}
+		}
+
+		FString GetBlendModeText(const EBlendMode BlendMode)
+		{
+			switch (BlendMode)
+			{
+			case BLEND_Opaque:
+				return TEXT("Opaque");
+			case BLEND_Masked:
+				return TEXT("Masked");
+			case BLEND_Translucent:
+				return TEXT("Translucent");
+			case BLEND_Additive:
+				return TEXT("Additive");
+			case BLEND_Modulate:
+				return TEXT("Modulate");
+			case BLEND_AlphaComposite:
+				return TEXT("AlphaComposite");
+			case BLEND_AlphaHoldout:
+				return TEXT("AlphaHoldout");
+			case BLEND_TranslucentColoredTransmittance:
+				return TEXT("Translucent");
+			default:
+				return TEXT("Opaque");
+			}
+		}
+
+		FString GetShadingModelText(const UMaterial* Material)
+		{
+			if (!Material)
+			{
+				return TEXT("DefaultLit");
+			}
+
+			const FMaterialShadingModelField ShadingModels = Material->GetShadingModels();
+			if (ShadingModels.HasShadingModel(MSM_Unlit))
+			{
+				return TEXT("Unlit");
+			}
+			if (ShadingModels.HasShadingModel(MSM_Subsurface))
+			{
+				return TEXT("Subsurface");
+			}
+			if (ShadingModels.HasShadingModel(MSM_PreintegratedSkin))
+			{
+				return TEXT("PreintegratedSkin");
+			}
+			if (ShadingModels.HasShadingModel(MSM_ClearCoat))
+			{
+				return TEXT("ClearCoat");
+			}
+			if (ShadingModels.HasShadingModel(MSM_SubsurfaceProfile))
+			{
+				return TEXT("SubsurfaceProfile");
+			}
+			if (ShadingModels.HasShadingModel(MSM_TwoSidedFoliage))
+			{
+				return TEXT("TwoSidedFoliage");
+			}
+			if (ShadingModels.HasShadingModel(MSM_Hair))
+			{
+				return TEXT("Hair");
+			}
+			if (ShadingModels.HasShadingModel(MSM_Cloth))
+			{
+				return TEXT("Cloth");
+			}
+			if (ShadingModels.HasShadingModel(MSM_Eye))
+			{
+				return TEXT("Eye");
+			}
+			if (ShadingModels.HasShadingModel(MSM_SingleLayerWater))
+			{
+				return TEXT("SingleLayerWater");
+			}
+			if (ShadingModels.HasShadingModel(MSM_ThinTranslucent))
+			{
+				return TEXT("ThinTranslucent");
+			}
+			if (ShadingModels.HasShadingModel(MSM_Strata))
+			{
+				return TEXT("Substrate");
+			}
+			return TEXT("DefaultLit");
+		}
+
+		struct FDecompiledExpressionKey
+		{
+			const UMaterialExpression* Expression = nullptr;
+			int32 OutputIndex = 0;
+
+			friend uint32 GetTypeHash(const FDecompiledExpressionKey& Key)
+			{
+				return HashCombine(GetTypeHash(Key.Expression), GetTypeHash(Key.OutputIndex));
+			}
+
+			bool operator==(const FDecompiledExpressionKey& Other) const
+			{
+				return Expression == Other.Expression && OutputIndex == Other.OutputIndex;
+			}
+		};
+
+		class FDreamShaderGraphDecompiler
+		{
+		public:
+			bool DecompileMaterial(UMaterial* Material, const FString& DecompiledName, FString& OutSourceText, FString& OutError)
+			{
+				Reset();
+				if (!Material)
+				{
+					OutError = TEXT("No Material asset was provided.");
+					return false;
+				}
+
+				TArray<FString> OutputDeclarations;
+				TArray<FString> OutputBindings;
+				TArray<FString> OutputAssignments;
+
+				struct FMaterialOutputBinding
+				{
+					EMaterialProperty Property;
+					const TCHAR* Name;
+					const TCHAR* Type;
+					const TCHAR* Target;
+					const TCHAR* DefaultValue;
+				};
+
+				const FMaterialOutputBinding Bindings[] =
+				{
+					{ MP_EmissiveColor, TEXT("EmissiveColor"), TEXT("float3"), TEXT("Base.EmissiveColor"), TEXT("float3(0, 0, 0)") },
+					{ MP_BaseColor, TEXT("BaseColor"), TEXT("float3"), TEXT("Base.BaseColor"), TEXT("float3(0.8, 0.8, 0.8)") },
+					{ MP_Metallic, TEXT("Metallic"), TEXT("float"), TEXT("Base.Metallic"), TEXT("0.0") },
+					{ MP_Specular, TEXT("Specular"), TEXT("float"), TEXT("Base.Specular"), TEXT("0.5") },
+					{ MP_Roughness, TEXT("Roughness"), TEXT("float"), TEXT("Base.Roughness"), TEXT("0.5") },
+					{ MP_Anisotropy, TEXT("Anisotropy"), TEXT("float"), TEXT("Base.Anisotropy"), TEXT("0.0") },
+					{ MP_Opacity, TEXT("Opacity"), TEXT("float"), TEXT("Base.Opacity"), TEXT("1.0") },
+					{ MP_OpacityMask, TEXT("OpacityMask"), TEXT("float"), TEXT("Base.OpacityMask"), TEXT("1.0") },
+					{ MP_Normal, TEXT("Normal"), TEXT("float3"), TEXT("Base.Normal"), TEXT("float3(0, 0, 1)") },
+					{ MP_Tangent, TEXT("Tangent"), TEXT("float3"), TEXT("Base.Tangent"), TEXT("float3(1, 0, 0)") },
+					{ MP_WorldPositionOffset, TEXT("WorldPositionOffset"), TEXT("float3"), TEXT("Base.WorldPositionOffset"), TEXT("float3(0, 0, 0)") },
+					{ MP_SubsurfaceColor, TEXT("SubsurfaceColor"), TEXT("float3"), TEXT("Base.SubsurfaceColor"), TEXT("float3(1, 1, 1)") },
+					{ MP_CustomData0, TEXT("CustomData0"), TEXT("float"), TEXT("Base.CustomData0"), TEXT("0.0") },
+					{ MP_CustomData1, TEXT("CustomData1"), TEXT("float"), TEXT("Base.CustomData1"), TEXT("0.0") },
+					{ MP_AmbientOcclusion, TEXT("AmbientOcclusion"), TEXT("float"), TEXT("Base.AmbientOcclusion"), TEXT("1.0") },
+					{ MP_Refraction, TEXT("Refraction"), TEXT("float"), TEXT("Base.Refraction"), TEXT("0.0") },
+					{ MP_PixelDepthOffset, TEXT("PixelDepthOffset"), TEXT("float"), TEXT("Base.PixelDepthOffset"), TEXT("0.0") },
+					{ MP_MaterialAttributes, TEXT("MaterialAttributes"), TEXT("MaterialAttributes"), TEXT("Base.MaterialAttributes"), TEXT("MaterialAttributes()") },
+				};
+
+				for (const FMaterialOutputBinding& Binding : Bindings)
+				{
+					FExpressionInput* MaterialInput = Material->GetExpressionInputForProperty(Binding.Property);
+					if (!MaterialInput || !MaterialInput->IsConnected())
+					{
+						continue;
+					}
+
+					OutputDeclarations.Add(FString::Printf(TEXT("\t\t%s %s;"), Binding.Type, Binding.Name));
+					OutputBindings.Add(FString::Printf(TEXT("\t\t%s = %s;"), Binding.Target, Binding.Name));
+					OutputAssignments.Add(FString::Printf(
+						TEXT("\t\t%s = %s;"),
+						Binding.Name,
+						*CompileInput(*MaterialInput, Binding.DefaultValue)));
+				}
+
+				TArray<FString> Lines;
+				Lines.Add(FString::Printf(TEXT("// Decompiled from %s"), *Material->GetPathName()));
+				if (!Warnings.IsEmpty())
+				{
+					for (const FString& Warning : Warnings)
+					{
+						Lines.Add(FString::Printf(TEXT("// Warning: %s"), *Warning));
+					}
+				}
+				if (!VirtualFunctionDefinitions.IsEmpty())
+				{
+					Lines.Add(TEXT(""));
+					Lines.Append(VirtualFunctionDefinitions);
+				}
+
+				Lines.Add(FString::Printf(TEXT("Shader(Name=\"%s\")"), *EscapeDreamShaderString(DecompiledName)));
+				Lines.Add(TEXT("{"));
+				AppendSection(Lines, TEXT("Properties"), PropertyDeclarations);
+				Lines.Add(TEXT("\tSettings = {"));
+				Lines.Add(FString::Printf(TEXT("\t\tDomain = \"%s\";"), *GetMaterialDomainText(Material->MaterialDomain)));
+				Lines.Add(FString::Printf(TEXT("\t\tShadingModel = \"%s\";"), *GetShadingModelText(Material)));
+				Lines.Add(FString::Printf(TEXT("\t\tBlendMode = \"%s\";"), *GetBlendModeText(Material->BlendMode)));
+				Lines.Add(TEXT("\t}"));
+				Lines.Add(TEXT(""));
+				AppendSection(Lines, TEXT("Outputs"), OutputDeclarations, OutputBindings);
+				AppendSection(Lines, TEXT("Graph"), GraphLines, OutputAssignments);
+				Lines.Add(TEXT("}"));
+
+				OutSourceText = FString::Join(Lines, TEXT("\n"));
+				return true;
+			}
+
+			bool DecompileFunction(UMaterialFunction* MaterialFunction, const FString& DecompiledName, FString& OutSourceText, FString& OutError)
+			{
+				Reset();
+				if (!MaterialFunction)
+				{
+					OutError = TEXT("No MaterialFunction asset was provided.");
+					return false;
+				}
+
+				TArray<FFunctionExpressionInput> Inputs;
+				TArray<FFunctionExpressionOutput> Outputs;
+				MaterialFunction->GetInputsAndOutputs(Inputs, Outputs);
+				if (Outputs.IsEmpty())
+				{
+					OutError = FString::Printf(TEXT("MaterialFunction '%s' does not expose any outputs."), *MaterialFunction->GetName());
+					return false;
+				}
+
+				TArray<FString> InputDeclarations;
+				for (int32 InputIndex = 0; InputIndex < Inputs.Num(); ++InputIndex)
+				{
+					const FFunctionExpressionInput& Input = Inputs[InputIndex];
+					UMaterialExpressionFunctionInput* InputExpression = Input.ExpressionInput;
+					const FString InputName = InputExpression
+						? InputExpression->InputName.ToString()
+						: Input.Input.InputName.ToString();
+					const EFunctionInputType InputType = InputExpression
+						? InputExpression->InputType.GetValue()
+						: FunctionInput_Vector4;
+					const bool bOptional = InputExpression && InputExpression->bUsePreviewValueAsDefault != 0;
+					const FString DefaultText = bOptional && InputExpression
+						? MakePreviewValueText(InputType, InputExpression->PreviewValue)
+						: FString();
+					const FString DefaultSuffix = DefaultText.IsEmpty()
+						? FString()
+						: FString::Printf(TEXT(" = %s"), *DefaultText);
+					const FString MetadataSuffix = InputExpression
+						? MakeFunctionParameterMetadataSuffix(InputExpression->Description, InputExpression->SortPriority, InputIndex)
+						: FString();
+					const FString DeclarationName = MakeDreamShaderDeclarationName(InputName, TEXT("Input"), InputIndex);
+					if (InputExpression)
+					{
+						FunctionInputNames.Add(InputExpression, DeclarationName);
+					}
+					InputDeclarations.Add(FString::Printf(
+						TEXT("\t\t%s%s %s%s%s;"),
+						bOptional ? TEXT("opt ") : TEXT(""),
+						*GetDreamShaderTypeForFunctionInput(InputType),
+						*DeclarationName,
+						*DefaultSuffix,
+						*MetadataSuffix));
+				}
+
+				TArray<FString> OutputDeclarations;
+				TArray<FString> OutputAssignments;
+				for (int32 OutputIndex = 0; OutputIndex < Outputs.Num(); ++OutputIndex)
+				{
+					const FFunctionExpressionOutput& Output = Outputs[OutputIndex];
+					UMaterialExpressionFunctionOutput* OutputExpression = Output.ExpressionOutput;
+					const FString OutputName = OutputExpression
+						? OutputExpression->OutputName.ToString()
+						: Output.Output.OutputName.ToString();
+					const FString DeclarationName = MakeDreamShaderDeclarationName(OutputName, TEXT("Output"), OutputIndex);
+					const FString MetadataSuffix = OutputExpression
+						? MakeFunctionParameterMetadataSuffix(OutputExpression->Description, OutputExpression->SortPriority, OutputIndex)
+						: FString();
+					OutputDeclarations.Add(FString::Printf(
+						TEXT("\t\t%s %s%s;"),
+						*GetDreamShaderTypeForFunctionOutput(OutputExpression),
+						*DeclarationName,
+						*MetadataSuffix));
+
+					if (OutputExpression && OutputExpression->A.IsConnected())
+					{
+						OutputAssignments.Add(FString::Printf(
+							TEXT("\t\t%s = %s;"),
+							*DeclarationName,
+							*CompileInput(OutputExpression->A, TEXT("0.0"))));
+					}
+				}
+
+				TArray<FString> Lines;
+				Lines.Add(FString::Printf(TEXT("// Decompiled from %s"), *MaterialFunction->GetPathName()));
+				if (!Warnings.IsEmpty())
+				{
+					for (const FString& Warning : Warnings)
+					{
+						Lines.Add(FString::Printf(TEXT("// Warning: %s"), *Warning));
+					}
+				}
+				if (!VirtualFunctionDefinitions.IsEmpty())
+				{
+					Lines.Add(TEXT(""));
+					Lines.Append(VirtualFunctionDefinitions);
+				}
+
+				Lines.Add(FString::Printf(TEXT("ShaderFunction(Name=\"%s\")"), *EscapeDreamShaderString(DecompiledName)));
+				Lines.Add(TEXT("{"));
+				AppendSection(Lines, TEXT("Properties"), PropertyDeclarations);
+				AppendSection(Lines, TEXT("Inputs"), InputDeclarations);
+				AppendSection(Lines, TEXT("Outputs"), OutputDeclarations);
+				AppendSection(Lines, TEXT("Graph"), GraphLines, OutputAssignments);
+				Lines.Add(TEXT("}"));
+
+				OutSourceText = FString::Join(Lines, TEXT("\n"));
+				return true;
+			}
+
+		private:
+			struct FExpressionCallArgument
+			{
+				FString Name;
+				FString Value;
+				bool bInput = false;
+			};
+
+			void Reset()
+			{
+				PropertyDeclarations.Reset();
+				PropertyNames.Reset();
+				FunctionInputNames.Reset();
+				GraphLines.Reset();
+				ExpressionTemps.Reset();
+				TempNames.Reset();
+				VirtualFunctionDefinitions.Reset();
+				VirtualFunctionNames.Reset();
+				Warnings.Reset();
+				NextTempIndex = 0;
+			}
+
+			static void AppendSection(TArray<FString>& Lines, const TCHAR* SectionName, const TArray<FString>& LinesA)
+			{
+				TArray<FString> EmptyLines;
+				AppendSection(Lines, SectionName, LinesA, EmptyLines);
+			}
+
+			static void AppendSection(TArray<FString>& Lines, const TCHAR* SectionName, const TArray<FString>& LinesA, const TArray<FString>& LinesB)
+			{
+				Lines.Add(FString::Printf(TEXT("\t%s = {"), SectionName));
+				if (LinesA.IsEmpty() && LinesB.IsEmpty())
+				{
+					Lines.Add(TEXT("\t}"));
+					Lines.Add(TEXT(""));
+					return;
+				}
+
+				Lines.Append(LinesA);
+				if (!LinesA.IsEmpty() && !LinesB.IsEmpty())
+				{
+					Lines.Add(TEXT(""));
+				}
+				Lines.Append(LinesB);
+				Lines.Add(TEXT("\t}"));
+				Lines.Add(TEXT(""));
+			}
+
+			FString MakeUniqueName(const FString& DesiredName, const TCHAR* FallbackPrefix)
+			{
+				FString BaseName = MakeDreamShaderDeclarationName(DesiredName, FallbackPrefix, NextTempIndex);
+				FString Candidate = BaseName;
+				int32 Suffix = 1;
+				while (TempNames.Contains(Candidate)
+					|| PropertyNames.Contains(Candidate)
+					|| ContainsFunctionInputName(Candidate))
+				{
+					Candidate = FString::Printf(TEXT("%s_%d"), *BaseName, Suffix++);
+				}
+
+				TempNames.Add(Candidate);
+				return Candidate;
+			}
+
+			bool ContainsFunctionInputName(const FString& Name) const
+			{
+				for (const TPair<const UMaterialExpressionFunctionInput*, FString>& Pair : FunctionInputNames)
+				{
+					if (Pair.Value.Equals(Name, ESearchCase::IgnoreCase))
+					{
+						return true;
+					}
+				}
+				return false;
+			}
+
+			void AddPropertyDeclaration(const FString& Name, const FString& Declaration)
+			{
+				if (PropertyNames.Contains(Name))
+				{
+					return;
+				}
+
+				PropertyNames.Add(Name);
+				PropertyDeclarations.Add(TEXT("\t\t") + Declaration);
+			}
+
+			FString AddTemp(const FString& Type, const FString& ExpressionText, const FString& BaseName)
+			{
+				const FString Name = MakeUniqueName(BaseName, TEXT("Node"));
+				GraphLines.Add(FString::Printf(TEXT("\t\t%s %s = %s;"), *Type, *Name, *ExpressionText));
+				++NextTempIndex;
+				return Name;
+			}
+
+			FString CompileInput(const FExpressionInput& Input, const FString& DefaultText)
+			{
+				const FExpressionInput TracedInput = Input.GetTracedInput();
+				if (!TracedInput.Expression)
+				{
+					return DefaultText;
+				}
+
+				return ApplyInputMask(CompileExpression(TracedInput.Expression, TracedInput.OutputIndex), Input);
+			}
+
+			FString CompileConnectedOrLiteral(const FExpressionInput& Input, const FString& LiteralText)
+			{
+				return Input.IsConnected() ? CompileInput(Input, LiteralText) : LiteralText;
+			}
+
+			FString CompileExpression(UMaterialExpression* Expression, const int32 OutputIndex)
+			{
+				if (!Expression)
+				{
+					return TEXT("0.0");
+				}
+
+				const FDecompiledExpressionKey Key{ Expression, OutputIndex };
+				if (const FString* ExistingTemp = ExpressionTemps.Find(Key))
+				{
+					return *ExistingTemp;
+				}
+
+				if (UMaterialExpressionFunctionInput* FunctionInput = Cast<UMaterialExpressionFunctionInput>(Expression))
+				{
+					if (const FString* InputName = FunctionInputNames.Find(FunctionInput))
+					{
+						return *InputName;
+					}
+					return MakeDreamShaderDeclarationName(FunctionInput->InputName.ToString(), TEXT("Input"), 0);
+				}
+
+				if (UMaterialExpressionScalarParameter* ScalarParameter = Cast<UMaterialExpressionScalarParameter>(Expression))
+				{
+					const FString Name = MakeDreamShaderDeclarationName(ScalarParameter->ParameterName.ToString(), TEXT("Scalar"), 0);
+					AddPropertyDeclaration(
+						Name,
+						FString::Printf(TEXT("ScalarParameter %s = %s;"), *Name, *FormatDreamShaderFloat(ScalarParameter->DefaultValue)));
+					return Name;
+				}
+
+				if (UMaterialExpressionVectorParameter* VectorParameter = Cast<UMaterialExpressionVectorParameter>(Expression))
+				{
+					const FString Name = MakeDreamShaderDeclarationName(VectorParameter->ParameterName.ToString(), TEXT("Vector"), 0);
+					AddPropertyDeclaration(
+						Name,
+						FString::Printf(TEXT("VectorParameter %s = %s;"), *Name, *FormatDreamShaderColor(VectorParameter->DefaultValue)));
+					return Name;
+				}
+
+				if (UMaterialExpressionTextureObjectParameter* TextureObjectParameter = Cast<UMaterialExpressionTextureObjectParameter>(Expression))
+				{
+					const FString Name = MakeDreamShaderDeclarationName(TextureObjectParameter->ParameterName.ToString(), TEXT("Texture"), 0);
+					const FString DefaultValue = TextureObjectParameter->Texture
+						? FString::Printf(TEXT(" = %s"), *MakeDreamShaderObjectPathLiteral(TextureObjectParameter->Texture))
+						: FString();
+					AddPropertyDeclaration(
+						Name,
+						FString::Printf(TEXT("TextureObjectParameter %s%s;"), *Name, *DefaultValue));
+					return Name;
+				}
+
+				if (UMaterialExpressionTextureSampleParameter2D* TextureParameter = Cast<UMaterialExpressionTextureSampleParameter2D>(Expression))
+				{
+					const FString Name = MakeDreamShaderDeclarationName(TextureParameter->ParameterName.ToString(), TEXT("Texture"), 0);
+					const FString DefaultValue = TextureParameter->Texture
+						? FString::Printf(TEXT(" = %s"), *MakeDreamShaderObjectPathLiteral(TextureParameter->Texture))
+						: FString();
+					AddPropertyDeclaration(
+						Name,
+						FString::Printf(TEXT("TextureSampleParameter2D %s%s;"), *Name, *DefaultValue));
+					return Name;
+				}
+
+				if (UMaterialExpressionConstant* Constant = Cast<UMaterialExpressionConstant>(Expression))
+				{
+					return FormatDreamShaderFloat(Constant->R);
+				}
+
+				if (UMaterialExpressionConstant2Vector* Constant2 = Cast<UMaterialExpressionConstant2Vector>(Expression))
+				{
+					return FormatDreamShaderVector2(Constant2->R, Constant2->G);
+				}
+
+				if (UMaterialExpressionConstant3Vector* Constant3 = Cast<UMaterialExpressionConstant3Vector>(Expression))
+				{
+					return FormatDreamShaderVector3(Constant3->Constant.R, Constant3->Constant.G, Constant3->Constant.B);
+				}
+
+				if (UMaterialExpressionConstant4Vector* Constant4 = Cast<UMaterialExpressionConstant4Vector>(Expression))
+				{
+					return FormatDreamShaderColor(Constant4->Constant);
+				}
+
+				if (UMaterialExpressionAdd* Add = Cast<UMaterialExpressionAdd>(Expression))
+				{
+					return FString::Printf(
+						TEXT("(%s + %s)"),
+						*CompileConnectedOrLiteral(Add->A, FormatDreamShaderFloat(Add->ConstA)),
+						*CompileConnectedOrLiteral(Add->B, FormatDreamShaderFloat(Add->ConstB)));
+				}
+
+				if (UMaterialExpressionSubtract* Subtract = Cast<UMaterialExpressionSubtract>(Expression))
+				{
+					return FString::Printf(
+						TEXT("(%s - %s)"),
+						*CompileConnectedOrLiteral(Subtract->A, FormatDreamShaderFloat(Subtract->ConstA)),
+						*CompileConnectedOrLiteral(Subtract->B, FormatDreamShaderFloat(Subtract->ConstB)));
+				}
+
+				if (UMaterialExpressionMultiply* Multiply = Cast<UMaterialExpressionMultiply>(Expression))
+				{
+					return FString::Printf(
+						TEXT("(%s * %s)"),
+						*CompileConnectedOrLiteral(Multiply->A, FormatDreamShaderFloat(Multiply->ConstA)),
+						*CompileConnectedOrLiteral(Multiply->B, FormatDreamShaderFloat(Multiply->ConstB)));
+				}
+
+				if (UMaterialExpressionDivide* Divide = Cast<UMaterialExpressionDivide>(Expression))
+				{
+					return FString::Printf(
+						TEXT("(%s / %s)"),
+						*CompileConnectedOrLiteral(Divide->A, FormatDreamShaderFloat(Divide->ConstA)),
+						*CompileConnectedOrLiteral(Divide->B, FormatDreamShaderFloat(Divide->ConstB)));
+				}
+
+				if (UMaterialExpressionLinearInterpolate* Lerp = Cast<UMaterialExpressionLinearInterpolate>(Expression))
+				{
+					return FString::Printf(
+						TEXT("lerp(%s, %s, %s)"),
+						*CompileConnectedOrLiteral(Lerp->A, FormatDreamShaderFloat(Lerp->ConstA)),
+						*CompileConnectedOrLiteral(Lerp->B, FormatDreamShaderFloat(Lerp->ConstB)),
+						*CompileConnectedOrLiteral(Lerp->Alpha, FormatDreamShaderFloat(Lerp->ConstAlpha)));
+				}
+
+				if (UMaterialExpressionClamp* Clamp = Cast<UMaterialExpressionClamp>(Expression))
+				{
+					if (Clamp->ClampMode != CMODE_Clamp)
+					{
+						return BuildUEExpressionCall(Expression, OutputIndex, {
+							{ TEXT("Input"), CompileInput(Clamp->Input, TEXT("0.0")), true },
+							{ TEXT("Min"), CompileConnectedOrLiteral(Clamp->Min, FormatDreamShaderFloat(Clamp->MinDefault)), true },
+							{ TEXT("Max"), CompileConnectedOrLiteral(Clamp->Max, FormatDreamShaderFloat(Clamp->MaxDefault)), true },
+							{ TEXT("ClampMode"), Clamp->ClampMode == CMODE_ClampMin ? TEXT("\"CMODE_ClampMin\"") : TEXT("\"CMODE_ClampMax\""), false },
+						});
+					}
+					return FString::Printf(
+						TEXT("clamp(%s, %s, %s)"),
+						*CompileInput(Clamp->Input, TEXT("0.0")),
+						*CompileConnectedOrLiteral(Clamp->Min, FormatDreamShaderFloat(Clamp->MinDefault)),
+						*CompileConnectedOrLiteral(Clamp->Max, FormatDreamShaderFloat(Clamp->MaxDefault)));
+				}
+
+				if (UMaterialExpressionComponentMask* Mask = Cast<UMaterialExpressionComponentMask>(Expression))
+				{
+					FString Suffix;
+					if (Mask->R)
+					{
+						Suffix += TEXT("r");
+					}
+					if (Mask->G)
+					{
+						Suffix += TEXT("g");
+					}
+					if (Mask->B)
+					{
+						Suffix += TEXT("b");
+					}
+					if (Mask->A)
+					{
+						Suffix += TEXT("a");
+					}
+					const FString Source = CompileInput(Mask->Input, TEXT("0.0"));
+					return MakeSwizzleExpression(Source, Suffix);
+				}
+
+				if (UMaterialExpressionAppendVector* Append = Cast<UMaterialExpressionAppendVector>(Expression))
+				{
+					return FString::Printf(
+						TEXT("append(%s, %s)"),
+						*CompileInput(Append->A, TEXT("0.0")),
+						*CompileInput(Append->B, TEXT("0.0")));
+				}
+
+				if (UMaterialExpressionOneMinus* OneMinus = Cast<UMaterialExpressionOneMinus>(Expression))
+				{
+					return FString::Printf(TEXT("(1.0 - %s)"), *CompileInput(OneMinus->Input, TEXT("0.0")));
+				}
+
+				if (UMaterialExpressionPower* Power = Cast<UMaterialExpressionPower>(Expression))
+				{
+					return FString::Printf(
+						TEXT("pow(%s, %s)"),
+						*CompileInput(Power->Base, TEXT("0.0")),
+						*CompileConnectedOrLiteral(Power->Exponent, FormatDreamShaderFloat(Power->ConstExponent)));
+				}
+
+				if (UMaterialExpressionDotProduct* Dot = Cast<UMaterialExpressionDotProduct>(Expression))
+				{
+					return FString::Printf(
+						TEXT("dot(%s, %s)"),
+						*CompileInput(Dot->A, TEXT("0.0")),
+						*CompileInput(Dot->B, TEXT("0.0")));
+				}
+
+				if (UMaterialExpressionNormalize* Normalize = Cast<UMaterialExpressionNormalize>(Expression))
+				{
+					return FString::Printf(TEXT("normalize(%s)"), *CompileInput(Normalize->VectorInput, TEXT("0.0")));
+				}
+
+				if (UMaterialExpressionMin* Min = Cast<UMaterialExpressionMin>(Expression))
+				{
+					return FString::Printf(
+						TEXT("min(%s, %s)"),
+						*CompileConnectedOrLiteral(Min->A, FormatDreamShaderFloat(Min->ConstA)),
+						*CompileConnectedOrLiteral(Min->B, FormatDreamShaderFloat(Min->ConstB)));
+				}
+
+				if (UMaterialExpressionMax* Max = Cast<UMaterialExpressionMax>(Expression))
+				{
+					return FString::Printf(
+						TEXT("max(%s, %s)"),
+						*CompileConnectedOrLiteral(Max->A, FormatDreamShaderFloat(Max->ConstA)),
+						*CompileConnectedOrLiteral(Max->B, FormatDreamShaderFloat(Max->ConstB)));
+				}
+
+				if (UMaterialExpressionAbs* Abs = Cast<UMaterialExpressionAbs>(Expression))
+				{
+					return FString::Printf(TEXT("abs(%s)"), *CompileInput(Abs->Input, TEXT("0.0")));
+				}
+
+				if (UMaterialExpressionFloor* Floor = Cast<UMaterialExpressionFloor>(Expression))
+				{
+					return FString::Printf(TEXT("floor(%s)"), *CompileInput(Floor->Input, TEXT("0.0")));
+				}
+
+				if (UMaterialExpressionCeil* Ceil = Cast<UMaterialExpressionCeil>(Expression))
+				{
+					return FString::Printf(TEXT("ceil(%s)"), *CompileInput(Ceil->Input, TEXT("0.0")));
+				}
+
+				if (UMaterialExpressionFrac* Frac = Cast<UMaterialExpressionFrac>(Expression))
+				{
+					return FString::Printf(TEXT("frac(%s)"), *CompileInput(Frac->Input, TEXT("0.0")));
+				}
+
+				if (UMaterialExpressionSquareRoot* SquareRoot = Cast<UMaterialExpressionSquareRoot>(Expression))
+				{
+					return FString::Printf(TEXT("sqrt(%s)"), *CompileInput(SquareRoot->Input, TEXT("0.0")));
+				}
+
+				if (UMaterialExpressionSine* Sine = Cast<UMaterialExpressionSine>(Expression))
+				{
+					if (!FMath::IsNearlyEqual(Sine->Period, 1.0f))
+					{
+						return BuildUEExpressionCall(Expression, OutputIndex, {
+							{ TEXT("Input"), CompileInput(Sine->Input, TEXT("0.0")), true },
+							{ TEXT("Period"), FormatDreamShaderFloat(Sine->Period), false },
+						});
+					}
+					return FString::Printf(TEXT("sin(%s)"), *CompileInput(Sine->Input, TEXT("0.0")));
+				}
+
+				if (UMaterialExpressionCosine* Cosine = Cast<UMaterialExpressionCosine>(Expression))
+				{
+					if (!FMath::IsNearlyEqual(Cosine->Period, 1.0f))
+					{
+						return BuildUEExpressionCall(Expression, OutputIndex, {
+							{ TEXT("Input"), CompileInput(Cosine->Input, TEXT("0.0")), true },
+							{ TEXT("Period"), FormatDreamShaderFloat(Cosine->Period), false },
+						});
+					}
+					return FString::Printf(TEXT("cos(%s)"), *CompileInput(Cosine->Input, TEXT("0.0")));
+				}
+
+				if (UMaterialExpressionTextureCoordinate* TextureCoordinate = Cast<UMaterialExpressionTextureCoordinate>(Expression))
+				{
+					return BuildUEExpressionCall(Expression, OutputIndex, {
+						{ TEXT("CoordinateIndex"), FString::Printf(TEXT("%d"), TextureCoordinate->CoordinateIndex), false },
+						{ TEXT("UTiling"), FormatDreamShaderFloat(TextureCoordinate->UTiling), false },
+						{ TEXT("VTiling"), FormatDreamShaderFloat(TextureCoordinate->VTiling), false },
+					});
+				}
+
+				if (UMaterialExpressionTime* Time = Cast<UMaterialExpressionTime>(Expression))
+				{
+					if (!Time->bIgnorePause && !Time->bOverride_Period)
+					{
+						return TEXT("UE.Time()");
+					}
+
+					return BuildUEExpressionCall(Expression, OutputIndex, {
+						{ TEXT("bIgnorePause"), Time->bIgnorePause ? TEXT("true") : TEXT("false"), false },
+						{ TEXT("bOverride_Period"), Time->bOverride_Period ? TEXT("true") : TEXT("false"), false },
+						{ TEXT("Period"), FormatDreamShaderFloat(Time->Period), false },
+					});
+				}
+
+				if (UMaterialExpressionPanner* Panner = Cast<UMaterialExpressionPanner>(Expression))
+				{
+					return BuildUEExpressionCall(Expression, OutputIndex, {
+						{ TEXT("Coordinate"), CompileInput(Panner->Coordinate, TEXT("0.0")), true },
+						{ TEXT("Time"), CompileInput(Panner->Time, TEXT("UE.Time()")), true },
+						{ TEXT("Speed"), CompileInput(Panner->Speed, FormatDreamShaderVector2(Panner->SpeedX, Panner->SpeedY)), true },
+						{ TEXT("SpeedX"), FormatDreamShaderFloat(Panner->SpeedX), false },
+						{ TEXT("SpeedY"), FormatDreamShaderFloat(Panner->SpeedY), false },
+						{ TEXT("ConstCoordinate"), FString::Printf(TEXT("%d"), Panner->ConstCoordinate), false },
+						{ TEXT("bFractionalPart"), Panner->bFractionalPart ? TEXT("true") : TEXT("false"), false },
+					});
+				}
+
+				if (UMaterialExpressionWorldPosition* WorldPosition = Cast<UMaterialExpressionWorldPosition>(Expression))
+				{
+					return BuildUEExpressionCall(Expression, OutputIndex, {});
+				}
+
+				if (UMaterialExpressionCameraVectorWS* CameraVector = Cast<UMaterialExpressionCameraVectorWS>(Expression))
+				{
+					return BuildUEExpressionCall(Expression, OutputIndex, {});
+				}
+
+				if (UMaterialExpressionObjectPositionWS* ObjectPosition = Cast<UMaterialExpressionObjectPositionWS>(Expression))
+				{
+					return BuildUEExpressionCall(Expression, OutputIndex, {});
+				}
+
+				if (UMaterialExpressionScreenPosition* ScreenPosition = Cast<UMaterialExpressionScreenPosition>(Expression))
+				{
+					return BuildUEExpressionCall(Expression, OutputIndex, {});
+				}
+
+				if (UMaterialExpressionVertexColor* VertexColor = Cast<UMaterialExpressionVertexColor>(Expression))
+				{
+					return MakeExpressionOutputSelection(BuildUEExpressionCall(Expression, 0, {}), Expression, OutputIndex);
+				}
+
+				if (UMaterialExpressionTextureSample* TextureSample = Cast<UMaterialExpressionTextureSample>(Expression))
+				{
+					TArray<FExpressionCallArgument> Arguments;
+					if (TextureSample->Coordinates.IsConnected())
+					{
+						Arguments.Add({ TEXT("Coordinates"), CompileInput(TextureSample->Coordinates, TEXT("0.0")), true });
+					}
+					else
+					{
+						Arguments.Add({ TEXT("ConstCoordinate"), FString::Printf(TEXT("%d"), TextureSample->ConstCoordinate), false });
+					}
+					if (TextureSample->TextureObject.IsConnected())
+					{
+						Arguments.Add({ TEXT("TextureObject"), CompileInput(TextureSample->TextureObject, TEXT("default")), true });
+					}
+					else if (TextureSample->Texture)
+					{
+						Arguments.Add({ TEXT("Texture"), MakeDreamShaderObjectPathLiteral(TextureSample->Texture), false });
+					}
+					return BuildUEExpressionCall(Expression, OutputIndex, Arguments);
+				}
+
+				if (UMaterialExpressionMaterialFunctionCall* FunctionCall = Cast<UMaterialExpressionMaterialFunctionCall>(Expression))
+				{
+					const FString FunctionCallText = BuildMaterialFunctionCall(FunctionCall, OutputIndex);
+					const FString TempName = AddTemp(
+						GetDreamShaderTypeForExpressionOutput(Expression, OutputIndex),
+						FunctionCallText,
+						FunctionCall->MaterialFunction ? FunctionCall->MaterialFunction->GetName() : TEXT("Function"));
+					ExpressionTemps.Add(Key, TempName);
+					return TempName;
+				}
+
+				if (UMaterialExpressionCustom* CustomExpression = Cast<UMaterialExpressionCustom>(Expression))
+				{
+					const FString TempName = AddTemp(
+						GetDreamShaderTypeForExpressionOutput(Expression, OutputIndex),
+						BuildCustomExpressionCall(CustomExpression, OutputIndex),
+						CustomExpression->Description.IsEmpty() ? TEXT("Custom") : CustomExpression->Description);
+					ExpressionTemps.Add(Key, TempName);
+					return TempName;
+				}
+
+				const FString TempName = AddTemp(
+					GetDreamShaderTypeForExpressionOutput(Expression, OutputIndex),
+					BuildGenericExpressionCall(Expression, OutputIndex),
+					GetMaterialExpressionShortName(Expression->GetClass()));
+				ExpressionTemps.Add(Key, TempName);
+				Warnings.AddUnique(FString::Printf(
+					TEXT("Exported '%s' as UE.Expression; review reflected literal properties if the node has editor-only state."),
+					*Expression->GetClass()->GetName()));
+				return TempName;
+			}
+
+			FString MakeExpressionOutputSelection(const FString& ExpressionText, UMaterialExpression* Expression, const int32 OutputIndex) const
+			{
+				if (!Expression || OutputIndex == 0 || !Expression->Outputs.IsValidIndex(OutputIndex))
+				{
+					return ExpressionText;
+				}
+
+				const FExpressionOutput& Output = Expression->Outputs[OutputIndex];
+				FString OutputName = Output.OutputName.ToString();
+				if (OutputName.IsEmpty())
+				{
+					if (Output.MaskR && Output.MaskG && !Output.MaskB && !Output.MaskA)
+					{
+						OutputName = TEXT("rg");
+					}
+					else if (Output.MaskR && Output.MaskG && Output.MaskB && !Output.MaskA)
+					{
+						OutputName = TEXT("rgb");
+					}
+					else if (Output.MaskR && Output.MaskG && Output.MaskB && Output.MaskA)
+					{
+						OutputName = TEXT("rgba");
+					}
+					else if (Output.MaskR && !Output.MaskG && !Output.MaskB && !Output.MaskA)
+					{
+						OutputName = TEXT("r");
+					}
+					else if (!Output.MaskR && Output.MaskG && !Output.MaskB && !Output.MaskA)
+					{
+						OutputName = TEXT("g");
+					}
+					else if (!Output.MaskR && !Output.MaskG && Output.MaskB && !Output.MaskA)
+					{
+						OutputName = TEXT("b");
+					}
+					else if (!Output.MaskR && !Output.MaskG && !Output.MaskB && Output.MaskA)
+					{
+						OutputName = TEXT("a");
+					}
+				}
+
+				return OutputName.IsEmpty()
+					? ExpressionText
+					: MakeSwizzleExpression(ExpressionText, OutputName.ToLower());
+			}
+
+			FString BuildUEExpressionCall(UMaterialExpression* Expression, const int32 OutputIndex, const TArray<FExpressionCallArgument>& Arguments) const
+			{
+				TArray<FString> ArgumentTexts;
+				ArgumentTexts.Add(FString::Printf(TEXT("Class=\"%s\""), *GetMaterialExpressionShortName(Expression ? Expression->GetClass() : nullptr)));
+				ArgumentTexts.Add(FString::Printf(TEXT("OutputType=\"%s\""), *GetDreamShaderTypeForExpressionOutput(Expression, OutputIndex)));
+				if (OutputIndex > 0)
+				{
+					ArgumentTexts.Add(FString::Printf(TEXT("OutputIndex=%d"), OutputIndex));
+				}
+
+				for (const FExpressionCallArgument& Argument : Arguments)
+				{
+					if (!Argument.Value.TrimStartAndEnd().IsEmpty() && !Argument.Value.Equals(TEXT("default"), ESearchCase::CaseSensitive))
+					{
+						ArgumentTexts.Add(FString::Printf(TEXT("%s=%s"), *Argument.Name, *Argument.Value));
+					}
+				}
+
+				return FString::Printf(TEXT("UE.Expression(%s)"), *FString::Join(ArgumentTexts, TEXT(", ")));
+			}
+
+			FString BuildGenericExpressionCall(UMaterialExpression* Expression, const int32 OutputIndex)
+			{
+				TArray<FExpressionCallArgument> Arguments;
+				if (Expression)
+				{
+					for (int32 InputIndex = 0; InputIndex < Expression->CountInputs(); ++InputIndex)
+					{
+						FExpressionInput* Input = Expression->GetInput(InputIndex);
+						if (!Input || !Input->IsConnected())
+						{
+							continue;
+						}
+
+						const FName InputName = Expression->GetInputName(InputIndex);
+						const FString ArgumentName = MakeDreamShaderDeclarationName(
+							InputName.IsNone() ? FString::Printf(TEXT("Input%d"), InputIndex) : InputName.ToString(),
+							TEXT("Input"),
+							InputIndex);
+						Arguments.Add({ ArgumentName, CompileInput(*Input, TEXT("0.0")), true });
+					}
+				}
+
+				return BuildUEExpressionCall(Expression, OutputIndex, Arguments);
+			}
+
+			FString BuildCustomExpressionCall(UMaterialExpressionCustom* CustomExpression, const int32 OutputIndex)
+			{
+				TArray<FExpressionCallArgument> Arguments;
+				Arguments.Add({ TEXT("Code"), FString::Printf(TEXT("\"%s\""), *EscapeDreamShaderString(CustomExpression ? CustomExpression->Code : FString())), false });
+				if (CustomExpression && !CustomExpression->Description.IsEmpty())
+				{
+					Arguments.Add({ TEXT("Description"), FString::Printf(TEXT("\"%s\""), *EscapeDreamShaderString(CustomExpression->Description)), false });
+				}
+				if (CustomExpression && OutputIndex > 0)
+				{
+					const FString OutputName = GetCustomOutputName(CustomExpression, OutputIndex);
+					if (!OutputName.IsEmpty())
+					{
+						Arguments.Add({ TEXT("Output"), FString::Printf(TEXT("\"%s\""), *EscapeDreamShaderString(OutputName)), false });
+					}
+				}
+				if (CustomExpression)
+				{
+					for (const FCustomInput& CustomInput : CustomExpression->Inputs)
+					{
+						if (!CustomInput.Input.IsConnected())
+						{
+							continue;
+						}
+						const FString ArgumentName = MakeDreamShaderDeclarationName(CustomInput.InputName.ToString(), TEXT("Input"), Arguments.Num());
+						Arguments.Add({ ArgumentName, CompileInput(CustomInput.Input, TEXT("0.0")), true });
+					}
+				}
+
+				return BuildUEExpressionCall(CustomExpression, OutputIndex, Arguments);
+			}
+
+			FString BuildMaterialFunctionCall(UMaterialExpressionMaterialFunctionCall* FunctionCall, const int32 OutputIndex)
+			{
+				if (!FunctionCall || !FunctionCall->MaterialFunction)
+				{
+					Warnings.AddUnique(TEXT("A MaterialFunctionCall had no function asset and was exported as a zero literal."));
+					return TEXT("0.0");
+				}
+
+				UMaterialFunction* MaterialFunction = Cast<UMaterialFunction>(FunctionCall->MaterialFunction);
+				if (!MaterialFunction)
+				{
+					Warnings.AddUnique(FString::Printf(
+						TEXT("MaterialFunctionCall '%s' is not a plain MaterialFunction; it was exported through UE.Expression."),
+						*FunctionCall->MaterialFunction->GetPathName()));
+					return BuildGenericExpressionCall(FunctionCall, OutputIndex);
+				}
+
+				const FString FunctionName = EnsureVirtualFunctionDefinition(MaterialFunction);
+				TArray<FString> Arguments;
+				for (int32 InputIndex = 0; InputIndex < FunctionCall->FunctionInputs.Num(); ++InputIndex)
+				{
+					const FFunctionExpressionInput& FunctionInput = FunctionCall->FunctionInputs[InputIndex];
+					if (FunctionInput.Input.IsConnected())
+					{
+						Arguments.Add(CompileInput(FunctionInput.Input, TEXT("default")));
+					}
+					else
+					{
+						Arguments.Add(TEXT("default"));
+					}
+				}
+
+				const FString OutputName = GetFunctionCallOutputName(FunctionCall, OutputIndex);
+				if (!OutputName.IsEmpty())
+				{
+					Arguments.Add(FString::Printf(
+						TEXT("Output=\"%s\""),
+						*EscapeDreamShaderString(MakeDreamShaderDeclarationName(OutputName, TEXT("Output"), OutputIndex))));
+				}
+				else if (OutputIndex > 0)
+				{
+					Arguments.Add(FString::Printf(TEXT("OutputIndex=%d"), OutputIndex));
+				}
+
+				return FString::Printf(TEXT("%s(%s)"), *FunctionName, *FString::Join(Arguments, TEXT(", ")));
+			}
+
+			FString EnsureVirtualFunctionDefinition(UMaterialFunction* MaterialFunction)
+			{
+				if (!MaterialFunction)
+				{
+					return TEXT("MissingFunction");
+				}
+
+				if (const FString* ExistingName = VirtualFunctionNames.Find(MaterialFunction))
+				{
+					return *ExistingName;
+				}
+
+				FString DefinitionText;
+				FString Error;
+				const FString FunctionName = MakeDreamShaderDeclarationName(MaterialFunction->GetName(), TEXT("VirtualFunction"), VirtualFunctionNames.Num());
+				if (BuildVirtualFunctionDefinition(MaterialFunction, DefinitionText, Error))
+				{
+					VirtualFunctionDefinitions.Add(DefinitionText);
+				}
+				else
+				{
+					Warnings.AddUnique(FString::Printf(
+						TEXT("Failed to emit VirtualFunction for '%s': %s"),
+						*MaterialFunction->GetPathName(),
+						*Error));
+				}
+
+				VirtualFunctionNames.Add(MaterialFunction, FunctionName);
+				return FunctionName;
+			}
+
+			TArray<FString> PropertyDeclarations;
+			TSet<FString> PropertyNames;
+			TMap<const UMaterialExpressionFunctionInput*, FString> FunctionInputNames;
+			TArray<FString> GraphLines;
+			TMap<FDecompiledExpressionKey, FString> ExpressionTemps;
+			TSet<FString> TempNames;
+			TArray<FString> VirtualFunctionDefinitions;
+			TMap<const UMaterialFunction*, FString> VirtualFunctionNames;
+			TArray<FString> Warnings;
+			int32 NextTempIndex = 0;
+		};
 
 		bool IsIdentifierCharacter(TCHAR Character)
 		{
@@ -2258,6 +3648,14 @@ namespace UE::DreamShader::Editor::Private
 				FNewToolMenuSectionDelegate::CreateSP(AsShared(), &FDreamShaderEditorBridge::PopulateMaterialFunctionAssetMenu));
 		}
 
+		if (UToolMenu* MaterialAssetMenu = UE::ContentBrowser::ExtendToolMenu_AssetContextMenu(UMaterial::StaticClass()))
+		{
+			FToolMenuSection& Section = MaterialAssetMenu->FindOrAddSection(TEXT("GetAssetActions"));
+			Section.AddDynamicEntry(
+				TEXT("DreamShader.MaterialAssetActions"),
+				FNewToolMenuSectionDelegate::CreateSP(AsShared(), &FDreamShaderEditorBridge::PopulateMaterialAssetMenu));
+		}
+
 		if (UToolMenu* MaterialEditorToolbar = UToolMenus::Get()->ExtendMenu(TEXT("AssetEditor.MaterialEditor.ToolBar")))
 		{
 			FToolMenuSection& Section = MaterialEditorToolbar->FindOrAddSection(TEXT("DreamShader"));
@@ -2265,6 +3663,32 @@ namespace UE::DreamShader::Editor::Private
 				TEXT("DreamShader.VirtualFunctionToolbarActions"),
 				FNewToolMenuSectionDelegate::CreateSP(AsShared(), &FDreamShaderEditorBridge::PopulateMaterialFunctionEditorToolbar));
 		}
+	}
+
+	void FDreamShaderEditorBridge::PopulateMaterialAssetMenu(FToolMenuSection& InSection)
+	{
+		const UContentBrowserAssetContextMenuContext* Context = UContentBrowserAssetContextMenuContext::FindContextWithAssets(InSection);
+		if (!Context || Context->SelectedAssets.Num() != 1 || !Context->SelectedAssets[0].IsInstanceOf(UMaterial::StaticClass()))
+		{
+			return;
+		}
+
+		UMaterial* Material = Cast<UMaterial>(Context->SelectedAssets[0].GetAsset());
+		if (!Material)
+		{
+			return;
+		}
+
+		InSection.AddSubMenu(
+			TEXT("DreamShader.MaterialActions"),
+			LOCTEXT("DreamShaderMaterialActionsLabel", "DreamShader"),
+			LOCTEXT("DreamShaderMaterialActionsTooltip", "DreamShader actions for this Material."),
+			FNewToolMenuDelegate::CreateSP(
+				AsShared(),
+				&FDreamShaderEditorBridge::PopulateMaterialDreamShaderMenu,
+				TWeakObjectPtr<UMaterial>(Material)),
+			false,
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), TEXT("Icons.Settings")));
 	}
 
 	void FDreamShaderEditorBridge::PopulateMaterialFunctionAssetMenu(FToolMenuSection& InSection)
@@ -2333,12 +3757,46 @@ namespace UE::DreamShader::Editor::Private
 			FSlateIcon(FAppStyle::GetAppStyleSetName(), TEXT("Icons.Settings"))));
 	}
 
+	void FDreamShaderEditorBridge::PopulateMaterialDreamShaderMenu(UToolMenu* InMenu, TWeakObjectPtr<UMaterial> Material)
+	{
+		if (!InMenu || !Material.IsValid())
+		{
+			return;
+		}
+
+		FToolMenuSection& Section = InMenu->AddSection(
+			TEXT("DreamShader.DecompileActions"),
+			LOCTEXT("DreamShaderDecompileActionsSection", "Decompiler"));
+		Section.AddMenuEntry(
+			TEXT("DreamShader.ExportMaterialDSM"),
+			LOCTEXT("DreamShaderExportMaterialDSMLabel", "Export DSM"),
+			LOCTEXT("DreamShaderExportMaterialDSMTooltip", "Export this Material graph to a DreamShader .dsm source file."),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), TEXT("Icons.Save")),
+			FUIAction(FExecuteAction::CreateSP(
+				AsShared(),
+				&FDreamShaderEditorBridge::ExportMaterialToDreamShaderFile,
+				Material)));
+	}
+
 	void FDreamShaderEditorBridge::PopulateMaterialFunctionDreamShaderMenu(UToolMenu* InMenu, TWeakObjectPtr<UMaterialFunction> MaterialFunction)
 	{
 		if (!InMenu || !MaterialFunction.IsValid())
 		{
 			return;
 		}
+
+		FToolMenuSection& DecompileSection = InMenu->AddSection(
+			TEXT("DreamShader.DecompileActions"),
+			LOCTEXT("DreamShaderFunctionDecompileActionsSection", "Decompiler"));
+		DecompileSection.AddMenuEntry(
+			TEXT("DreamShader.ExportFunctionDSF"),
+			LOCTEXT("DreamShaderExportFunctionDSFLabel", "Export DSF"),
+			LOCTEXT("DreamShaderExportFunctionDSFTooltip", "Export this Material Function graph to a DreamShader .dsf source file."),
+			FSlateIcon(FAppStyle::GetAppStyleSetName(), TEXT("Icons.Save")),
+			FUIAction(FExecuteAction::CreateSP(
+				AsShared(),
+				&FDreamShaderEditorBridge::ExportMaterialFunctionToDreamShaderFile,
+				MaterialFunction)));
 
 		FToolMenuSection& Section = InMenu->AddSection(
 			TEXT("DreamShader.VirtualFunctionActions"),
@@ -2471,6 +3929,122 @@ namespace UE::DreamShader::Editor::Private
 			FText::FromString(FString::Printf(TEXT("DreamShader could not open workspace: %s"), *WorkspaceFilePath)),
 			SNotificationItem::CS_Fail);
 		UE_LOG(LogDreamShader, Warning, TEXT("Failed to open DreamShader workspace: %s"), *WorkspaceFilePath);
+	}
+
+	void FDreamShaderEditorBridge::ExportMaterialToDreamShaderFile(TWeakObjectPtr<UMaterial> Material)
+	{
+		UMaterial* MaterialAsset = Material.Get();
+		if (!MaterialAsset)
+		{
+			ShowDreamShaderNotification(
+				LOCTEXT("DreamShaderExportMaterialNoAsset", "DreamShader could not find the selected Material."),
+				SNotificationItem::CS_Fail);
+			return;
+		}
+
+		FDreamShaderGraphDecompiler Decompiler;
+		FString SourceText;
+		FString Error;
+		if (!Decompiler.DecompileMaterial(MaterialAsset, MakeDecompiledAssetName(MaterialAsset, TEXT("Materials")), SourceText, Error))
+		{
+			ShowDreamShaderNotification(
+				FText::FromString(FString::Printf(TEXT("DreamShader failed to export DSM: %s"), *Error)),
+				SNotificationItem::CS_Fail);
+			UE_LOG(LogDreamShader, Warning, TEXT("Failed to export Material '%s' to DSM: %s"), *MaterialAsset->GetPathName(), *Error);
+			return;
+		}
+
+		const FString SourceFilePath = MakeDecompiledMaterialFilePath(MaterialAsset);
+		const FString SourceDirectory = FPaths::GetPath(SourceFilePath);
+		if (!IFileManager::Get().MakeDirectory(*SourceDirectory, true))
+		{
+			ShowDreamShaderNotification(
+				FText::FromString(FString::Printf(TEXT("DreamShader failed to create directory: %s"), *SourceDirectory)),
+				SNotificationItem::CS_Fail);
+			UE_LOG(LogDreamShader, Warning, TEXT("Failed to create decompiled Material directory '%s'."), *SourceDirectory);
+			return;
+		}
+
+		if (!FFileHelper::SaveStringToFile(SourceText, *SourceFilePath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
+		{
+			ShowDreamShaderNotification(
+				FText::FromString(FString::Printf(TEXT("DreamShader failed to write DSM file: %s"), *SourceFilePath)),
+				SNotificationItem::CS_Fail);
+			UE_LOG(LogDreamShader, Warning, TEXT("Failed to write decompiled Material DSM file '%s'."), *SourceFilePath);
+			return;
+		}
+
+		if (!LaunchTextFileInPreferredEditor(SourceFilePath))
+		{
+			ShowDreamShaderNotification(
+				FText::FromString(FString::Printf(TEXT("Exported DSM but could not open it: %s"), *SourceFilePath)),
+				SNotificationItem::CS_Fail);
+			UE_LOG(LogDreamShader, Warning, TEXT("Exported DSM '%s' but failed to open it."), *SourceFilePath);
+			return;
+		}
+
+		ShowDreamShaderNotification(
+			FText::FromString(FString::Printf(TEXT("Exported DSM: %s"), *SourceFilePath)),
+			SNotificationItem::CS_Success);
+		UE_LOG(LogDreamShader, Display, TEXT("Exported Material '%s' to DSM '%s'."), *MaterialAsset->GetPathName(), *SourceFilePath);
+	}
+
+	void FDreamShaderEditorBridge::ExportMaterialFunctionToDreamShaderFile(TWeakObjectPtr<UMaterialFunction> MaterialFunction)
+	{
+		UMaterialFunction* Function = MaterialFunction.Get();
+		if (!Function)
+		{
+			ShowDreamShaderNotification(
+				LOCTEXT("DreamShaderExportFunctionNoAsset", "DreamShader could not find the selected Material Function."),
+				SNotificationItem::CS_Fail);
+			return;
+		}
+
+		FDreamShaderGraphDecompiler Decompiler;
+		FString SourceText;
+		FString Error;
+		if (!Decompiler.DecompileFunction(Function, MakeDecompiledAssetName(Function, TEXT("Functions")), SourceText, Error))
+		{
+			ShowDreamShaderNotification(
+				FText::FromString(FString::Printf(TEXT("DreamShader failed to export DSF: %s"), *Error)),
+				SNotificationItem::CS_Fail);
+			UE_LOG(LogDreamShader, Warning, TEXT("Failed to export MaterialFunction '%s' to DSF: %s"), *Function->GetPathName(), *Error);
+			return;
+		}
+
+		const FString SourceFilePath = MakeDecompiledFunctionFilePath(Function);
+		const FString SourceDirectory = FPaths::GetPath(SourceFilePath);
+		if (!IFileManager::Get().MakeDirectory(*SourceDirectory, true))
+		{
+			ShowDreamShaderNotification(
+				FText::FromString(FString::Printf(TEXT("DreamShader failed to create directory: %s"), *SourceDirectory)),
+				SNotificationItem::CS_Fail);
+			UE_LOG(LogDreamShader, Warning, TEXT("Failed to create decompiled MaterialFunction directory '%s'."), *SourceDirectory);
+			return;
+		}
+
+		if (!FFileHelper::SaveStringToFile(SourceText, *SourceFilePath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
+		{
+			ShowDreamShaderNotification(
+				FText::FromString(FString::Printf(TEXT("DreamShader failed to write DSF file: %s"), *SourceFilePath)),
+				SNotificationItem::CS_Fail);
+			UE_LOG(LogDreamShader, Warning, TEXT("Failed to write decompiled MaterialFunction DSF file '%s'."), *SourceFilePath);
+			return;
+		}
+
+		if (!LaunchTextFileInPreferredEditor(SourceFilePath))
+		{
+			ShowDreamShaderNotification(
+				FText::FromString(FString::Printf(TEXT("Exported DSF but could not open it: %s"), *SourceFilePath)),
+				SNotificationItem::CS_Fail);
+			UE_LOG(LogDreamShader, Warning, TEXT("Exported DSF '%s' but failed to open it."), *SourceFilePath);
+			return;
+		}
+
+		ShowDreamShaderNotification(
+			FText::FromString(FString::Printf(TEXT("Exported DSF: %s"), *SourceFilePath)),
+			SNotificationItem::CS_Success);
+		UE_LOG(LogDreamShader, Display, TEXT("Exported MaterialFunction '%s' to DSF '%s'."), *Function->GetPathName(), *SourceFilePath);
 	}
 
 	void FDreamShaderEditorBridge::CopyVirtualFunctionDefinition(TWeakObjectPtr<UMaterialFunction> MaterialFunction)
