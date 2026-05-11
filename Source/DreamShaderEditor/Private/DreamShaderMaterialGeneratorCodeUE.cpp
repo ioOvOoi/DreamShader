@@ -364,7 +364,7 @@ namespace UE::DreamShader::Editor::Private
 			}
 
 			auto* Expression = Cast<UMaterialExpressionCollectionParameter>(
-				CreateExpression(UMaterialExpressionCollectionParameter::StaticClass(), 600, ConsumeNodeY()));
+				CreateExpression(UMaterialExpressionCollectionParameter::StaticClass(), -520, ConsumeNodeY()));
 			if (!Expression)
 			{
 				OutError = TEXT("Failed to create UE.CollectionParam node.");
@@ -428,7 +428,7 @@ namespace UE::DreamShader::Editor::Private
 
 		auto TryEvaluateRegisteredBuiltin = [&](const FUEBuiltinDescriptor& Builtin) -> bool
 		{
-			UMaterialExpression* Expression = CreateExpression(Builtin.ExpressionClass, 600, ConsumeNodeY());
+			UMaterialExpression* Expression = CreateExpression(Builtin.ExpressionClass, 520, ConsumeNodeY());
 			if (!Expression)
 			{
 				OutError = FString::Printf(TEXT("Failed to create UE.%s."), Builtin.Name);
@@ -665,7 +665,7 @@ namespace UE::DreamShader::Editor::Private
 			return false;
 		}
 
-		auto* Expression = Cast<UMaterialExpression>(CreateExpression(ExpressionClass, 600, ConsumeNodeY()));
+		auto* Expression = Cast<UMaterialExpression>(CreateExpression(ExpressionClass, 520, ConsumeNodeY()));
 		if (!Expression)
 		{
 			OutError = FString::Printf(TEXT("UE.%s failed to create '%s'."), *FunctionName, *ExpressionClass->GetName());

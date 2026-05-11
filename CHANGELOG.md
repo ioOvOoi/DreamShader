@@ -1,5 +1,14 @@
 # DreamShader ChangeLog
 
+## 1.3.2 - 2026-05-11
+
+### Material Function Generation
+
+- Preserved generated `ShaderFunction` input and output IDs across regeneration so existing `MaterialFunctionCall` nodes in regular Unreal materials keep their connections.
+- Skipped unused generated property nodes in Graph and Custom/HLSL generation paths.
+- Improved generated node placement and avoided Unreal's full automatic layout pass for DreamShader-generated material graphs.
+- Fixed a crash when regenerating opened material function assets whose expressions were still rooted by the editor.
+
 ## 1.3.1 - 2026-05-09
 
 ### Function Calls

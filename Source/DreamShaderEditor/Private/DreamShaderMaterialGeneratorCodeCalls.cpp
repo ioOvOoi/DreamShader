@@ -148,7 +148,7 @@ namespace UE::DreamShader::Editor::Private
 		}
 
 		auto* CustomExpression = Cast<UMaterialExpressionCustom>(
-			CreateExpression(UMaterialExpressionCustom::StaticClass(), 600, ConsumeNodeY()));
+			CreateExpression(UMaterialExpressionCustom::StaticClass(), 640, ConsumeNodeY()));
 		if (!CustomExpression)
 		{
 			OutError = FString::Printf(TEXT("Failed to create a Custom node for DreamShader Function '%s'."), *FunctionName);
@@ -381,7 +381,7 @@ namespace UE::DreamShader::Editor::Private
 		}
 
 		auto* CustomExpression = Cast<UMaterialExpressionCustom>(
-			CreateExpression(UMaterialExpressionCustom::StaticClass(), 600, ConsumeNodeY()));
+			CreateExpression(UMaterialExpressionCustom::StaticClass(), 640, ConsumeNodeY()));
 		if (!CustomExpression)
 		{
 			OutError = FString::Printf(TEXT("Failed to create a Custom node for DreamShader Function '%s'."), *Function.Name);
@@ -662,7 +662,7 @@ namespace UE::DreamShader::Editor::Private
 		}
 
 		auto* CustomExpression = Cast<UMaterialExpressionCustom>(
-			CreateExpression(UMaterialExpressionCustom::StaticClass(), 600, ConsumeNodeY()));
+			CreateExpression(UMaterialExpressionCustom::StaticClass(), 640, ConsumeNodeY()));
 		if (!CustomExpression)
 		{
 			OutError = FString::Printf(TEXT("Failed to create a Custom node for DreamShader GraphFunction '%s'."), *Function.Name);
@@ -1059,7 +1059,7 @@ namespace UE::DreamShader::Editor::Private
 		}
 
 		auto* FunctionCall = Cast<UMaterialExpressionMaterialFunctionCall>(
-			CreateExpression(UMaterialExpressionMaterialFunctionCall::StaticClass(), 600, ConsumeNodeY()));
+			CreateExpression(UMaterialExpressionMaterialFunctionCall::StaticClass(), 640, ConsumeNodeY()));
 		if (!FunctionCall)
 		{
 			OutError = FString::Printf(TEXT("Failed to create a MaterialFunctionCall node for '%s'."), *FunctionName);

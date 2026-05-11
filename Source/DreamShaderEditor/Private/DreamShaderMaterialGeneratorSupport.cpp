@@ -503,6 +503,14 @@ namespace UE::DreamShader::Editor::Private
 		return UMaterialEditingLibrary::CreateMaterialExpressionEx(Material, MaterialFunction, ExpressionClass, nullptr, PositionX, PositionY);
 	}
 
+	static void EnsureExpressionCanBeDeleted(UMaterialExpression* Expression)
+	{
+		if (Expression && Expression->IsRooted())
+		{
+			Expression->RemoveFromRoot();
+		}
+	}
+
 	static UMaterialExpression* CreateScalarLiteralExpressionEx(
 		UMaterial* Material,
 		UMaterialFunction* MaterialFunction,
@@ -2743,6 +2751,7 @@ namespace UE::DreamShader::Editor::Private
 
 			for (UMaterialExpression* Expression : ExpressionSnapshot)
 			{
+				EnsureExpressionCanBeDeleted(Expression);
 				UMaterialEditingLibrary::DeleteMaterialExpression(Material, Expression);
 			}
 
@@ -2777,6 +2786,7 @@ namespace UE::DreamShader::Editor::Private
 
 			for (UMaterialExpression* Expression : ExpressionSnapshot)
 			{
+				EnsureExpressionCanBeDeleted(Expression);
 				UMaterialEditingLibrary::DeleteMaterialExpressionInFunction(MaterialFunction, Expression);
 			}
 

@@ -487,7 +487,7 @@ namespace UE::DreamShader::Editor::Private
 	bool FCodeGraphBuilder::CreateMaterialAttributesValue(FCodeValue& OutValue, FString& OutError)
 	{
 		auto* Expression = Cast<UMaterialExpressionMakeMaterialAttributes>(
-			CreateExpression(UMaterialExpressionMakeMaterialAttributes::StaticClass(), 200, ConsumeNodeY()));
+			CreateExpression(UMaterialExpressionMakeMaterialAttributes::StaticClass(), -160, ConsumeNodeY()));
 		if (!Expression)
 		{
 			OutError = TEXT("Failed to create a MakeMaterialAttributes node.");
@@ -792,7 +792,7 @@ namespace UE::DreamShader::Editor::Private
 		}
 
 		UMaterialExpressionSetMaterialAttributes* SetAttributes = Cast<UMaterialExpressionSetMaterialAttributes>(
-			CreateExpression(UMaterialExpressionSetMaterialAttributes::StaticClass(), 320, ConsumeNodeY()));
+			CreateExpression(UMaterialExpressionSetMaterialAttributes::StaticClass(), 240, ConsumeNodeY()));
 		if (!SetAttributes)
 		{
 			OutError = TEXT("Failed to create a SetMaterialAttributes node.");
@@ -1113,6 +1113,11 @@ namespace UE::DreamShader::Editor::Private
 				return true;
 			}
 
+			if (TryCreatePropertyValue(Expression->Text, OutValue, OutError))
+			{
+				return OutError.IsEmpty();
+			}
+
 			OutError = FString::Printf(TEXT("Unknown Graph identifier '%s'."), *Expression->Text);
 			return false;
 		}
@@ -1216,7 +1221,7 @@ namespace UE::DreamShader::Editor::Private
 		if (Operator == TEXT("+"))
 		{
 			auto* AddExpression = Cast<UMaterialExpressionAdd>(
-				CreateExpression(UMaterialExpressionAdd::StaticClass(), 200, PositionY));
+				CreateExpression(UMaterialExpressionAdd::StaticClass(), 160, PositionY));
 			if (AddExpression)
 			{
 				ConnectCodeValueToInput(AddExpression->A, LeftValue);
@@ -1227,7 +1232,7 @@ namespace UE::DreamShader::Editor::Private
 		else if (Operator == TEXT("-"))
 		{
 			auto* SubtractExpression = Cast<UMaterialExpressionSubtract>(
-				CreateExpression(UMaterialExpressionSubtract::StaticClass(), 200, PositionY));
+				CreateExpression(UMaterialExpressionSubtract::StaticClass(), 160, PositionY));
 			if (SubtractExpression)
 			{
 				ConnectCodeValueToInput(SubtractExpression->A, LeftValue);
@@ -1238,7 +1243,7 @@ namespace UE::DreamShader::Editor::Private
 		else if (Operator == TEXT("*"))
 		{
 			auto* MultiplyExpression = Cast<UMaterialExpressionMultiply>(
-				CreateExpression(UMaterialExpressionMultiply::StaticClass(), 200, PositionY));
+				CreateExpression(UMaterialExpressionMultiply::StaticClass(), 160, PositionY));
 			if (MultiplyExpression)
 			{
 				ConnectCodeValueToInput(MultiplyExpression->A, LeftValue);
@@ -1249,7 +1254,7 @@ namespace UE::DreamShader::Editor::Private
 		else if (Operator == TEXT("/"))
 		{
 			auto* DivideExpression = Cast<UMaterialExpressionDivide>(
-				CreateExpression(UMaterialExpressionDivide::StaticClass(), 200, PositionY));
+				CreateExpression(UMaterialExpressionDivide::StaticClass(), 160, PositionY));
 			if (DivideExpression)
 			{
 				ConnectCodeValueToInput(DivideExpression->A, LeftValue);
@@ -1295,7 +1300,7 @@ namespace UE::DreamShader::Editor::Private
 			}
 
 			auto* BreakAttributes = Cast<UMaterialExpressionBreakMaterialAttributes>(
-				CreateExpression(UMaterialExpressionBreakMaterialAttributes::StaticClass(), 420, ConsumeNodeY()));
+				CreateExpression(UMaterialExpressionBreakMaterialAttributes::StaticClass(), 360, ConsumeNodeY()));
 			if (!BreakAttributes)
 			{
 				OutError = TEXT("Failed to create a BreakMaterialAttributes node.");
@@ -1350,7 +1355,7 @@ namespace UE::DreamShader::Editor::Private
 		}
 
 		auto* MaskExpression = Cast<UMaterialExpressionComponentMask>(
-			CreateExpression(UMaterialExpressionComponentMask::StaticClass(), 400, ConsumeNodeY()));
+			CreateExpression(UMaterialExpressionComponentMask::StaticClass(), 320, ConsumeNodeY()));
 		if (!MaskExpression)
 		{
 			OutError = TEXT("Failed to create a ComponentMask node.");
@@ -1388,7 +1393,7 @@ namespace UE::DreamShader::Editor::Private
 		for (int32 Index = 1; Index < Parts.Num(); ++Index)
 		{
 			auto* AppendExpression = Cast<UMaterialExpressionAppendVector>(
-				CreateExpression(UMaterialExpressionAppendVector::StaticClass(), 420, ConsumeNodeY()));
+				CreateExpression(UMaterialExpressionAppendVector::StaticClass(), 360, ConsumeNodeY()));
 			if (!AppendExpression)
 			{
 				OutError = TEXT("Failed to create an AppendVector node.");
@@ -1726,6 +1731,95 @@ namespace UE::DreamShader::Editor::Private
 		return nullptr;
 	}
 
+	bool FCodeGraphBuilder::TryCreatePropertyValue(const FString& Name, FCodeValue& OutValue, FString& OutError)
+	{
+		if (!Values)
+		{
+			return false;
+		}
+
+		const FTextShaderPropertyDefinition* Property = FindPropertyDefinition(Name);
+		if (!Property)
+		{
+			return false;
+		}
+
+		if (Property->ParameterNodeType.Equals(TEXT("StaticSwitchParameter"), ESearchCase::IgnoreCase))
+		{
+			return false;
+		}
+
+		for (const FString& CreatingName : CreatingPropertyNames)
+		{
+			if (CreatingName.Equals(Property->Name, ESearchCase::IgnoreCase))
+			{
+				OutError = FString::Printf(TEXT("Property '%s' has a recursive UE builtin dependency."), *Property->Name);
+				return true;
+			}
+		}
+
+		CreatingPropertyNames.Add(Property->Name);
+
+		if (Property->Source == ETextShaderPropertySource::UEBuiltin)
+		{
+			for (const TPair<FString, FString>& Argument : Property->UEBuiltinArguments)
+			{
+				const FString DependencyName = Argument.Value.TrimStartAndEnd();
+				if (DependencyName.IsEmpty() || FindValue(DependencyName))
+				{
+					continue;
+				}
+
+				FCodeValue IgnoredDependencyValue;
+				FString DependencyError;
+				if (TryCreatePropertyValue(DependencyName, IgnoredDependencyValue, DependencyError) && !DependencyError.IsEmpty())
+				{
+					OutError = DependencyError;
+					CreatingPropertyNames.Remove(Property->Name);
+					return true;
+				}
+			}
+		}
+
+		FString PropertyExpressionError;
+		UMaterialExpression* PropertyExpression = CreatePropertyExpression(
+			Material,
+			MaterialFunction,
+			*Property,
+			GeneratedPropertyExpressions,
+			NextPropertyNodeY,
+			PropertyExpressionError);
+		if (!PropertyExpression)
+		{
+			OutError = FString::Printf(TEXT("Property '%s': %s"), *Property->Name, *PropertyExpressionError);
+			CreatingPropertyNames.Remove(Property->Name);
+			return true;
+		}
+
+		GeneratedPropertyExpressions.Add(Property->Name, PropertyExpression);
+
+		OutValue = FCodeValue{};
+		OutValue.Expression = PropertyExpression;
+		OutValue.OutputIndex = 0;
+		if (Property->Type == ETextShaderPropertyType::Vector && !Property->bConst)
+		{
+			int32 OutputIndex = 0;
+			if (TryResolveExpressionOutputIndex(PropertyExpression, TEXT("RGBA"), OutputIndex))
+			{
+				OutValue.OutputIndex = OutputIndex;
+			}
+		}
+		OutValue.ComponentCount = Property->Type == ETextShaderPropertyType::Texture2D
+			? 0
+			: ((Property->Type == ETextShaderPropertyType::Vector && !Property->bConst) ? 4 : Property->ComponentCount);
+		OutValue.bIsTextureObject = Property->Type == ETextShaderPropertyType::Texture2D;
+		OutValue.bIsMaterialAttributes = false;
+		Values->Add(Property->Name, OutValue);
+		NextPropertyNodeY += 220;
+		CreatingPropertyNames.Remove(Property->Name);
+		return true;
+	}
+
 	bool FCodeGraphBuilder::EvaluateStaticSwitchParameterCall(
 		const FTextShaderPropertyDefinition& Property,
 		const TArray<FCodeCallArgument>& Arguments,
@@ -1801,7 +1895,7 @@ namespace UE::DreamShader::Editor::Private
 		if (!SwitchExpression)
 		{
 			SwitchExpression = Cast<UMaterialExpressionStaticSwitchParameter>(
-				CreateExpression(UMaterialExpressionStaticSwitchParameter::StaticClass(), 600, ConsumeNodeY()));
+				CreateExpression(UMaterialExpressionStaticSwitchParameter::StaticClass(), 520, ConsumeNodeY()));
 		}
 
 		if (!SwitchExpression)

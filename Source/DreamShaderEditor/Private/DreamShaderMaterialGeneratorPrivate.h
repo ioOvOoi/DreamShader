@@ -219,9 +219,13 @@ namespace UE::DreamShader::Editor::Private
 		FString SourceFilePath;
 		FString IncludeVirtualPath;
 		TMap<FString, FCodeValue>* Values = nullptr;
-		int32 NextNodeY = 320;
+		TMap<FString, UMaterialExpression*> GeneratedPropertyExpressions;
+		TSet<FString> CreatingPropertyNames;
+		int32 NextPropertyNodeY = -620;
+		int32 NextNodeY = -120;
 
 		FCodeValue* FindValue(const FString& Name) const;
+		bool TryCreatePropertyValue(const FString& Name, FCodeValue& OutValue, FString& OutError);
 		int32 ConsumeNodeY();
 		UMaterialExpression* CreateExpression(TSubclassOf<UMaterialExpression> ExpressionClass, int32 PositionX, int32 PositionY) const;
 		UMaterialExpression* CreateScalarLiteralNode(double Value, int32 PositionY) const;
