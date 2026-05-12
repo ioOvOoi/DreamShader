@@ -1,5 +1,11 @@
 # DreamShader ChangeLog
 
+## 1.3.6 - 2026-05-12
+
+### Build Fixes
+
+- Added an explicit `MaterialDomain.h` include to `DreamShaderSettings.h` so projects that include the settings header directly can resolve `EMaterialDomain` reliably.
+
 ## 1.3.5 - 2026-05-11
 
 ### ShaderFunction Calls
