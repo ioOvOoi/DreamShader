@@ -4,11 +4,23 @@
 
 DreamShader 是一个 Unreal Engine 材质生成插件。它提供 `DreamShaderLang` 文本语言，让你用 `.dsm` / `.dsf` / `.dsh` 源文件描述材质、材质函数、Material Layer 和 Material Layer Blend，并自动生成对应的 Unreal 资产。
 
+
+
+**Tip**
+
+
+
 > 当前版本：`1.3.6`。
->
+> 
 > DreamShader 仍在持续开发中，核心工作流已经可用。建议把所有 `.dsm` / `.dsf` / `.dsh` 源文件纳入版本管理。
->
+> 
 > 本插件目前基于 Unreal Engine `5.7` 开发，其他版本尚未完整测试。
+
+
+
+> 目前反编译器能通过Lyra的部分大型材质/材质函数测试 但是目前还并不稳定 请酌情使用，小型材质基本上都可以正常支持。有任何问题，请提交Issues
+
+
 
 问题和 Bug 可以提交到 [Issues](https://github.com/TypeDreamMoon/DreamShader/issues/new)。需要更快的中文支持，也可以加入 [QQ群 466585194](https://qm.qq.com/q/X9uCLjVcY)。
 
@@ -29,21 +41,21 @@ DreamShader 是一个 Unreal Engine 材质生成插件。它提供 `DreamShaderL
 
 ## 文件模型
 
-| 项目 | 用途 |
-| --- | --- |
-| `.dsm` | 材质实现文件，通常包含 `Shader`、`ShaderFunction`、`ShaderLayer`、`ShaderLayerBlend` 或 `VirtualFunction`。 |
-| `.dsf` | Dream Shader Function 文件，用于生成可复用 `ShaderFunction` 资产，并可被 `.dsm` 导入。 |
-| `.dsh` | 共享头文件，通常包含 `import`、`Function`、`GraphFunction`、`Namespace` 和 `VirtualFunction` 声明。 |
-| `Shader` | 生成 Unreal `UMaterial`。 |
-| `ShaderFunction` | 生成 Unreal `UMaterialFunction`。 |
-| `ShaderLayer` | 生成原生 `UMaterialFunctionMaterialLayer`。 |
-| `ShaderLayerBlend` | 生成原生 `UMaterialFunctionMaterialLayerBlend`。 |
-| `VirtualFunction` | 描述已有 Unreal `UMaterialFunction`，供 `Graph` 调用。 |
-| `Graph` | 用于生成材质节点的图 DSL。 |
-| `Function` | 可复用 HLSL 风格 helper。 |
-| `GraphFunction` | 可复用 Custom 节点 helper，可把 body 中的 `UE.*` 材质节点自动转成 Custom 输入。 |
-| `Namespace` | 对 helper 分组，例如 `Texture::Sample2DRGB(...)`。 |
-| `Path(...)` | 声明纹理、对象设置或虚拟函数使用的 Unreal 资产路径。 |
+| 项目                 | 用途                                                                                          |
+| ------------------ | ------------------------------------------------------------------------------------------- |
+| `.dsm`             | 材质实现文件，通常包含 `Shader`、`ShaderFunction`、`ShaderLayer`、`ShaderLayerBlend` 或 `VirtualFunction`。 |
+| `.dsf`             | Dream Shader Function 文件，用于生成可复用 `ShaderFunction` 资产，并可被 `.dsm` 导入。                         |
+| `.dsh`             | 共享头文件，通常包含 `import`、`Function`、`GraphFunction`、`Namespace` 和 `VirtualFunction` 声明。          |
+| `Shader`           | 生成 Unreal `UMaterial`。                                                                      |
+| `ShaderFunction`   | 生成 Unreal `UMaterialFunction`。                                                              |
+| `ShaderLayer`      | 生成原生 `UMaterialFunctionMaterialLayer`。                                                      |
+| `ShaderLayerBlend` | 生成原生 `UMaterialFunctionMaterialLayerBlend`。                                                 |
+| `VirtualFunction`  | 描述已有 Unreal `UMaterialFunction`，供 `Graph` 调用。                                               |
+| `Graph`            | 用于生成材质节点的图 DSL。                                                                             |
+| `Function`         | 可复用 HLSL 风格 helper。                                                                         |
+| `GraphFunction`    | 可复用 Custom 节点 helper，可把 body 中的 `UE.*` 材质节点自动转成 Custom 输入。                                  |
+| `Namespace`        | 对 helper 分组，例如 `Texture::Sample2DRGB(...)`。                                                 |
+| `Path(...)`        | 声明纹理、对象设置或虚拟函数使用的 Unreal 资产路径。                                                              |
 
 推荐项目结构：
 
@@ -69,14 +81,14 @@ MyProject/
 
 配置位于 `Project Settings > DreamPlugin > Dream Shader`。
 
-| 设置 | 默认值 | 说明 |
-| --- | --- | --- |
-| `SourceDirectory` | `DShader` | DreamShader 源文件根目录。 |
-| `GeneratedShaderDirectory` | `Intermediate/DreamShader/GeneratedShaders` | 生成 `.ush` helper 文件的目录。 |
-| `AutoCompileOnSave` | `true` | 保存 `.dsm` / `.dsf` / `.dsh` 时刷新受影响资产。 |
-| `SaveDebounceSeconds` | `0.25` | 文件保存防抖时间。 |
-| `VerboseLogs` | `false` | 输出更详细日志。 |
-| `OpenInNewWindow` | `true` | 打开 DreamShader VSCode workspace 时默认使用新窗口。 |
+| 设置                         | 默认值                                         | 说明                                        |
+| -------------------------- | ------------------------------------------- | ----------------------------------------- |
+| `SourceDirectory`          | `DShader`                                   | DreamShader 源文件根目录。                       |
+| `GeneratedShaderDirectory` | `Intermediate/DreamShader/GeneratedShaders` | 生成 `.ush` helper 文件的目录。                   |
+| `AutoCompileOnSave`        | `true`                                      | 保存 `.dsm` / `.dsf` / `.dsh` 时刷新受影响资产。     |
+| `SaveDebounceSeconds`      | `0.25`                                      | 文件保存防抖时间。                                 |
+| `VerboseLogs`              | `false`                                     | 输出更详细日志。                                  |
+| `OpenInNewWindow`          | `true`                                      | 打开 DreamShader VSCode workspace 时默认使用新窗口。 |
 
 ## 反编译导出
 
@@ -319,14 +331,14 @@ git push origin v1.3.6
 
 ## 项目信息
 
-| 项目 | 内容 |
-| --- | --- |
-| Version | `1.3.6` |
-| Language | `DreamShaderLang` |
-| Author | TypeDreamMoon |
-| GitHub | <https://github.com/TypeDreamMoon> |
-| Docs | <https://lang.64hz.cn/> |
-| Web | <https://dev.64hz.cn> |
+| 项目        | 内容                                                     |
+| --------- | ------------------------------------------------------ |
+| Version   | `1.3.6`                                                |
+| Language  | `DreamShaderLang`                                      |
+| Author    | TypeDreamMoon                                          |
+| GitHub    | <https://github.com/TypeDreamMoon>                     |
+| Docs      | <https://lang.64hz.cn/>                                |
+| Web       | <https://dev.64hz.cn>                                  |
 | Copyright | Copyright (c) 2026 TypeDreamMoon. All rights reserved. |
 
 ## Roadmap

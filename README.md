@@ -4,11 +4,27 @@
 
 DreamShader is an Unreal Engine plugin for authoring materials and material functions with text source files. It introduces `DreamShaderLang`, a compact DSL that turns `.dsm`, `.dsf`, and `.dsh` files into Unreal `UMaterial`, `UMaterialFunction`, Material Layer, and Material Layer Blend assets.
 
-> Current version: `1.3.6`.
->
-> DreamShader is actively developed. The core authoring workflow is usable, but you should keep all `.dsm` / `.dsf` / `.dsh` files in source control.
->
-> The plugin is currently developed against Unreal Engine `5.7`. Other engine versions have not been fully tested.
+
+
+**Tip**
+
+
+
+> Current version: `1.3.6`. 
+> 
+> 
+> DreamShader is still under active development, but the core workflow is already available. It is recommended to include all `.dsm` / `.dsf` / `.dsh` source files in version control. 
+> 
+> 
+> This plugin is currently developed based on Unreal Engine `5.7`. Other versions have not been fully tested yet. 
+
+
+
+
+
+> Currently, the decompiler can pass some of the large-scale material/material function tests of Lyra, but it is still not stable. Please use it with caution. Small materials are basically supported normally. If you have any issues, please submit them as Issues.
+
+
 
 For bug reports and feature requests, open an [issue](https://github.com/TypeDreamMoon/DreamShader/issues/new). For faster Chinese-language support, you can also join the [QQ group 466585194](https://qm.qq.com/q/X9uCLjVcY).
 
@@ -29,21 +45,21 @@ For bug reports and feature requests, open an [issue](https://github.com/TypeDre
 
 ## Source Model
 
-| Item | Purpose |
-| --- | --- |
-| `.dsm` | Material implementation file. Usually contains `Shader`, `ShaderFunction`, `ShaderLayer`, `ShaderLayerBlend`, or `VirtualFunction` blocks. |
-| `.dsf` | Dream Shader Function file. Generates reusable `ShaderFunction` assets that can be imported by `.dsm` files. |
-| `.dsh` | Shared header file. Usually contains `import`, `Function`, `GraphFunction`, `Namespace`, and `VirtualFunction` declarations. |
-| `Shader` | Generates an Unreal `UMaterial`. |
-| `ShaderFunction` | Generates an Unreal `UMaterialFunction`. |
-| `ShaderLayer` | Generates a native `UMaterialFunctionMaterialLayer`. |
-| `ShaderLayerBlend` | Generates a native `UMaterialFunctionMaterialLayerBlend`. |
-| `VirtualFunction` | Describes an existing Unreal `UMaterialFunction` so it can be called from `Graph`. |
-| `Graph` | Node-oriented DSL used inside generated materials and functions. |
-| `Function` | Reusable HLSL-style helper. |
-| `GraphFunction` | Reusable Custom-node helper that can pull `UE.*` material nodes into generated Custom inputs. |
-| `Namespace` | Groups helpers, for example `Texture::Sample2DRGB(...)`. |
-| `Path(...)` | Declares Unreal asset paths for textures, object settings, or virtual functions. |
+| Item               | Purpose                                                                                                                                    |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `.dsm`             | Material implementation file. Usually contains `Shader`, `ShaderFunction`, `ShaderLayer`, `ShaderLayerBlend`, or `VirtualFunction` blocks. |
+| `.dsf`             | Dream Shader Function file. Generates reusable `ShaderFunction` assets that can be imported by `.dsm` files.                               |
+| `.dsh`             | Shared header file. Usually contains `import`, `Function`, `GraphFunction`, `Namespace`, and `VirtualFunction` declarations.               |
+| `Shader`           | Generates an Unreal `UMaterial`.                                                                                                           |
+| `ShaderFunction`   | Generates an Unreal `UMaterialFunction`.                                                                                                   |
+| `ShaderLayer`      | Generates a native `UMaterialFunctionMaterialLayer`.                                                                                       |
+| `ShaderLayerBlend` | Generates a native `UMaterialFunctionMaterialLayerBlend`.                                                                                  |
+| `VirtualFunction`  | Describes an existing Unreal `UMaterialFunction` so it can be called from `Graph`.                                                         |
+| `Graph`            | Node-oriented DSL used inside generated materials and functions.                                                                           |
+| `Function`         | Reusable HLSL-style helper.                                                                                                                |
+| `GraphFunction`    | Reusable Custom-node helper that can pull `UE.*` material nodes into generated Custom inputs.                                              |
+| `Namespace`        | Groups helpers, for example `Texture::Sample2DRGB(...)`.                                                                                   |
+| `Path(...)`        | Declares Unreal asset paths for textures, object settings, or virtual functions.                                                           |
 
 Recommended project layout:
 
@@ -69,14 +85,14 @@ MyProject/
 
 Project settings are available under `Project Settings > DreamPlugin > Dream Shader`.
 
-| Setting | Default | Description |
-| --- | --- | --- |
-| `SourceDirectory` | `DShader` | Root directory for DreamShader source files. |
-| `GeneratedShaderDirectory` | `Intermediate/DreamShader/GeneratedShaders` | Output directory for generated `.ush` helper files. |
-| `AutoCompileOnSave` | `true` | Rebuild affected assets when `.dsm` / `.dsf` / `.dsh` files are saved. |
-| `SaveDebounceSeconds` | `0.25` | File-save debounce time. |
-| `VerboseLogs` | `false` | Print more detailed logs. |
-| `OpenInNewWindow` | `true` | Open the generated VSCode workspace in a new window by default. |
+| Setting                    | Default                                     | Description                                                            |
+| -------------------------- | ------------------------------------------- | ---------------------------------------------------------------------- |
+| `SourceDirectory`          | `DShader`                                   | Root directory for DreamShader source files.                           |
+| `GeneratedShaderDirectory` | `Intermediate/DreamShader/GeneratedShaders` | Output directory for generated `.ush` helper files.                    |
+| `AutoCompileOnSave`        | `true`                                      | Rebuild affected assets when `.dsm` / `.dsf` / `.dsh` files are saved. |
+| `SaveDebounceSeconds`      | `0.25`                                      | File-save debounce time.                                               |
+| `VerboseLogs`              | `false`                                     | Print more detailed logs.                                              |
+| `OpenInNewWindow`          | `true`                                      | Open the generated VSCode workspace in a new window by default.        |
 
 ## Decompiler Export
 
@@ -319,14 +335,14 @@ The release archive is named `DreamShader-<Version>.zip` and contains the plugin
 
 ## Project Info
 
-| Item | Value |
-| --- | --- |
-| Version | `1.3.6` |
-| Language | `DreamShaderLang` |
-| Author | TypeDreamMoon |
-| GitHub | <https://github.com/TypeDreamMoon> |
-| Docs | <https://lang.64hz.cn/> |
-| Web | <https://dev.64hz.cn> |
+| Item      | Value                                                  |
+| --------- | ------------------------------------------------------ |
+| Version   | `1.3.6`                                                |
+| Language  | `DreamShaderLang`                                      |
+| Author    | TypeDreamMoon                                          |
+| GitHub    | <https://github.com/TypeDreamMoon>                     |
+| Docs      | <https://lang.64hz.cn/>                                |
+| Web       | <https://dev.64hz.cn>                                  |
 | Copyright | Copyright (c) 2026 TypeDreamMoon. All rights reserved. |
 
 ## Roadmap
@@ -336,3 +352,5 @@ The release archive is named `DreamShader-<Version>.zip` and contains the plugin
 - Full Substrate support.
 - Deeper Material Layer workflow support.
 - Deeper Moon Engine integration. Reference: <https://zhuanlan.zhihu.com/p/21979494450>
+
+
