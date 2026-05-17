@@ -2,6 +2,8 @@
 
 #include "CoreMinimal.h"
 
+#include "DreamShaderDiagnosticsStore.h"
+
 #include "Containers/Ticker.h"
 
 class UMaterialInterface;
@@ -16,22 +18,6 @@ namespace UE::DreamShader::Editor::Private
 	class FDreamShaderEditorBridge : public TSharedFromThis<FDreamShaderEditorBridge, ESPMode::ThreadSafe>
 	{
 	public:
-		struct FDiagnosticRecord
-		{
-			FString FilePath;
-			FString Message;
-			FString Detail;
-			FString Stage;
-			FString AssetPath;
-			FString ShaderPlatform;
-			FString QualityLevel;
-			FString Code;
-			int32 Line = 1;
-			int32 Column = 1;
-			FString Severity = TEXT("error");
-			FString Source = TEXT("DreamShader");
-		};
-
 		void Startup();
 		void Shutdown();
 
@@ -69,15 +55,14 @@ namespace UE::DreamShader::Editor::Private
 		void CleanGeneratedShaderDirectory();
 		void RebuildDependencyGraph();
 		void SyncVirtualFunctionDefinitions();
-		void SetDiagnostics(const FString& SourceFilePath, TArray<FDiagnosticRecord>&& Diagnostics);
+		void SetDiagnostics(const FString& SourceFilePath, TArray<FDreamShaderDiagnosticRecord>&& Diagnostics);
 		void ClearDiagnostics(const FString& SourceFilePath);
 		void ClearDiagnosticsForSourceAndDependencies(const FString& SourceFilePath);
 		void UpdateDiagnosticsFile() const;
-		TArray<FDiagnosticRecord> BuildErrorDiagnostics(const FString& SourceFilePath, const FString& ErrorMessage) const;
 
 	private:
 		TMap<FString, double> PendingFiles;
-		TMap<FString, TArray<FDiagnosticRecord>> DiagnosticsByFile;
+		FDreamShaderDiagnosticsStore DiagnosticsStore;
 		TMap<FString, TSet<FString>> HeaderDependentsByFile;
 		FString WatchedSourceDirectory;
 		FDelegateHandle DirectoryWatcherHandle;

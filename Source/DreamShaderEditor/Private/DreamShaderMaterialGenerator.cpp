@@ -1,5 +1,6 @@
 #include "DreamShaderMaterialGenerator.h"
 
+#include "DreamShaderDependencyGraphService.h"
 #include "DreamShaderMaterialGeneratorPrivate.h"
 
 #include "DreamShaderModule.h"
@@ -792,119 +793,14 @@ namespace UE::DreamShader::Editor
 			return true;
 		}
 
-		static bool TryExtractImportPathFromLine(const FString& Line, FString& OutImportPath)
-		{
-			FString Trimmed = Line.TrimStartAndEnd();
-			if (!Trimmed.StartsWith(TEXT("import"), ESearchCase::IgnoreCase))
-			{
-				return false;
-			}
-
-			const int32 ImportKeywordLength = 6;
-			if (Trimmed.Len() > ImportKeywordLength
-				&& !FChar::IsWhitespace(Trimmed[ImportKeywordLength]))
-			{
-				return false;
-			}
-
-			Trimmed.RightChopInline(ImportKeywordLength, EAllowShrinking::No);
-			Trimmed.TrimStartAndEndInline();
-			if (Trimmed.Len() < 2 || (Trimmed[0] != TCHAR('"') && Trimmed[0] != TCHAR('\'')))
-			{
-				return false;
-			}
-
-			const TCHAR Quote = Trimmed[0];
-			int32 ClosingQuoteIndex = INDEX_NONE;
-			bool bEscaped = false;
-			for (int32 Index = 1; Index < Trimmed.Len(); ++Index)
-			{
-				const TCHAR Character = Trimmed[Index];
-				if (bEscaped)
-				{
-					bEscaped = false;
-					continue;
-				}
-				if (Character == TCHAR('\\'))
-				{
-					bEscaped = true;
-					continue;
-				}
-				if (Character == Quote)
-				{
-					ClosingQuoteIndex = Index;
-					break;
-				}
-			}
-
-			if (ClosingQuoteIndex == INDEX_NONE)
-			{
-				return false;
-			}
-
-			FString TrailingText = Trimmed.Mid(ClosingQuoteIndex + 1).TrimStartAndEnd();
-			if (TrailingText.StartsWith(TEXT(";")))
-			{
-				TrailingText.RightChopInline(1, EAllowShrinking::No);
-				TrailingText.TrimStartAndEndInline();
-			}
-			if (!TrailingText.IsEmpty() && !TrailingText.StartsWith(TEXT("//")))
-			{
-				return false;
-			}
-
-			OutImportPath = Trimmed.Mid(1, ClosingQuoteIndex - 1).TrimStartAndEnd();
-			return !OutImportPath.IsEmpty();
-		}
-
-		static FString NormalizeDreamShaderImportSpecifier(const FString& InImportPath)
-		{
-			FString Result = InImportPath;
-			Result.TrimStartAndEndInline();
-			Result.ReplaceInline(TEXT("\\"), TEXT("/"));
-			if (FPaths::GetExtension(Result, true).IsEmpty())
-			{
-				Result += TEXT(".dsh");
-			}
-			return Result;
-		}
-
 		static bool ResolveDreamShaderImportPath(
 			const FString& CurrentFilePath,
 			const FString& ImportSpecifier,
 			FString& OutResolvedPath,
 			FString& OutError)
 		{
-			const FString NormalizedImport = NormalizeDreamShaderImportSpecifier(ImportSpecifier);
-			const FString RelativeCandidate = UE::DreamShader::NormalizeSourceFilePath(
-				FPaths::Combine(FPaths::GetPath(CurrentFilePath), NormalizedImport));
-			if (IFileManager::Get().FileExists(*RelativeCandidate))
+			if (Private::FDreamShaderDependencyGraphService::ResolveImportPath(CurrentFilePath, ImportSpecifier, OutResolvedPath))
 			{
-				OutResolvedPath = RelativeCandidate;
-				return true;
-			}
-
-			const FString RootCandidate = UE::DreamShader::NormalizeSourceFilePath(
-				FPaths::Combine(UE::DreamShader::GetSourceShaderDirectory(), NormalizedImport));
-			if (IFileManager::Get().FileExists(*RootCandidate))
-			{
-				OutResolvedPath = RootCandidate;
-				return true;
-			}
-
-			const FString PackageCandidate = UE::DreamShader::NormalizeSourceFilePath(
-				FPaths::Combine(UE::DreamShader::GetPackageShaderDirectory(), NormalizedImport));
-			if (IFileManager::Get().FileExists(*PackageCandidate))
-			{
-				OutResolvedPath = PackageCandidate;
-				return true;
-			}
-
-			const FString BuiltinCandidate = UE::DreamShader::NormalizeSourceFilePath(
-				FPaths::Combine(UE::DreamShader::GetBuiltinShaderLibraryDirectory(), NormalizedImport));
-			if (IFileManager::Get().FileExists(*BuiltinCandidate))
-			{
-				OutResolvedPath = BuiltinCandidate;
 				return true;
 			}
 
@@ -1059,7 +955,7 @@ namespace UE::DreamShader::Editor
 			for (const FString& Line : Lines)
 			{
 				FString ImportPath;
-				if (TryExtractImportPathFromLine(Line, ImportPath))
+				if (Private::FDreamShaderDependencyGraphService::TryExtractImportPathFromLine(Line, ImportPath))
 				{
 					FString ResolvedImportPath;
 					if (!ResolveDreamShaderImportPath(NormalizedPath, ImportPath, ResolvedImportPath, OutError))
