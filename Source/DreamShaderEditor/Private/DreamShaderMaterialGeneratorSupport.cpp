@@ -1216,6 +1216,15 @@ namespace UE::DreamShader::Editor::Private
 			UObject* LoadedObject = StaticLoadObject(ObjectProperty->PropertyClass, nullptr, *AssetObjectPath);
 			if (!LoadedObject)
 			{
+				if (ObjectProperty->PropertyClass
+					&& ObjectProperty->PropertyClass->IsChildOf(UTexture::StaticClass())
+					&& (Property->GetName().Equals(TEXT("Texture"), ESearchCase::IgnoreCase)
+						|| Property->GetName().Equals(TEXT("TextureObject"), ESearchCase::IgnoreCase)))
+				{
+					ObjectProperty->SetObjectPropertyValue(ValuePtr, nullptr);
+					return true;
+				}
+
 				OutError = FString::Printf(TEXT("Failed to load asset '%s' for '%s'."), *AssetObjectPath, *Property->GetName());
 				return false;
 			}
@@ -3376,6 +3385,20 @@ namespace UE::DreamShader::Editor::Private
 		return false;
 	}
 
+	static FString GetPropertyParameterName(const FTextShaderPropertyDefinition& Property)
+	{
+		if (const FString* ParameterName = Property.Metadata.ReflectedProperties.Find(UE::DreamShader::NormalizeSettingKey(TEXT("ParameterName"))))
+		{
+			const FString TrimmedParameterName = ParameterName->TrimStartAndEnd();
+			if (!TrimmedParameterName.IsEmpty())
+			{
+				return TrimmedParameterName;
+			}
+		}
+
+		return Property.Name;
+	}
+
 	static bool SetExpressionDefaultValue(UMaterialExpression* Expression, const FTextShaderPropertyDefinition& Property, FString& OutError)
 	{
 		if (!Expression || !Property.bHasDefaultValue)
@@ -3470,7 +3493,7 @@ namespace UE::DreamShader::Editor::Private
 			return nullptr;
 		}
 
-		if (!SetExpressionParameterName(Expression, Property.Name, OutError)
+		if (!SetExpressionParameterName(Expression, GetPropertyParameterName(Property), OutError)
 			|| !SetExpressionDefaultValue(Expression, Property, OutError))
 		{
 			OutError = FString::Printf(TEXT("%s: %s"), *FormatMetadataContext(Property), *OutError);
@@ -3642,7 +3665,7 @@ namespace UE::DreamShader::Editor::Private
 				return nullptr;
 			}
 
-			Expression->ParameterName = FName(*Property.Name);
+			Expression->ParameterName = FName(*GetPropertyParameterName(Property));
 			if (Property.bHasDefaultValue)
 			{
 				Expression->DefaultValue = static_cast<float>(Property.ScalarDefaultValue);
@@ -3665,7 +3688,7 @@ namespace UE::DreamShader::Editor::Private
 				return nullptr;
 			}
 
-			ParameterExpression->ParameterName = FName(*Property.Name);
+			ParameterExpression->ParameterName = FName(*GetPropertyParameterName(Property));
 			if (Property.bHasDefaultValue)
 			{
 				ParameterExpression->DefaultValue = Property.VectorDefaultValue;
@@ -3687,7 +3710,7 @@ namespace UE::DreamShader::Editor::Private
 			return nullptr;
 		}
 
-		Expression->ParameterName = FName(*Property.Name);
+		Expression->ParameterName = FName(*GetPropertyParameterName(Property));
 		if (Property.bHasDefaultValue && !Property.TextureDefaultObjectPath.IsEmpty())
 		{
 			UTexture* DefaultTexture = LoadObject<UTexture>(nullptr, *Property.TextureDefaultObjectPath);

@@ -112,7 +112,10 @@ namespace UE::DreamShader
 
 		for (TCHAR Char : InText)
 		{
-			if (FChar::IsAlnum(Char) || Char == TCHAR('_'))
+			if ((Char >= TCHAR('A') && Char <= TCHAR('Z'))
+				|| (Char >= TCHAR('a') && Char <= TCHAR('z'))
+				|| (Char >= TCHAR('0') && Char <= TCHAR('9'))
+				|| Char == TCHAR('_'))
 			{
 				Result.AppendChar(Char);
 			}
@@ -127,7 +130,23 @@ namespace UE::DreamShader
 			Result = TEXT("DreamShaderSymbol");
 		}
 
-		if (!(FChar::IsAlpha(Result[0]) || Result[0] == TCHAR('_')))
+		bool bOnlyUnderscores = true;
+		for (int32 Index = 0; Index < Result.Len(); ++Index)
+		{
+			if (Result[Index] != TCHAR('_'))
+			{
+				bOnlyUnderscores = false;
+				break;
+			}
+		}
+		if (bOnlyUnderscores)
+		{
+			Result = TEXT("DreamShaderSymbol");
+		}
+
+		if (!((Result[0] >= TCHAR('A') && Result[0] <= TCHAR('Z'))
+			|| (Result[0] >= TCHAR('a') && Result[0] <= TCHAR('z'))
+			|| Result[0] == TCHAR('_')))
 		{
 			Result.InsertAt(0, TCHAR('_'));
 		}

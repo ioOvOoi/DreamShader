@@ -1178,8 +1178,19 @@ namespace UE::DreamShader::Editor::Private
 						continue;
 					}
 
+					ReservedNames.Add(Binding.Name);
 					OutputDeclarations.Add(FString::Printf(TEXT("\t\t%s %s;"), Binding.Type, Binding.Name));
 					OutputBindings.Add(FString::Printf(TEXT("\t\t%s = %s;"), Binding.Target, Binding.Name));
+				}
+
+				for (const FMaterialOutputBinding& Binding : Bindings)
+				{
+					FExpressionInput* MaterialInput = Material->GetExpressionInputForProperty(Binding.Property);
+					if (!MaterialInput || !MaterialInput->IsConnected())
+					{
+						continue;
+					}
+
 					OutputAssignments.Add(FormatGraphSetStatement(Binding.Name, CompileInput(*MaterialInput, Binding.DefaultValue)));
 				}
 
@@ -1293,6 +1304,17 @@ namespace UE::DreamShader::Editor::Private
 						? OutputExpression->OutputName.ToString()
 						: Output.Output.OutputName.ToString();
 					const FString DeclarationName = MakeDreamShaderDeclarationName(OutputName, TEXT("Output"), OutputIndex);
+					ReservedNames.Add(DeclarationName);
+				}
+
+				for (int32 OutputIndex = 0; OutputIndex < Outputs.Num(); ++OutputIndex)
+				{
+					const FFunctionExpressionOutput& Output = Outputs[OutputIndex];
+					UMaterialExpressionFunctionOutput* OutputExpression = Output.ExpressionOutput;
+					const FString OutputName = OutputExpression
+						? OutputExpression->OutputName.ToString()
+						: Output.Output.OutputName.ToString();
+					const FString DeclarationName = MakeDreamShaderDeclarationName(OutputName, TEXT("Output"), OutputIndex);
 					const FString MetadataSuffix = OutputExpression
 						? MakeFunctionParameterMetadataSuffix(OutputExpression->Description, OutputExpression->SortPriority, OutputIndex)
 						: FString();
@@ -1348,6 +1370,7 @@ namespace UE::DreamShader::Editor::Private
 			{
 				PropertyDeclarations.Reset();
 				PropertyNames.Reset();
+				ReservedNames.Reset();
 				FunctionInputNames.Reset();
 				GraphLines.Reset();
 				ExpressionTemps.Reset();
@@ -1394,6 +1417,7 @@ namespace UE::DreamShader::Editor::Private
 				int32 Suffix = 1;
 				while (TempNames.Contains(Candidate)
 					|| PropertyNames.Contains(Candidate)
+					|| ReservedNames.Contains(Candidate)
 					|| ContainsFunctionInputName(Candidate))
 				{
 					Candidate = FString::Printf(TEXT("%s_%d"), *BaseName, Suffix++);
@@ -1423,7 +1447,33 @@ namespace UE::DreamShader::Editor::Private
 				}
 
 				PropertyNames.Add(Name);
+				ReservedNames.Add(Name);
 				PropertyDeclarations.Add(TEXT("\t\t") + Declaration);
+			}
+
+			FString MakeUniquePropertyName(const FString& DesiredName, const TCHAR* FallbackPrefix)
+			{
+				FString BaseName = MakeDreamShaderDeclarationName(DesiredName, FallbackPrefix, PropertyNames.Num());
+				FString Candidate = BaseName;
+				int32 Suffix = 1;
+				while (PropertyNames.Contains(Candidate)
+					|| ReservedNames.Contains(Candidate)
+					|| TempNames.Contains(Candidate)
+					|| ContainsFunctionInputName(Candidate))
+				{
+					Candidate = FString::Printf(TEXT("%s_%d"), *BaseName, Suffix++);
+				}
+				return Candidate;
+			}
+
+			void AddParameterNameMetadataIfNeeded(TArray<FString>& Entries, const FString& DeclarationName, const FName ParameterName)
+			{
+				if (!ParameterName.IsNone() && !ParameterName.ToString().Equals(DeclarationName, ESearchCase::CaseSensitive))
+				{
+					Entries.Add(FString::Printf(
+						TEXT("ParameterName=\"%s\";"),
+						*EscapeDreamShaderString(ParameterName.ToString())));
+				}
 			}
 
 			static FString BuildMetadataSuffix(const TArray<FString>& Entries)
@@ -1801,6 +1851,15 @@ namespace UE::DreamShader::Editor::Private
 				return Name;
 			}
 
+			FString AddTempWithName(const FString& Type, const FString& ExpressionText, const FString& Name)
+			{
+				TempNames.Add(Name);
+				ReservedNames.Add(Name);
+				GraphLines.Add(FormatGraphAssignment(Type, Name, ExpressionText));
+				++NextTempIndex;
+				return Name;
+			}
+
 			static FString FormatGraphAssignment(const FString& Type, const FString& Name, const FString& ExpressionText)
 			{
 				if (ExpressionText.Contains(TEXT("\n")))
@@ -1848,6 +1907,22 @@ namespace UE::DreamShader::Editor::Private
 					Value.bIsMaterialAttributes);
 			}
 
+			FDecompiledValue AddTempValueWithName(const FDecompiledValue& Value, const FString& Name)
+			{
+				if (Value.bIsSimple)
+				{
+					return Value;
+				}
+
+				return MakeValue(
+					AddTempWithName(Value.Type, Value.Text, Name),
+					Value.Type,
+					Value.ComponentCount,
+					true,
+					Value.bIsTextureObject,
+					Value.bIsMaterialAttributes);
+			}
+
 			FDecompiledValue MaybeMaterializeValue(const FDecompiledValue& Value, const FString& BaseName)
 			{
 				if (Value.bIsSimple)
@@ -1874,6 +1949,11 @@ namespace UE::DreamShader::Editor::Private
 			FDecompiledValue CacheTempExpressionValue(const FDecompiledExpressionKey& Key, const FDecompiledValue& Value, const FString& BaseName)
 			{
 				return CacheExpressionValue(Key, AddTempValue(Value, BaseName));
+			}
+
+			FDecompiledValue CacheNamedTempExpressionValue(const FDecompiledExpressionKey& Key, const FDecompiledValue& Value, const FString& Name)
+			{
+				return CacheExpressionValue(Key, AddTempValueWithName(Value, Name));
 			}
 
 			FString CompileInput(const FExpressionInput& Input, const FString& DefaultText)
@@ -2153,8 +2233,9 @@ namespace UE::DreamShader::Editor::Private
 
 				if (UMaterialExpressionScalarParameter* ScalarParameter = Cast<UMaterialExpressionScalarParameter>(Expression))
 				{
-					const FString Name = MakeDreamShaderDeclarationName(ScalarParameter->ParameterName.ToString(), TEXT("Scalar"), 0);
+					const FString Name = MakeUniquePropertyName(ScalarParameter->ParameterName.ToString(), TEXT("Scalar"));
 					TArray<FString> MetadataEntries;
+					AddParameterNameMetadataIfNeeded(MetadataEntries, Name, ScalarParameter->ParameterName);
 					AddParameterMetadata(MetadataEntries, ScalarParameter);
 					AddPropertyDeclaration(
 						Name,
@@ -2168,8 +2249,9 @@ namespace UE::DreamShader::Editor::Private
 
 				if (UMaterialExpressionVectorParameter* VectorParameter = Cast<UMaterialExpressionVectorParameter>(Expression))
 				{
-					const FString Name = MakeDreamShaderDeclarationName(VectorParameter->ParameterName.ToString(), TEXT("Vector"), 0);
+					const FString Name = MakeUniquePropertyName(VectorParameter->ParameterName.ToString(), TEXT("Vector"));
 					TArray<FString> MetadataEntries;
+					AddParameterNameMetadataIfNeeded(MetadataEntries, Name, VectorParameter->ParameterName);
 					AddParameterMetadata(MetadataEntries, VectorParameter);
 					AddPropertyDeclaration(
 						Name,
@@ -2183,11 +2265,12 @@ namespace UE::DreamShader::Editor::Private
 
 				if (UMaterialExpressionTextureObjectParameter* TextureObjectParameter = Cast<UMaterialExpressionTextureObjectParameter>(Expression))
 				{
-					const FString Name = MakeDreamShaderDeclarationName(TextureObjectParameter->ParameterName.ToString(), TEXT("Texture"), 0);
+					const FString Name = MakeUniquePropertyName(TextureObjectParameter->ParameterName.ToString(), TEXT("Texture"));
 					const FString DefaultValue = TextureObjectParameter->Texture
 						? FString::Printf(TEXT(" = %s"), *MakeDreamShaderObjectPathLiteral(TextureObjectParameter->Texture))
 						: FString();
 					TArray<FString> MetadataEntries;
+					AddParameterNameMetadataIfNeeded(MetadataEntries, Name, TextureObjectParameter->ParameterName);
 					AddTextureParameterMetadata(MetadataEntries, TextureObjectParameter);
 					AddTextureSampleMetadata(MetadataEntries, TextureObjectParameter);
 					AddPropertyDeclaration(
@@ -2202,7 +2285,7 @@ namespace UE::DreamShader::Editor::Private
 
 				if (UMaterialExpressionTextureSampleParameter2D* TextureParameter = Cast<UMaterialExpressionTextureSampleParameter2D>(Expression))
 				{
-					const FString Name = MakeDreamShaderDeclarationName(TextureParameter->ParameterName.ToString(), TEXT("Texture"), 0);
+					const FString Name = MakeUniquePropertyName(TextureParameter->ParameterName.ToString(), TEXT("Texture"));
 					if (HasTextureSampleGraphInputs(TextureParameter))
 					{
 						TArray<FExpressionCallArgument> Arguments;
@@ -2218,10 +2301,11 @@ namespace UE::DreamShader::Editor::Private
 						}
 						else
 						{
-							RgbaValue = CacheTempExpressionValue(
+							const FString TempName = MakeUniqueName(Name, TEXT("Texture"));
+							RgbaValue = CacheNamedTempExpressionValue(
 								RgbaKey,
 								MakeValue(BuildUEExpressionCall(Expression, RgbaOutputIndex, Arguments), TEXT("float4"), 4, false),
-								Name);
+								TempName);
 						}
 
 						if (OutputIndex == RgbaOutputIndex)
@@ -2235,6 +2319,7 @@ namespace UE::DreamShader::Editor::Private
 						? FString::Printf(TEXT(" = %s"), *MakeDreamShaderObjectPathLiteral(TextureParameter->Texture))
 						: FString();
 					TArray<FString> MetadataEntries;
+					AddParameterNameMetadataIfNeeded(MetadataEntries, Name, TextureParameter->ParameterName);
 					AddTextureParameterMetadata(MetadataEntries, TextureParameter);
 					AddTextureSampleMetadata(MetadataEntries, TextureParameter);
 					AddPropertyDeclaration(
@@ -3118,6 +3203,7 @@ namespace UE::DreamShader::Editor::Private
 
 			TArray<FString> PropertyDeclarations;
 			TSet<FString> PropertyNames;
+			TSet<FString> ReservedNames;
 			TMap<const UMaterialExpressionFunctionInput*, FString> FunctionInputNames;
 			TArray<FString> GraphLines;
 			TMap<FDecompiledExpressionKey, FString> ExpressionTemps;
