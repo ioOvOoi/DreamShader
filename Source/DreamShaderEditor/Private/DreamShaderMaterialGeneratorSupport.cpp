@@ -44,6 +44,7 @@
 #include "Engine/Texture.h"
 #include "Engine/Texture2DArray.h"
 #include "Engine/TextureCube.h"
+#include "Engine/VolumeTexture.h"
 #include "Misc/Crc.h"
 #include "Misc/FileHelper.h"
 #include "Misc/OutputDeviceNull.h"
@@ -1647,7 +1648,16 @@ namespace UE::DreamShader::Editor::Private
 	{
 		return InTypeName.Equals(TEXT("Texture2D"), ESearchCase::IgnoreCase)
 			|| InTypeName.Equals(TEXT("TextureCube"), ESearchCase::IgnoreCase)
-			|| InTypeName.Equals(TEXT("Texture2DArray"), ESearchCase::IgnoreCase);
+			|| InTypeName.Equals(TEXT("Texture2DArray"), ESearchCase::IgnoreCase)
+			|| InTypeName.Equals(TEXT("Texture3D"), ESearchCase::IgnoreCase)
+			|| InTypeName.Equals(TEXT("VolumeTexture"), ESearchCase::IgnoreCase);
+	}
+
+	static FString GetGeneratedHLSLTypeName(const FString& InTypeName)
+	{
+		return InTypeName.Equals(TEXT("VolumeTexture"), ESearchCase::IgnoreCase)
+			? TEXT("Texture3D")
+			: InTypeName;
 	}
 
 	FString BuildGeneratedFunctionSymbolName(const FTextShaderFunctionDefinition& Function)
@@ -2382,7 +2392,7 @@ namespace UE::DreamShader::Editor::Private
 		TArray<FString> Parameters;
 		for (const FTextShaderFunctionParameter& Input : Function.Inputs)
 		{
-			Parameters.Add(FString::Printf(TEXT("%s %s"), *Input.Type, *Input.Name));
+			Parameters.Add(FString::Printf(TEXT("%s %s"), *GetGeneratedHLSLTypeName(Input.Type), *Input.Name));
 			if (IsTextureFunctionParameterType(Input.Type))
 			{
 				Parameters.Add(FString::Printf(TEXT("SamplerState %sSampler"), *Input.Name));
@@ -2391,7 +2401,7 @@ namespace UE::DreamShader::Editor::Private
 		for (int32 ResultIndex = 1; ResultIndex < Function.Results.Num(); ++ResultIndex)
 		{
 			const FTextShaderFunctionParameter& Output = Function.Results[ResultIndex];
-			Parameters.Add(FString::Printf(TEXT("out %s %s"), *Output.Type, *Output.Name));
+			Parameters.Add(FString::Printf(TEXT("out %s %s"), *GetGeneratedHLSLTypeName(Output.Type), *Output.Name));
 		}
 
 		return FString::Join(Parameters, TEXT(", "));
@@ -2404,20 +2414,22 @@ namespace UE::DreamShader::Editor::Private
 		const FString& Indent,
 		FString& OutSource)
 	{
-		const FString ReturnType = Function.Results.IsEmpty() ? TEXT("void") : Function.Results[0].Type;
+		const FString ReturnType = Function.Results.IsEmpty() ? TEXT("void") : GetGeneratedHLSLTypeName(Function.Results[0].Type);
 		const FString GeneratedFunctionName = BuildGeneratedFunctionSymbolName(Function);
 
 		OutSource += FString::Printf(TEXT("%s%s %s(%s)\n%s{\n"), *Indent, *ReturnType, *GeneratedFunctionName, *BuildGeneratedFunctionParameterList(Function), *Indent);
 
 		if (!Function.Results.IsEmpty())
 		{
-			OutSource += FString::Printf(TEXT("%s\t%s %s = (%s)0;\n"), *Indent, *Function.Results[0].Type, *Function.Results[0].Name, *Function.Results[0].Type);
+			const FString PrimaryResultType = GetGeneratedHLSLTypeName(Function.Results[0].Type);
+			OutSource += FString::Printf(TEXT("%s\t%s %s = (%s)0;\n"), *Indent, *PrimaryResultType, *Function.Results[0].Name, *PrimaryResultType);
 		}
 
 		for (int32 ResultIndex = 1; ResultIndex < Function.Results.Num(); ++ResultIndex)
 		{
 			const FTextShaderFunctionParameter& Output = Function.Results[ResultIndex];
-			OutSource += FString::Printf(TEXT("%s\t%s = (%s)0;\n"), *Indent, *Output.Name, *Output.Type);
+			const FString OutputType = GetGeneratedHLSLTypeName(Output.Type);
+			OutSource += FString::Printf(TEXT("%s\t%s = (%s)0;\n"), *Indent, *Output.Name, *OutputType);
 		}
 
 		const FString RewrittenFunctionHLSL = RewriteDreamShaderFunctionBodyCalls(Function.HLSL, FunctionsBySpelling, ReplacementBySpelling);
@@ -3277,6 +3289,8 @@ namespace UE::DreamShader::Editor::Private
 			return TEXT("TextureCube");
 		case ETextShaderTextureType::Texture2DArray:
 			return TEXT("Texture2DArray");
+		case ETextShaderTextureType::VolumeTexture:
+			return TEXT("VolumeTexture");
 		case ETextShaderTextureType::Texture2D:
 		default:
 			return TEXT("Texture2D");
@@ -3600,7 +3614,20 @@ namespace UE::DreamShader::Editor::Private
 						return nullptr;
 					}
 				}
-				else if (Cast<UTextureCube>(DefaultTexture) || Cast<UTexture2DArray>(DefaultTexture))
+				else if (Property.TextureType == ETextShaderTextureType::VolumeTexture)
+				{
+					if (!Cast<UVolumeTexture>(DefaultTexture))
+					{
+						OutError = FString::Printf(
+							TEXT("Const texture property '%s' expects %s but '%s' is a '%s'."),
+							*Property.Name,
+							GetTextureTypeLabel(Property.TextureType),
+							*Property.TextureDefaultObjectPath,
+							*DefaultTexture->GetClass()->GetName());
+						return nullptr;
+					}
+				}
+				else if (Cast<UTextureCube>(DefaultTexture) || Cast<UTexture2DArray>(DefaultTexture) || Cast<UVolumeTexture>(DefaultTexture))
 				{
 					OutError = FString::Printf(
 						TEXT("Const texture property '%s' expects %s but '%s' is a '%s'."),
@@ -3749,7 +3776,20 @@ namespace UE::DreamShader::Editor::Private
 					return nullptr;
 				}
 			}
-			else if (Cast<UTextureCube>(DefaultTexture) || Cast<UTexture2DArray>(DefaultTexture))
+			else if (Property.TextureType == ETextShaderTextureType::VolumeTexture)
+			{
+				if (!Cast<UVolumeTexture>(DefaultTexture))
+				{
+					OutError = FString::Printf(
+						TEXT("Texture property '%s' expects %s but '%s' is a '%s'."),
+						*Property.Name,
+						GetTextureTypeLabel(Property.TextureType),
+						*Property.TextureDefaultObjectPath,
+						*DefaultTexture->GetClass()->GetName());
+					return nullptr;
+				}
+			}
+			else if (Cast<UTextureCube>(DefaultTexture) || Cast<UTexture2DArray>(DefaultTexture) || Cast<UVolumeTexture>(DefaultTexture))
 			{
 				OutError = FString::Printf(
 					TEXT("Texture property '%s' expects %s but '%s' is a '%s'."),
@@ -4494,7 +4534,7 @@ namespace UE::DreamShader::Editor::Private
 			return CreateGenericUEExpression(Material, MaterialFunction, Property, AvailableExpressions, PositionY, OutError);
 		}
 
-		OutError = MakeError(TEXT("This builtin is not implemented by the material generator yet. For generic MaterialExpression support, add OutputType=\"float1/2/3/4/Texture2D\"."));
+		OutError = MakeError(TEXT("This builtin is not implemented by the material generator yet. For generic MaterialExpression support, add OutputType=\"float1/2/3/4/Texture2D/TextureCube/Texture2DArray/VolumeTexture\"."));
 		return nullptr;
 	}
 
@@ -4582,6 +4622,8 @@ namespace UE::DreamShader::Editor::Private
 		if (InTypeName.Equals(TEXT("Texture2D"), ESearchCase::IgnoreCase)
 			|| InTypeName.Equals(TEXT("TextureCube"), ESearchCase::IgnoreCase)
 			|| InTypeName.Equals(TEXT("Texture2DArray"), ESearchCase::IgnoreCase)
+			|| InTypeName.Equals(TEXT("Texture3D"), ESearchCase::IgnoreCase)
+			|| InTypeName.Equals(TEXT("VolumeTexture"), ESearchCase::IgnoreCase)
 			|| InTypeName.Equals(TEXT("SamplerState"), ESearchCase::IgnoreCase))
 		{
 			OutComponentCount = 0;
@@ -5035,6 +5077,11 @@ namespace UE::DreamShader::Editor::Private
 			else if (InTypeName.Equals(TEXT("Texture2DArray"), ESearchCase::IgnoreCase))
 			{
 				OutFunctionInputTypeValue = static_cast<int32>(FunctionInput_Texture2DArray);
+			}
+			else if (InTypeName.Equals(TEXT("Texture3D"), ESearchCase::IgnoreCase)
+				|| InTypeName.Equals(TEXT("VolumeTexture"), ESearchCase::IgnoreCase))
+			{
+				OutFunctionInputTypeValue = static_cast<int32>(FunctionInput_VolumeTexture);
 			}
 			else
 			{

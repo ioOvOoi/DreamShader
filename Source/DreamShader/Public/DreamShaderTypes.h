@@ -16,6 +16,7 @@ namespace UE::DreamShader
 		Texture2D,
 		TextureCube,
 		Texture2DArray,
+		VolumeTexture,
 	};
 
 	enum class ETextShaderPropertySource : uint8

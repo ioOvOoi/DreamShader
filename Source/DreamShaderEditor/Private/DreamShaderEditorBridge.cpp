@@ -165,6 +165,8 @@ namespace UE::DreamShader::Editor::Private
 				return TEXT("TextureCube");
 			case FunctionInput_Texture2DArray:
 				return TEXT("Texture2DArray");
+			case FunctionInput_VolumeTexture:
+				return TEXT("VolumeTexture");
 			case FunctionInput_StaticBool:
 			case FunctionInput_Bool:
 				return TEXT("bool");
@@ -197,6 +199,8 @@ namespace UE::DreamShader::Editor::Private
 				return TEXT("TextureCube");
 			case MCT_Texture2DArray:
 				return TEXT("Texture2DArray");
+			case MCT_VolumeTexture:
+				return TEXT("VolumeTexture");
 			case MCT_StaticBool:
 			case MCT_Bool:
 				return TEXT("bool");

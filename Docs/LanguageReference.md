@@ -274,9 +274,9 @@ Properties = {
 }
 ```
 
-除 `float` / `vec3` / `Texture2D` 简写外，`Properties` 也支持常见显式 Parameter 节点类型，例如 `ScalarParameter`、`VectorParameter`、`DoubleVectorParameter`、`TextureObjectParameter`、`TextureSampleParameter2D`、`StaticBoolParameter`、`StaticSwitchParameter` 等。
+除 `float` / `vec3` / `Texture2D` 简写外，`Properties` 也支持常见显式 Parameter 节点类型，例如 `ScalarParameter`、`VectorParameter`、`DoubleVectorParameter`、`TextureObjectParameter`、`TextureSampleParameter2D`、`TextureSampleParameterVolume`、`StaticBoolParameter`、`StaticSwitchParameter` 等。
 
-在 `Properties` 声明前加 `const` 会生成不可外部调参的常量/helper 节点，而不是 parameter 节点。`const` 支持标量、向量和纹理简写类型；`const Texture2D` 默认创建 Unreal Texture Object 节点，可用 `= Path(...)` 指定预览纹理，不写时使用 Unreal 默认纹理。
+在 `Properties` 声明前加 `const` 会生成不可外部调参的常量/helper 节点，而不是 parameter 节点。`const` 支持标量、向量和纹理简写类型；`const Texture2D` 默认创建 Unreal Texture Object 节点，可用 `= Path(...)` 指定预览纹理，不写时使用 Unreal 默认纹理。`const TextureCube`、`const Texture2DArray`、`const VolumeTexture` 必须显式指定默认资产。
 
 声明尾部可以加 `[...]` 反射属性块。属性块里的每一项都会按 Unreal `MaterialExpression` 的 UPROPERTY 名称写入生成节点；不写的字段保持 Unreal 默认值。`Group`、`SortPriority`、`Description` 是常用别名，其中 `Description` 会写到节点 `Desc`。
 
@@ -512,6 +512,7 @@ Package 相关说明见 [Packages.md](Packages.md)。
 - `Texture2D`
 - `TextureCube`
 - `Texture2DArray`
+- `VolumeTexture` / `Texture3D`
 - `SamplerState`
 
 ### 5.4 已移除别名
@@ -532,6 +533,7 @@ Properties = {
     Texture2D MainTex = Path(Game, "/Textures/T_Main");
     Texture2D DefaultTex = Path("/Engine/EngineResources/DefaultTexture");
     TextureCube SkyTex = Path(Engine, "/EngineResources/DefaultTextureCube");
+    VolumeTexture NoiseVolume = Path(Game, "/Textures/T_NoiseVolume");
 }
 ```
 

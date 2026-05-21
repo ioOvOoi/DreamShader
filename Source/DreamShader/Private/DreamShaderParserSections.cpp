@@ -84,7 +84,9 @@ namespace UE::DreamShader::Private
 
 		if (Value == TEXT("texture2d")
 			|| Value == TEXT("texturecube")
-			|| Value == TEXT("texture2darray"))
+			|| Value == TEXT("texture2darray")
+			|| Value == TEXT("texture3d")
+			|| Value == TEXT("volumetexture"))
 		{
 			OutType = ETextShaderPropertyType::Texture2D;
 			OutComponentCount = 0;
@@ -537,7 +539,7 @@ namespace UE::DreamShader::Private
 		}
 
 		OutError = FString::Printf(
-			TEXT("Unsupported UE builtin function '%s'. Use OutputType=\"float1/2/3/4/Texture2D\" for generic MaterialExpression calls."),
+			TEXT("Unsupported UE builtin function '%s'. Use OutputType=\"float1/2/3/4/Texture2D/TextureCube/Texture2DArray/VolumeTexture\" for generic MaterialExpression calls."),
 			*FunctionName);
 		return false;
 	}
@@ -672,6 +674,10 @@ namespace UE::DreamShader::Private
 					{
 						Property.TextureType = ETextShaderTextureType::Texture2DArray;
 					}
+					else if (TypeToken.Contains(TEXT("Volume"), ESearchCase::IgnoreCase))
+					{
+						Property.TextureType = ETextShaderTextureType::VolumeTexture;
+					}
 					if (Property.bHasDefaultValue && !ParseTextureAssetReference(Right, Property.TextureDefaultObjectPath, OutError))
 					{
 						OutError = FString::Printf(
@@ -773,7 +779,9 @@ namespace UE::DreamShader::Private
 			}
 			else if (TypeToken.Equals(TEXT("Texture2D"), ESearchCase::IgnoreCase)
 				|| TypeToken.Equals(TEXT("TextureCube"), ESearchCase::IgnoreCase)
-				|| TypeToken.Equals(TEXT("Texture2DArray"), ESearchCase::IgnoreCase))
+				|| TypeToken.Equals(TEXT("Texture2DArray"), ESearchCase::IgnoreCase)
+				|| TypeToken.Equals(TEXT("Texture3D"), ESearchCase::IgnoreCase)
+				|| TypeToken.Equals(TEXT("VolumeTexture"), ESearchCase::IgnoreCase))
 			{
 				Property.Type = ETextShaderPropertyType::Texture2D;
 				if (TypeToken.Equals(TEXT("TextureCube"), ESearchCase::IgnoreCase))
@@ -783,6 +791,11 @@ namespace UE::DreamShader::Private
 				else if (TypeToken.Equals(TEXT("Texture2DArray"), ESearchCase::IgnoreCase))
 				{
 					Property.TextureType = ETextShaderTextureType::Texture2DArray;
+				}
+				else if (TypeToken.Equals(TEXT("Texture3D"), ESearchCase::IgnoreCase)
+					|| TypeToken.Equals(TEXT("VolumeTexture"), ESearchCase::IgnoreCase))
+				{
+					Property.TextureType = ETextShaderTextureType::VolumeTexture;
 				}
 				else
 				{

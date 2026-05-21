@@ -630,7 +630,7 @@ namespace UE::DreamShader::Editor::Private
 		if (!OutputTypeArgument)
 		{
 			OutError = FString::Printf(
-				TEXT("Unsupported UE builtin call '%s' in Graph. For generic MaterialExpression calls, add OutputType=\"float1/2/3/4/Texture2D\"."),
+				TEXT("Unsupported UE builtin call '%s' in Graph. For generic MaterialExpression calls, add OutputType=\"float1/2/3/4/Texture2D/TextureCube/Texture2DArray/VolumeTexture\"."),
 				*CalleeName);
 			return false;
 		}
