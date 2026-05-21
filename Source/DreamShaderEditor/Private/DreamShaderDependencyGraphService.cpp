@@ -9,6 +9,45 @@
 
 namespace UE::DreamShader::Editor::Private
 {
+	namespace
+	{
+		bool IsPathUnderDirectory(const FString& InPath, const FString& InDirectory)
+		{
+			if (InPath.IsEmpty() || InDirectory.IsEmpty())
+			{
+				return false;
+			}
+
+			const FString Path = UE::DreamShader::NormalizeSourceFilePath(InPath);
+			FString Directory = UE::DreamShader::NormalizeSourceFilePath(InDirectory);
+			Directory.RemoveFromEnd(TEXT("/"));
+
+			return Path.Equals(Directory, ESearchCase::IgnoreCase)
+				|| Path.StartsWith(Directory + TEXT("/"), ESearchCase::IgnoreCase);
+		}
+
+		FString GetImportRootDirectoryForFile(const FString& CurrentFilePath)
+		{
+			const TArray<FString> RootDirectories =
+			{
+				UE::DreamShader::GetSourceShaderDirectory(),
+				UE::DreamShader::GetPackageShaderDirectory(),
+				UE::DreamShader::GetBuiltinShaderLibraryDirectory()
+			};
+
+			FString BestRootDirectory;
+			for (const FString& RootDirectory : RootDirectories)
+			{
+				if (IsPathUnderDirectory(CurrentFilePath, RootDirectory) && RootDirectory.Len() > BestRootDirectory.Len())
+				{
+					BestRootDirectory = RootDirectory;
+				}
+			}
+
+			return BestRootDirectory.IsEmpty() ? FPaths::GetPath(CurrentFilePath) : BestRootDirectory;
+		}
+	}
+
 	bool FDreamShaderDependencyGraphService::TryExtractImportPathFromLine(const FString& Line, FString& OutPath)
 	{
 		FString TrimmedLine = Line.TrimStartAndEnd();
@@ -103,17 +142,28 @@ namespace UE::DreamShader::Editor::Private
 			return false;
 		}
 
-		const TArray<FString> Candidates =
+		struct FImportCandidate
 		{
-			FPaths::Combine(FPaths::GetPath(CurrentFilePath), NormalizedImport),
-			FPaths::Combine(UE::DreamShader::GetSourceShaderDirectory(), NormalizedImport),
-			FPaths::Combine(UE::DreamShader::GetPackageShaderDirectory(), NormalizedImport),
-			FPaths::Combine(UE::DreamShader::GetBuiltinShaderLibraryDirectory(), NormalizedImport)
+			FString Path;
+			FString RootDirectory;
 		};
 
-		for (const FString& Candidate : Candidates)
+		const TArray<FImportCandidate> Candidates =
 		{
-			const FString NormalizedCandidate = UE::DreamShader::NormalizeSourceFilePath(Candidate);
+			{ FPaths::Combine(FPaths::GetPath(CurrentFilePath), NormalizedImport), GetImportRootDirectoryForFile(CurrentFilePath) },
+			{ FPaths::Combine(UE::DreamShader::GetSourceShaderDirectory(), NormalizedImport), UE::DreamShader::GetSourceShaderDirectory() },
+			{ FPaths::Combine(UE::DreamShader::GetPackageShaderDirectory(), NormalizedImport), UE::DreamShader::GetPackageShaderDirectory() },
+			{ FPaths::Combine(UE::DreamShader::GetBuiltinShaderLibraryDirectory(), NormalizedImport), UE::DreamShader::GetBuiltinShaderLibraryDirectory() }
+		};
+
+		for (const FImportCandidate& Candidate : Candidates)
+		{
+			const FString NormalizedCandidate = UE::DreamShader::NormalizeSourceFilePath(Candidate.Path);
+			if (!IsPathUnderDirectory(NormalizedCandidate, Candidate.RootDirectory))
+			{
+				continue;
+			}
+
 			if (IFileManager::Get().FileExists(*NormalizedCandidate))
 			{
 				OutResolvedPath = NormalizedCandidate;

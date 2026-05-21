@@ -97,6 +97,12 @@ namespace UE::DreamShader
 
 	FString GetGeneratedShaderDirectory()
 	{
+		const FString VirtualDirectory = GetGeneratedShaderVirtualDirectory();
+		if (const FString* MappedDirectory = AllShaderSourceDirectoryMappings().Find(VirtualDirectory))
+		{
+			return *MappedDirectory;
+		}
+
 		return Private::GetConfiguredDirectories().Generated;
 	}
 
@@ -196,10 +202,10 @@ void FDreamShaderModule::StartupModule()
 	IFileManager::Get().MakeDirectory(*UE::DreamShader::GetSourceShaderDirectory(), true);
 	IFileManager::Get().MakeDirectory(*UE::DreamShader::GetPackageShaderDirectory(), true);
 	IFileManager::Get().MakeDirectory(*UE::DreamShader::GetBuiltinShaderLibraryDirectory(), true);
-	IFileManager::Get().MakeDirectory(*UE::DreamShader::GetGeneratedShaderDirectory(), true);
+	IFileManager::Get().MakeDirectory(*UE::DreamShader::Private::GetConfiguredDirectories().Generated, true);
 
 	const FString VirtualDirectory = UE::DreamShader::GetGeneratedShaderVirtualDirectory();
-	const FString GeneratedShaderDirectory = UE::DreamShader::GetGeneratedShaderDirectory();
+	const FString GeneratedShaderDirectory = UE::DreamShader::Private::GetConfiguredDirectories().Generated;
 	if (!AllShaderSourceDirectoryMappings().Contains(VirtualDirectory))
 	{
 		AddShaderSourceDirectoryMapping(VirtualDirectory, GeneratedShaderDirectory);

@@ -46,6 +46,30 @@ namespace UE::DreamShader::Editor::Private
 			DiagnosticObject->SetStringField(TEXT("source"), Diagnostic.Source);
 			OutDiagnostics.Add(MakeShared<FJsonValueObject>(DiagnosticObject));
 		}
+
+		void RemoveDiagnosticsOwnedBySource(
+			TMap<FString, TArray<FDreamShaderDiagnosticRecord>>& InOutDiagnosticsByFile,
+			const FString& OwnerSourceFilePath)
+		{
+			TArray<FString> EmptyFiles;
+			for (TPair<FString, TArray<FDreamShaderDiagnosticRecord>>& Pair : InOutDiagnosticsByFile)
+			{
+				Pair.Value.RemoveAll([&OwnerSourceFilePath](const FDreamShaderDiagnosticRecord& Diagnostic)
+				{
+					return Diagnostic.OwnerSourceFilePath.Equals(OwnerSourceFilePath, ESearchCase::IgnoreCase);
+				});
+
+				if (Pair.Value.IsEmpty())
+				{
+					EmptyFiles.Add(Pair.Key);
+				}
+			}
+
+			for (const FString& EmptyFile : EmptyFiles)
+			{
+				InOutDiagnosticsByFile.Remove(EmptyFile);
+			}
+		}
 	}
 
 	void FDreamShaderDiagnosticsStore::Reset()
@@ -58,7 +82,7 @@ namespace UE::DreamShader::Editor::Private
 		TArray<FDreamShaderDiagnosticRecord>&& Diagnostics)
 	{
 		const FString NormalizedPath = UE::DreamShader::NormalizeSourceFilePath(SourceFilePath);
-		DiagnosticsByFile.Remove(NormalizedPath);
+		RemoveDiagnosticsOwnedBySource(DiagnosticsByFile, NormalizedPath);
 		if (Diagnostics.IsEmpty())
 		{
 			return;
@@ -70,13 +94,16 @@ namespace UE::DreamShader::Editor::Private
 				? NormalizedPath
 				: UE::DreamShader::NormalizeSourceFilePath(Diagnostic.FilePath);
 			Diagnostic.FilePath.Reset();
+			Diagnostic.OwnerSourceFilePath = NormalizedPath;
 			DiagnosticsByFile.FindOrAdd(DiagnosticFilePath).Add(MoveTemp(Diagnostic));
 		}
 	}
 
 	void FDreamShaderDiagnosticsStore::ClearDiagnostics(const FString& SourceFilePath)
 	{
-		DiagnosticsByFile.Remove(UE::DreamShader::NormalizeSourceFilePath(SourceFilePath));
+		const FString NormalizedPath = UE::DreamShader::NormalizeSourceFilePath(SourceFilePath);
+		DiagnosticsByFile.Remove(NormalizedPath);
+		RemoveDiagnosticsOwnedBySource(DiagnosticsByFile, NormalizedPath);
 	}
 
 	void FDreamShaderDiagnosticsStore::WriteToFile(const FString& OutputFilePath) const

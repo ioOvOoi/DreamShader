@@ -18,6 +18,7 @@ namespace UE::DreamShader::Editor::Private
 		int32 Column = 1;
 		FString Severity = TEXT("error");
 		FString Source = TEXT("DreamShader");
+		FString OwnerSourceFilePath;
 	};
 
 	struct FDreamShaderDiagnosticLocation
