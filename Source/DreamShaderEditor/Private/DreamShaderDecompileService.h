@@ -8,6 +8,8 @@ namespace UE::DreamShader::Editor::Private
 	{
 		static FString MakeMaterialFilePath(const UMaterial* Material);
 		static FString MakeFunctionFilePath(const UMaterialFunction* MaterialFunction);
+		static const TCHAR* GetFunctionCategory(EDreamShaderDecompiledFunctionKind FunctionKind);
+		static EDreamShaderDecompiledFunctionKind GetFunctionKind(const UMaterialFunction* MaterialFunction);
 		static FString MakeAssetName(const UObject* Asset, const TCHAR* Category);
 	};
 

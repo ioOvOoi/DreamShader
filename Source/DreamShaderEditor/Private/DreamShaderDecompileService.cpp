@@ -7,6 +7,8 @@
 #include "Misc/Paths.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialFunction.h"
+#include "Materials/MaterialFunctionMaterialLayer.h"
+#include "Materials/MaterialFunctionMaterialLayerBlend.h"
 
 namespace UE::DreamShader::Editor::Private
 {
@@ -106,7 +108,37 @@ namespace UE::DreamShader::Editor::Private
 
 	FString FDecompiledAssetNaming::MakeFunctionFilePath(const UMaterialFunction* MaterialFunction)
 	{
-		return MakeStableDecompiledSourcePath(MaterialFunction, TEXT("Decompiled/Functions"), TEXT(".dsf"));
+		return MakeStableDecompiledSourcePath(
+			MaterialFunction,
+			FString::Printf(TEXT("Decompiled/%s"), GetFunctionCategory(GetFunctionKind(MaterialFunction))),
+			TEXT(".dsf"));
+	}
+
+	const TCHAR* FDecompiledAssetNaming::GetFunctionCategory(const EDreamShaderDecompiledFunctionKind FunctionKind)
+	{
+		switch (FunctionKind)
+		{
+		case EDreamShaderDecompiledFunctionKind::MaterialLayer:
+			return TEXT("Layers");
+		case EDreamShaderDecompiledFunctionKind::MaterialLayerBlend:
+			return TEXT("LayerBlends");
+		case EDreamShaderDecompiledFunctionKind::Function:
+		default:
+			return TEXT("Functions");
+		}
+	}
+
+	EDreamShaderDecompiledFunctionKind FDecompiledAssetNaming::GetFunctionKind(const UMaterialFunction* MaterialFunction)
+	{
+		if (MaterialFunction && MaterialFunction->IsA<UMaterialFunctionMaterialLayerBlend>())
+		{
+			return EDreamShaderDecompiledFunctionKind::MaterialLayerBlend;
+		}
+		if (MaterialFunction && MaterialFunction->IsA<UMaterialFunctionMaterialLayer>())
+		{
+			return EDreamShaderDecompiledFunctionKind::MaterialLayer;
+		}
+		return EDreamShaderDecompiledFunctionKind::Function;
 	}
 
 	FString FDecompiledAssetNaming::MakeAssetName(const UObject* Asset, const TCHAR* Category)
@@ -200,9 +232,13 @@ namespace UE::DreamShader::Editor::Private
 
 		if (UMaterialFunction* MaterialFunction = Cast<UMaterialFunction>(Request.Asset))
 		{
+			const EDreamShaderDecompiledFunctionKind FunctionKind = FDecompiledAssetNaming::GetFunctionKind(MaterialFunction);
 			Result.bSucceeded = Decompiler.DecompileFunction(
 				MaterialFunction,
-				FDecompiledAssetNaming::MakeAssetName(MaterialFunction, TEXT("Functions")),
+				FDecompiledAssetNaming::MakeAssetName(
+					MaterialFunction,
+					FDecompiledAssetNaming::GetFunctionCategory(FunctionKind)),
+				FunctionKind,
 				Result.SourceText,
 				Result.Error);
 			Result.OutputFilePath = Request.OutputFilePath.IsEmpty()

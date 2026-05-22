@@ -85,6 +85,8 @@
 #include "Materials/MaterialExpressionWorldPosition.h"
 #include "Materials/MaterialFunction.h"
 #include "Materials/MaterialFunctionInterface.h"
+#include "Materials/MaterialFunctionMaterialLayer.h"
+#include "Materials/MaterialFunctionMaterialLayerBlend.h"
 #include "MaterialEditorContext.h"
 #include "MaterialShared.h"
 #include "MaterialValueType.h"
@@ -165,6 +167,8 @@ namespace UE::DreamShader::Editor::Private
 				return TEXT("TextureCube");
 			case FunctionInput_Texture2DArray:
 				return TEXT("Texture2DArray");
+			case FunctionInput_MaterialAttributes:
+				return TEXT("MaterialAttributes");
 			case FunctionInput_StaticBool:
 			case FunctionInput_Bool:
 				return TEXT("bool");
@@ -1238,7 +1242,12 @@ namespace UE::DreamShader::Editor::Private
 				return true;
 			}
 
-			bool DecompileFunction(UMaterialFunction* MaterialFunction, const FString& DecompiledName, FString& OutSourceText, FString& OutError)
+			bool DecompileFunction(
+				UMaterialFunction* MaterialFunction,
+				const FString& DecompiledName,
+				EDreamShaderDecompiledFunctionKind FunctionKind,
+				FString& OutSourceText,
+				FString& OutError)
 			{
 				Reset();
 				if (!MaterialFunction)
@@ -1357,7 +1366,17 @@ namespace UE::DreamShader::Editor::Private
 					Lines.Append(VirtualFunctionDefinitions);
 				}
 
-				Lines.Add(FString::Printf(TEXT("ShaderFunction(Name=\"%s\")"), *EscapeDreamShaderString(DecompiledName)));
+				const TCHAR* BlockName = TEXT("ShaderFunction");
+				if (FunctionKind == EDreamShaderDecompiledFunctionKind::MaterialLayer)
+				{
+					BlockName = TEXT("ShaderLayer");
+				}
+				else if (FunctionKind == EDreamShaderDecompiledFunctionKind::MaterialLayerBlend)
+				{
+					BlockName = TEXT("ShaderLayerBlend");
+				}
+
+				Lines.Add(FString::Printf(TEXT("%s(Name=\"%s\")"), BlockName, *EscapeDreamShaderString(DecompiledName)));
 				Lines.Add(TEXT("{"));
 				AppendSection(Lines, TEXT("Properties"), PropertyDeclarations);
 				AppendSection(Lines, TEXT("Inputs"), InputDeclarations);
@@ -3251,10 +3270,15 @@ namespace UE::DreamShader::Editor::Private
 				return Decompiler.DecompileMaterial(Material, DecompiledName, OutSourceText, OutError);
 			}
 
-			virtual bool DecompileFunction(UMaterialFunction* MaterialFunction, const FString& DecompiledName, FString& OutSourceText, FString& OutError) override
+			virtual bool DecompileFunction(
+				UMaterialFunction* MaterialFunction,
+				const FString& DecompiledName,
+				EDreamShaderDecompiledFunctionKind FunctionKind,
+				FString& OutSourceText,
+				FString& OutError) override
 			{
 				FDreamShaderGraphDecompiler Decompiler;
-				return Decompiler.DecompileFunction(MaterialFunction, DecompiledName, OutSourceText, OutError);
+				return Decompiler.DecompileFunction(MaterialFunction, DecompiledName, FunctionKind, OutSourceText, OutError);
 			}
 		};
 
@@ -4231,6 +4255,20 @@ namespace UE::DreamShader::Editor::Private
 				TEXT("DreamShader.VirtualFunctionAssetActions"),
 				FNewToolMenuSectionDelegate::CreateSP(AsShared(), &FDreamShaderEditorBridge::PopulateMaterialFunctionAssetMenu));
 		}
+		if (UToolMenu* MaterialLayerAssetMenu = UE::ContentBrowser::ExtendToolMenu_AssetContextMenu(UMaterialFunctionMaterialLayer::StaticClass()))
+		{
+			FToolMenuSection& Section = MaterialLayerAssetMenu->FindOrAddSection(TEXT("GetAssetActions"));
+			Section.AddDynamicEntry(
+				TEXT("DreamShader.MaterialLayerAssetActions"),
+				FNewToolMenuSectionDelegate::CreateSP(AsShared(), &FDreamShaderEditorBridge::PopulateMaterialFunctionAssetMenu));
+		}
+		if (UToolMenu* MaterialLayerBlendAssetMenu = UE::ContentBrowser::ExtendToolMenu_AssetContextMenu(UMaterialFunctionMaterialLayerBlend::StaticClass()))
+		{
+			FToolMenuSection& Section = MaterialLayerBlendAssetMenu->FindOrAddSection(TEXT("GetAssetActions"));
+			Section.AddDynamicEntry(
+				TEXT("DreamShader.MaterialLayerBlendAssetActions"),
+				FNewToolMenuSectionDelegate::CreateSP(AsShared(), &FDreamShaderEditorBridge::PopulateMaterialFunctionAssetMenu));
+		}
 
 		if (UToolMenu* MaterialAssetMenu = UE::ContentBrowser::ExtendToolMenu_AssetContextMenu(UMaterial::StaticClass()))
 		{
@@ -4278,7 +4316,7 @@ namespace UE::DreamShader::Editor::Private
 	void FDreamShaderEditorBridge::PopulateMaterialFunctionAssetMenu(FToolMenuSection& InSection)
 	{
 		const UContentBrowserAssetContextMenuContext* Context = UContentBrowserAssetContextMenuContext::FindContextWithAssets(InSection);
-		if (!Context || Context->SelectedAssets.Num() != 1 || !Context->SelectedAssets[0].IsInstanceOf(UMaterialFunction::StaticClass()))
+		if (!Context || Context->SelectedAssets.Num() != 1)
 		{
 			return;
 		}

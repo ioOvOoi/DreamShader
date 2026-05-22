@@ -8,6 +8,13 @@ class UMaterialFunction;
 
 namespace UE::DreamShader::Editor
 {
+	enum class EDreamShaderDecompiledFunctionKind : uint8
+	{
+		Function,
+		MaterialLayer,
+		MaterialLayerBlend
+	};
+
 	struct FDreamShaderCompileRequest
 	{
 		FString SourceFilePath;
@@ -49,6 +56,11 @@ namespace UE::DreamShader::Editor
 		virtual ~IDreamShaderDecompiler() = default;
 
 		virtual bool DecompileMaterial(UMaterial* Material, const FString& DecompiledName, FString& OutSourceText, FString& OutError) = 0;
-		virtual bool DecompileFunction(UMaterialFunction* MaterialFunction, const FString& DecompiledName, FString& OutSourceText, FString& OutError) = 0;
+		virtual bool DecompileFunction(
+			UMaterialFunction* MaterialFunction,
+			const FString& DecompiledName,
+			EDreamShaderDecompiledFunctionKind FunctionKind,
+			FString& OutSourceText,
+			FString& OutError) = 0;
 	};
 }
