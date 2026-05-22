@@ -1412,6 +1412,7 @@ namespace UE::DreamShader::Editor::Private
 				NextTempIndex = 0;
 				ActiveDecompileSlowTask = nullptr;
 				ProgressVisitedExpressions.Reset();
+				CompilingExpressionKeys.Reset();
 			}
 
 			static void AppendSection(TArray<FString>& Lines, const TCHAR* SectionName, const TArray<FString>& LinesA)
@@ -1838,6 +1839,34 @@ namespace UE::DreamShader::Editor::Private
 					Type.Equals(TEXT("MaterialAttributes"), ESearchCase::IgnoreCase));
 			}
 
+			static FDecompiledValue MakeDefaultValueForExpressionOutput(UMaterialExpression* Expression, const int32 OutputIndex)
+			{
+				const FString Type = GetDreamShaderTypeForExpressionOutput(Expression, OutputIndex);
+				const bool bIsTextureObject = IsTextureObjectOutput(Expression, OutputIndex);
+				if (bIsTextureObject)
+				{
+					return MakeValue(TEXT("default"), Type, 0, true, true, false);
+				}
+				if (Type.Equals(TEXT("MaterialAttributes"), ESearchCase::IgnoreCase))
+				{
+					return MakeValue(TEXT("MaterialAttributes()"), Type, 0, true, false, true);
+				}
+
+				const int32 ComponentCount = GetComponentCountForExpressionOutput(Expression, OutputIndex);
+				if (ComponentCount <= 1)
+				{
+					return MakeValue(TEXT("0.0"), Type, 1, true);
+				}
+
+				TArray<FString> Components;
+				Components.Init(TEXT("0.0"), ComponentCount);
+				return MakeValue(
+					FString::Printf(TEXT("%s(%s)"), *Type, *FString::Join(Components, TEXT(", "))),
+					Type,
+					ComponentCount,
+					true);
+			}
+
 			FDecompiledValue MakeSwizzledValue(const FDecompiledValue& Source, const FString& SwizzleText)
 			{
 				if (SwizzleText.IsEmpty())
@@ -2184,6 +2213,19 @@ namespace UE::DreamShader::Editor::Private
 					}
 					return MakeValue(*ExistingTemp, GetDreamShaderTypeForExpressionOutput(Expression, OutputIndex), GetComponentCountForExpressionOutput(Expression, OutputIndex), true);
 				}
+				if (CompilingExpressionKeys.Contains(Key))
+				{
+					Warnings.AddUnique(FString::Printf(
+						TEXT("Detected a recursive graph dependency while decompiling node '%s'; emitted a default literal to avoid stack overflow."),
+						*Expression->GetName()));
+					return MakeDefaultValueForExpressionOutput(Expression, OutputIndex);
+				}
+
+				CompilingExpressionKeys.Add(Key);
+				ON_SCOPE_EXIT
+				{
+					CompilingExpressionKeys.Remove(Key);
+				};
 
 				if (UMaterialExpressionFunctionInput* FunctionInput = Cast<UMaterialExpressionFunctionInput>(Expression))
 				{
@@ -3238,6 +3280,7 @@ namespace UE::DreamShader::Editor::Private
 			TArray<FString> GraphLines;
 			TMap<FDecompiledExpressionKey, FString> ExpressionTemps;
 			TMap<FDecompiledExpressionKey, FDecompiledValue> ExpressionValues;
+			TSet<FDecompiledExpressionKey> CompilingExpressionKeys;
 			TSet<FString> TempNames;
 			TArray<FString> VirtualFunctionDefinitions;
 			TMap<const UMaterialFunction*, FString> VirtualFunctionNames;
