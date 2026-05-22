@@ -208,6 +208,59 @@ namespace UE::DreamShader::Editor::Private
 		return false;
 	}
 
+	inline bool TryResolveKnownExpressionOutputComponentCount(
+		const UMaterialExpression* Expression,
+		const int32 OutputIndex,
+		int32& OutComponentCount)
+	{
+		(void)OutputIndex;
+
+		if (!Expression)
+		{
+			return false;
+		}
+
+		if (Cast<UMaterialExpressionTextureCoordinate>(Expression)
+			|| Cast<UMaterialExpressionPanner>(Expression)
+			|| Cast<UMaterialExpressionScreenPosition>(Expression)
+			|| Expression->GetClass()->GetName().Equals(TEXT("MaterialExpressionRotator"), ESearchCase::IgnoreCase))
+		{
+			OutComponentCount = 2;
+			return true;
+		}
+
+		if (Cast<UMaterialExpressionWorldPosition>(Expression)
+			|| Cast<UMaterialExpressionObjectPositionWS>(Expression)
+			|| Cast<UMaterialExpressionCameraVectorWS>(Expression)
+			|| Cast<UMaterialExpressionVertexNormalWS>(Expression)
+			|| Cast<UMaterialExpressionVertexTangentWS>(Expression)
+			|| Cast<UMaterialExpressionTransform>(Expression)
+			|| Cast<UMaterialExpressionTransformPosition>(Expression))
+		{
+			OutComponentCount = 3;
+			return true;
+		}
+
+		const FString ClassName = Expression->GetClass()->GetName();
+		if (ClassName.Equals(TEXT("MaterialExpressionSceneTexelSize"), ESearchCase::IgnoreCase))
+		{
+			OutComponentCount = 2;
+			return true;
+		}
+		if (ClassName.Equals(TEXT("MaterialExpressionSkyAtmosphereLightDirection"), ESearchCase::IgnoreCase))
+		{
+			OutComponentCount = 3;
+			return true;
+		}
+		if (ClassName.Equals(TEXT("MaterialExpressionPixelDepth"), ESearchCase::IgnoreCase))
+		{
+			OutComponentCount = 1;
+			return true;
+		}
+
+		return false;
+	}
+
 	inline bool TrySplitMemberTarget(const FString& TargetText, FString& OutBaseName, FString& OutMemberName)
 	{
 		FString Left;

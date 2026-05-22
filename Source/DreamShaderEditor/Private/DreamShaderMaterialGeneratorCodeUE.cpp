@@ -445,9 +445,19 @@ namespace UE::DreamShader::Editor::Private
 				return false;
 			}
 
+			int32 OutputComponents = Builtin.OutputComponents;
+			if (Expression->Outputs.IsValidIndex(0))
+			{
+				int32 KnownOutputComponents = 0;
+				if (TryResolveKnownExpressionOutputComponentCount(Expression, 0, KnownOutputComponents) && KnownOutputComponents > 0)
+				{
+					OutputComponents = KnownOutputComponents;
+				}
+			}
+
 			OutValue.Expression = Expression;
 			OutValue.OutputIndex = 0;
-			OutValue.ComponentCount = Builtin.OutputComponents;
+			OutValue.ComponentCount = OutputComponents;
 			OutValue.bIsTextureObject = false;
 			OutValue.bIsMaterialAttributes = false;
 			return true;
@@ -518,7 +528,7 @@ namespace UE::DreamShader::Editor::Private
 		Builtins.Add({ TEXT("CameraVectorWS"), UMaterialExpressionCameraVectorWS::StaticClass(), 3, {} });
 		Builtins.Add({ TEXT("VertexNormalWS"), UMaterialExpressionVertexNormalWS::StaticClass(), 3, {} });
 		Builtins.Add({ TEXT("VertexTangentWS"), UMaterialExpressionVertexTangentWS::StaticClass(), 3, {} });
-		Builtins.Add({ TEXT("ScreenPosition"), UMaterialExpressionScreenPosition::StaticClass(), 4, {} });
+		Builtins.Add({ TEXT("ScreenPosition"), UMaterialExpressionScreenPosition::StaticClass(), 2, {} });
 		Builtins.Add({ TEXT("VertexColor"), UMaterialExpressionVertexColor::StaticClass(), 4, {} });
 
 		Builtins.Add({
@@ -976,7 +986,16 @@ namespace UE::DreamShader::Editor::Private
 			OutputComponents = 2;
 			bIsTextureObject = false;
 		}
-		else if (Expression->IsA<UMaterialExpressionSaturate>())
+		else
+		{
+			int32 KnownOutputComponents = 0;
+			if (TryResolveKnownExpressionOutputComponentCount(Expression, ResolvedOutputIndex, KnownOutputComponents) && KnownOutputComponents > 0)
+			{
+				OutputComponents = KnownOutputComponents;
+				bIsTextureObject = false;
+			}
+		}
+		if (Expression->IsA<UMaterialExpressionSaturate>())
 		{
 			ApplyNumericInputComponentCount(FindBoundInputValue(TEXT("Input")));
 		}

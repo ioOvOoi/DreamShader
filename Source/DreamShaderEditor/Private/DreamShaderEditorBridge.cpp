@@ -713,6 +713,12 @@ namespace UE::DreamShader::Editor::Private
 				return ComponentCount;
 			};
 
+			int32 KnownComponentCount = 0;
+			if (TryResolveKnownExpressionOutputComponentCount(Expression, OutputIndex, KnownComponentCount) && KnownComponentCount > 0)
+			{
+				return Finish(KnownComponentCount);
+			}
+
 			if (Cast<UMaterialExpressionTextureCoordinate>(Expression)
 				|| Cast<UMaterialExpressionPanner>(Expression)
 				|| Expression->GetClass()->GetName().Equals(TEXT("MaterialExpressionRotator"), ESearchCase::IgnoreCase))
