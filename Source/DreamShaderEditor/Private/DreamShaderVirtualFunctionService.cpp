@@ -49,14 +49,83 @@ namespace UE::DreamShader::Editor::Private
 			}
 		}
 
-		FString MakeDreamShaderDeclarationName(const FString& InName, const TCHAR* FallbackPrefix, const int32 Index)
+		FString SanitizeDreamShaderIdentifierPreservingUnicode(const FString& InText)
 		{
-			FString Result = UE::DreamShader::SanitizeIdentifier(InName.TrimStartAndEnd());
+			const FString Trimmed = InText.TrimStartAndEnd();
+			if (Trimmed.IsEmpty())
+			{
+				return TEXT("DreamShaderSymbol");
+			}
+
+			FString Result;
+			Result.Reserve(Trimmed.Len());
+			for (int32 CharIndex = 0; CharIndex < Trimmed.Len(); ++CharIndex)
+			{
+				const TCHAR Char = Trimmed[CharIndex];
+				if (CharIndex == 0)
+				{
+					Result.AppendChar(FChar::IsAlpha(Char) || Char == TCHAR('_') ? Char : TCHAR('_'));
+				}
+				else
+				{
+					Result.AppendChar(FChar::IsAlnum(Char) || Char == TCHAR('_') ? Char : TCHAR('_'));
+				}
+			}
+
+			for (int32 Index = Result.Len() - 1; Index > 0; --Index)
+			{
+				if (Result[Index] == TCHAR('_') && Result[Index - 1] == TCHAR('_'))
+				{
+					Result.RemoveAt(Index, 1, EAllowShrinking::No);
+				}
+			}
+
+			bool bOnlyUnderscores = true;
+			for (int32 Index = 0; Index < Result.Len(); ++Index)
+			{
+				if (Result[Index] != TCHAR('_'))
+				{
+					bOnlyUnderscores = false;
+					break;
+				}
+			}
+
+			return bOnlyUnderscores ? TEXT("DreamShaderSymbol") : Result;
+		}
+
+		FString MakeDreamShaderDeclarationName(
+			const FString& InName,
+			const TCHAR* FallbackPrefix,
+			const int32 Index,
+			const FString& StableDisambiguator = FString())
+		{
+			(void)StableDisambiguator;
+
+			FString Result = SanitizeDreamShaderIdentifierPreservingUnicode(InName);
 			if (Result.IsEmpty() || Result == TEXT("DreamShaderSymbol"))
 			{
 				Result = FString::Printf(TEXT("%s%d"), FallbackPrefix, Index + 1);
 			}
+
 			return Result;
+		}
+
+		FString MakeUniqueDreamShaderDeclarationName(
+			const FString& InName,
+			const TCHAR* FallbackPrefix,
+			const int32 Index,
+			const FString& StableDisambiguator,
+			TSet<FString>& InOutUsedNames)
+		{
+			const FString BaseName = MakeDreamShaderDeclarationName(InName, FallbackPrefix, Index, StableDisambiguator);
+			FString Candidate = BaseName;
+			int32 Suffix = 2;
+			while (InOutUsedNames.Contains(Candidate))
+			{
+				Candidate = FString::Printf(TEXT("%s_%d"), *BaseName, Suffix++);
+			}
+			InOutUsedNames.Add(Candidate);
+			return Candidate;
 		}
 
 		FString MakeFunctionParameterMetadataSuffix(
@@ -211,7 +280,11 @@ namespace UE::DreamShader::Editor::Private
 		TArray<FString> Lines;
 		Lines.Add(FString::Printf(
 			TEXT("VirtualFunction(Name=\"%s\")"),
-			*EscapeDreamShaderString(MakeDreamShaderDeclarationName(MaterialFunction->GetName(), TEXT("VirtualFunction"), 0))));
+			*EscapeDreamShaderString(MakeDreamShaderDeclarationName(
+				MaterialFunction->GetName(),
+				TEXT("VirtualFunction"),
+				0,
+				MaterialFunction->GetPathName()))));
 		Lines.Add(TEXT("{"));
 		Lines.Add(TEXT("\tOptions = {"));
 		Lines.Add(FString::Printf(TEXT("\t\tAsset = %s;"), *AssetLiteral));
@@ -221,6 +294,7 @@ namespace UE::DreamShader::Editor::Private
 		Lines.Add(TEXT("\t}"));
 		Lines.Add(TEXT(""));
 		Lines.Add(TEXT("\tInputs = {"));
+		TSet<FString> UsedInputNames;
 		for (int32 InputIndex = 0; InputIndex < Inputs.Num(); ++InputIndex)
 		{
 			const FFunctionExpressionInput& Input = Inputs[InputIndex];
@@ -245,13 +319,19 @@ namespace UE::DreamShader::Editor::Private
 				TEXT("\t\t%s%s %s%s%s;"),
 				bOptional ? TEXT("opt ") : TEXT(""),
 				*GetDreamShaderTypeForFunctionInput(InputType),
-				*MakeDreamShaderDeclarationName(InputName, TEXT("Input"), InputIndex),
+				*MakeUniqueDreamShaderDeclarationName(
+					InputName,
+					TEXT("Input"),
+					InputIndex,
+					FString::Printf(TEXT("%s:Input:%d:%s"), *MaterialFunction->GetPathName(), InputIndex, *InputName),
+					UsedInputNames),
 				*DefaultSuffix,
 				*MetadataSuffix));
 		}
 		Lines.Add(TEXT("\t}"));
 		Lines.Add(TEXT(""));
 		Lines.Add(TEXT("\tOutputs = {"));
+		TSet<FString> UsedOutputNames;
 		for (int32 OutputIndex = 0; OutputIndex < Outputs.Num(); ++OutputIndex)
 		{
 			const FFunctionExpressionOutput& Output = Outputs[OutputIndex];
@@ -265,7 +345,12 @@ namespace UE::DreamShader::Editor::Private
 			Lines.Add(FString::Printf(
 				TEXT("\t\t%s %s%s;"),
 				*OutputTypeResolver(OutputExpression),
-				*MakeDreamShaderDeclarationName(OutputName, TEXT("Output"), OutputIndex),
+				*MakeUniqueDreamShaderDeclarationName(
+					OutputName,
+					TEXT("Output"),
+					OutputIndex,
+					FString::Printf(TEXT("%s:Output:%d:%s"), *MaterialFunction->GetPathName(), OutputIndex, *OutputName),
+					UsedOutputNames),
 				*MetadataSuffix));
 		}
 		Lines.Add(TEXT("\t}"));
@@ -295,16 +380,23 @@ namespace UE::DreamShader::Editor::Private
 		}
 
 		TArray<FString> Arguments;
+		TSet<FString> UsedInputNames;
 		for (int32 InputIndex = 0; InputIndex < Inputs.Num(); ++InputIndex)
 		{
+			const FString InputName = MakeUniqueDreamShaderDeclarationName(
+				Inputs[InputIndex].Name,
+				TEXT("Input"),
+				InputIndex,
+				FString::Printf(TEXT("%s:Input:%d:%s"), *FunctionName, InputIndex, *Inputs[InputIndex].Name),
+				UsedInputNames);
 			Arguments.Add(Inputs[InputIndex].bOptional
 				? TEXT("default")
-				: MakeDreamShaderDeclarationName(Inputs[InputIndex].Name, TEXT("Input"), InputIndex));
+				: InputName);
 		}
 
 		Arguments.Add(FString::Printf(
-			TEXT("Output=\"%s\""),
-			*EscapeDreamShaderString(MakeDreamShaderDeclarationName(Outputs[0].Name, TEXT("Output"), 0))));
+			TEXT("OutputIndex=%d"),
+			0));
 
 		OutCallText = FString::Printf(
 			TEXT("%s(%s)"),
@@ -348,7 +440,12 @@ namespace UE::DreamShader::Editor::Private
 			Parameter.Name = OutputName;
 		}
 
-		return BuildCallTextFromSignature(MaterialFunction->GetName(), Inputs, Outputs, OutCallText, OutError);
+		FString FunctionName = MakeDreamShaderDeclarationName(
+			MaterialFunction->GetName(),
+			TEXT("VirtualFunction"),
+			0,
+			MaterialFunction->GetPathName());
+		return BuildCallTextFromSignature(FunctionName, Inputs, Outputs, OutCallText, OutError);
 	}
 
 	FString FDreamShaderVirtualFunctionService::MakeDefinitionFilePath(const UMaterialFunction* MaterialFunction)
@@ -359,7 +456,8 @@ namespace UE::DreamShader::Editor::Private
 		const FString BaseName = MakeDreamShaderDeclarationName(
 			MaterialFunction ? MaterialFunction->GetName() : FString(),
 			TEXT("VirtualFunction"),
-			0);
+			0,
+			MaterialFunction ? MaterialFunction->GetPathName() : FString());
 
 		const FString PreferredCandidate = FPaths::Combine(DefinitionDirectory, BaseName + TEXT(".dsh"));
 		if (!IFileManager::Get().FileExists(*PreferredCandidate) || !MaterialFunction)

@@ -213,7 +213,30 @@ namespace UE::DreamShader::Editor::Private
 
 		FString MakeDreamShaderDeclarationName(const FString& InName, const TCHAR* FallbackPrefix, int32 Index)
 		{
-			FString Result = UE::DreamShader::SanitizeIdentifier(InName.TrimStartAndEnd());
+			const FString Trimmed = InName.TrimStartAndEnd();
+			FString Result;
+			Result.Reserve(Trimmed.Len());
+			for (int32 CharIndex = 0; CharIndex < Trimmed.Len(); ++CharIndex)
+			{
+				const TCHAR Char = Trimmed[CharIndex];
+				if (CharIndex == 0)
+				{
+					Result.AppendChar(FChar::IsAlpha(Char) || Char == TCHAR('_') ? Char : TCHAR('_'));
+				}
+				else
+				{
+					Result.AppendChar(FChar::IsAlnum(Char) || Char == TCHAR('_') ? Char : TCHAR('_'));
+				}
+			}
+
+			for (int32 CharIndex = Result.Len() - 1; CharIndex > 0; --CharIndex)
+			{
+				if (Result[CharIndex] == TCHAR('_') && Result[CharIndex - 1] == TCHAR('_'))
+				{
+					Result.RemoveAt(CharIndex, 1, EAllowShrinking::No);
+				}
+			}
+
 			if (Result.IsEmpty() || Result == TEXT("DreamShaderSymbol"))
 			{
 				Result = FString::Printf(TEXT("%s%d"), FallbackPrefix, Index + 1);
@@ -3233,14 +3256,7 @@ namespace UE::DreamShader::Editor::Private
 					}
 				}
 
-				const FString OutputName = GetFunctionCallOutputName(FunctionCall, OutputIndex);
-				if (!OutputName.IsEmpty())
-				{
-					Arguments.Add(FString::Printf(
-						TEXT("Output=\"%s\""),
-						*EscapeDreamShaderString(MakeDreamShaderDeclarationName(OutputName, TEXT("Output"), OutputIndex))));
-				}
-				else if (OutputIndex > 0)
+				if (OutputIndex > 0 || FunctionCall->FunctionOutputs.Num() > 1)
 				{
 					Arguments.Add(FString::Printf(TEXT("OutputIndex=%d"), OutputIndex));
 				}
