@@ -193,6 +193,7 @@ namespace UE::DreamShader::Editor
 			UMaterialExpressionFunctionInput* InputExpression,
 			const int32 ComponentCount,
 			const bool bIsTextureObject,
+			const ETextShaderTextureType TextureType,
 			const TArray<FTextShaderPropertyDefinition>* LocalProperties,
 			TMap<FString, Private::FCodeValue>& GeneratedValues,
 			FString& OutError)
@@ -238,6 +239,7 @@ namespace UE::DreamShader::Editor
 			}
 
 			if (PreviewExpressionValue.bIsTextureObject != bIsTextureObject
+				|| (bIsTextureObject && PreviewExpressionValue.TextureType != TextureType)
 				|| PreviewExpressionValue.bIsMaterialAttributes != bIsMaterialAttributes
 				|| PreviewExpressionValue.ComponentCount != ComponentCount)
 			{
@@ -1522,6 +1524,7 @@ namespace UE::DreamShader::Editor
 
 				int32 ComponentCount = 0;
 				bool bIsTextureObject = false;
+				ETextShaderTextureType TextureType = ETextShaderTextureType::Texture2D;
 				int32 FunctionInputTypeValue = 0;
 				if (!Private::TryResolveMaterialFunctionParameterType(
 					InputDefinition.Type,
@@ -1531,6 +1534,10 @@ namespace UE::DreamShader::Editor
 				{
 					OutError = FString::Printf(TEXT("ShaderFunction '%s' input '%s' uses unsupported type '%s'."), *FunctionDefinition.Name, *InputDefinition.Name, *InputDefinition.Type);
 					return false;
+				}
+				if (bIsTextureObject)
+				{
+					verify(Private::TryResolveCodeDeclaredType(InputDefinition.Type, ComponentCount, bIsTextureObject, TextureType));
 				}
 
 				auto* InputExpression = Cast<UMaterialExpressionFunctionInput>(
@@ -1553,6 +1560,7 @@ namespace UE::DreamShader::Editor
 				InputValue.Expression = InputExpression;
 				InputValue.ComponentCount = ComponentCount;
 				InputValue.bIsTextureObject = bIsTextureObject;
+				InputValue.TextureType = TextureType;
 				InputValue.bIsMaterialAttributes = ComponentCount == 0 && !bIsTextureObject;
 				GeneratedValues.Add(InputDefinition.Name, InputValue);
 				GeneratedInputExpressions.Add(InputDefinition.Name, InputExpression);
@@ -1578,6 +1586,7 @@ namespace UE::DreamShader::Editor
 					*InputExpressionPtr,
 					InputValue->ComponentCount,
 					InputValue->bIsTextureObject,
+					InputValue->TextureType,
 					&FunctionDefinition.Properties,
 					GeneratedValues,
 					PreviewError))
@@ -1749,7 +1758,7 @@ namespace UE::DreamShader::Editor
 				PrimaryOutputValue.Expression = CustomExpression;
 				PrimaryOutputValue.ComponentCount = 0;
 				PrimaryOutputValue.bIsTextureObject = false;
-				verify(Private::TryResolveCodeDeclaredType(PrimaryOutput.Type, PrimaryOutputValue.ComponentCount, PrimaryOutputValue.bIsTextureObject));
+				verify(Private::TryResolveCodeDeclaredType(PrimaryOutput.Type, PrimaryOutputValue.ComponentCount, PrimaryOutputValue.bIsTextureObject, PrimaryOutputValue.TextureType));
 				PrimaryOutputValue.bIsMaterialAttributes = PrimaryOutputValue.ComponentCount == 0 && !PrimaryOutputValue.bIsTextureObject;
 				GeneratedValues.Add(PrimaryOutput.Name, PrimaryOutputValue);
 
@@ -1759,7 +1768,7 @@ namespace UE::DreamShader::Editor
 					Private::FCodeValue OutputValue;
 					OutputValue.Expression = CustomExpression;
 					OutputValue.OutputIndex = OutputIndex;
-					verify(Private::TryResolveCodeDeclaredType(OutputDefinition.Type, OutputValue.ComponentCount, OutputValue.bIsTextureObject));
+					verify(Private::TryResolveCodeDeclaredType(OutputDefinition.Type, OutputValue.ComponentCount, OutputValue.bIsTextureObject, OutputValue.TextureType));
 					OutputValue.bIsMaterialAttributes = OutputValue.ComponentCount == 0 && !OutputValue.bIsTextureObject;
 					GeneratedValues.Add(OutputDefinition.Name, OutputValue);
 				}
@@ -1790,7 +1799,14 @@ namespace UE::DreamShader::Editor
 					return false;
 				}
 
+				ETextShaderTextureType ExpectedTextureType = ETextShaderTextureType::Texture2D;
+				if (bExpectedTexture)
+				{
+					verify(Private::TryResolveCodeDeclaredType(OutputDefinition.Type, ExpectedComponentCount, bExpectedTexture, ExpectedTextureType));
+				}
+
 				if (bExpectedTexture != OutputValue->bIsTextureObject
+					|| (bExpectedTexture && ExpectedTextureType != OutputValue->TextureType)
 					|| ((ExpectedComponentCount == 0 && !bExpectedTexture) != OutputValue->bIsMaterialAttributes)
 					|| (!bExpectedTexture && ExpectedComponentCount != OutputValue->ComponentCount))
 				{

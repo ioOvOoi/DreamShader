@@ -164,14 +164,15 @@ namespace UE::DreamShader::Editor::Private
 		{
 			int32 ExpectedComponentCount = 1;
 			bool bExpectedTexture = false;
-			if (!TryResolveCodeDeclaredType(Statement.DeclaredType, ExpectedComponentCount, bExpectedTexture))
+			ETextShaderTextureType ExpectedTextureType = ETextShaderTextureType::Texture2D;
+			if (!TryResolveCodeDeclaredType(Statement.DeclaredType, ExpectedComponentCount, bExpectedTexture, ExpectedTextureType))
 			{
 				OutError = FString::Printf(TEXT("Unsupported Graph variable type '%s' for '%s'."), *Statement.DeclaredType, *Statement.TargetName);
 				return false;
 			}
 
 			FCodeValue CoercedValue;
-			if (!CoerceValueToType(EvaluatedValue, ExpectedComponentCount, bExpectedTexture, CoercedValue, OutError))
+			if (!CoerceValueToType(EvaluatedValue, ExpectedComponentCount, bExpectedTexture, ExpectedTextureType, CoercedValue, OutError))
 			{
 				OutError = FString::Printf(
 					TEXT("Graph variable '%s' is declared as '%s' but assigned an incompatible value. %s"),
@@ -186,7 +187,7 @@ namespace UE::DreamShader::Editor::Private
 		else if (const FCodeValue* ExistingValue = FindValue(Statement.TargetName))
 		{
 			FCodeValue CoercedValue;
-			if (!CoerceValueToType(EvaluatedValue, ExistingValue->ComponentCount, ExistingValue->bIsTextureObject, CoercedValue, OutError))
+			if (!CoerceValueToType(EvaluatedValue, ExistingValue->ComponentCount, ExistingValue->bIsTextureObject, ExistingValue->TextureType, CoercedValue, OutError))
 			{
 				OutError = FString::Printf(
 					TEXT("Graph variable '%s' was previously assigned an incompatible value. %s"),
@@ -208,6 +209,7 @@ namespace UE::DreamShader::Editor::Private
 			&& Left.OutputIndex == Right.OutputIndex
 			&& Left.ComponentCount == Right.ComponentCount
 			&& Left.bIsTextureObject == Right.bIsTextureObject
+			&& Left.TextureType == Right.TextureType
 			&& Left.bIsMaterialAttributes == Right.bIsMaterialAttributes;
 	}
 
@@ -279,32 +281,36 @@ namespace UE::DreamShader::Editor::Private
 
 			int32 ExpectedComponentCount = ThenValue->ComponentCount;
 			bool bExpectedTexture = ThenValue->bIsTextureObject;
+			ETextShaderTextureType ExpectedTextureType = ThenValue->TextureType;
 			if (const FCodeValue* BaseValue = BaseValues.Find(Name))
 			{
 				ExpectedComponentCount = BaseValue->ComponentCount;
 				bExpectedTexture = BaseValue->bIsTextureObject;
+				ExpectedTextureType = BaseValue->TextureType;
 			}
 			else
 			{
 				int32 OutputComponentCount = 0;
 				bool bOutputIsTexture = false;
-				if (TryResolveOutputVariableComponentCount(Definition, Name, OutputComponentCount, bOutputIsTexture))
+				ETextShaderTextureType OutputTextureType = ETextShaderTextureType::Texture2D;
+				if (TryResolveOutputVariableComponentCount(Definition, Name, OutputComponentCount, bOutputIsTexture, OutputTextureType))
 				{
 					ExpectedComponentCount = OutputComponentCount;
 					bExpectedTexture = bOutputIsTexture;
+					ExpectedTextureType = OutputTextureType;
 				}
 			}
 
 			if (bExpectedTexture)
 			{
-				OutError = FString::Printf(TEXT("Graph if statement cannot select Texture2D value '%s'."), *Name);
+				OutError = FString::Printf(TEXT("Graph if statement cannot select texture value '%s'."), *Name);
 				return false;
 			}
 
 			FCodeValue CoercedThenValue;
 			FCodeValue CoercedElseValue;
-			if (!CoerceValueToType(*ThenValue, ExpectedComponentCount, bExpectedTexture, CoercedThenValue, OutError)
-				|| !CoerceValueToType(*ElseValue, ExpectedComponentCount, bExpectedTexture, CoercedElseValue, OutError))
+			if (!CoerceValueToType(*ThenValue, ExpectedComponentCount, bExpectedTexture, ExpectedTextureType, CoercedThenValue, OutError)
+				|| !CoerceValueToType(*ElseValue, ExpectedComponentCount, bExpectedTexture, ExpectedTextureType, CoercedElseValue, OutError))
 			{
 				OutError = FString::Printf(TEXT("Graph if branches assign incompatible values to '%s'. %s"), *Name, *OutError);
 				return false;
@@ -332,7 +338,7 @@ namespace UE::DreamShader::Editor::Private
 	{
 		if (TrueValue.bIsTextureObject || FalseValue.bIsTextureObject)
 		{
-			OutError = TEXT("Texture2D values cannot be selected by Graph if statements.");
+			OutError = TEXT("Texture values cannot be selected by Graph if statements.");
 			return false;
 		}
 		if (TrueValue.bIsMaterialAttributes != FalseValue.bIsMaterialAttributes)
@@ -592,6 +598,17 @@ namespace UE::DreamShader::Editor::Private
 		FCodeValue& OutValue,
 		FString& OutError)
 	{
+		return CoerceValueToType(InValue, ExpectedComponentCount, bExpectedTexture, ETextShaderTextureType::Texture2D, OutValue, OutError);
+	}
+
+	bool FCodeGraphBuilder::CoerceValueToType(
+		const FCodeValue& InValue,
+		const int32 ExpectedComponentCount,
+		const bool bExpectedTexture,
+		const ETextShaderTextureType ExpectedTextureType,
+		FCodeValue& OutValue,
+		FString& OutError)
+	{
 		if (IsMaterialAttributesComponentType(ExpectedComponentCount, bExpectedTexture))
 		{
 			if (!InValue.bIsMaterialAttributes)
@@ -609,6 +626,12 @@ namespace UE::DreamShader::Editor::Private
 			if (!InValue.bIsTextureObject)
 			{
 				OutError = TEXT("Expected a texture object value.");
+				return false;
+			}
+
+			if (InValue.TextureType != ExpectedTextureType)
+			{
+				OutError = TEXT("Expected a texture object value with a matching texture type.");
 				return false;
 			}
 
@@ -1255,7 +1278,7 @@ namespace UE::DreamShader::Editor::Private
 	{
 		if (LeftValue.bIsTextureObject || RightValue.bIsTextureObject)
 		{
-			OutError = TEXT("Arithmetic operators cannot be applied to Texture2D values.");
+			OutError = TEXT("Arithmetic operators cannot be applied to texture values.");
 			return false;
 		}
 		if (LeftValue.bIsMaterialAttributes || RightValue.bIsMaterialAttributes)
@@ -1666,7 +1689,7 @@ namespace UE::DreamShader::Editor::Private
 
 		if (BaseValue.bIsTextureObject)
 		{
-			OutError = TEXT("Texture2D values do not support swizzle/member access in Code.");
+			OutError = TEXT("Texture values do not support swizzle/member access in Code.");
 			return false;
 		}
 
@@ -2208,6 +2231,7 @@ namespace UE::DreamShader::Editor::Private
 			? 0
 			: Property->ComponentCount;
 		OutValue.bIsTextureObject = Property->Type == ETextShaderPropertyType::Texture2D;
+		OutValue.TextureType = Property->TextureType;
 		OutValue.bIsMaterialAttributes = false;
 		Values->Add(Property->Name, OutValue);
 		NextPropertyNodeY += 220;

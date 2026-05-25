@@ -3297,6 +3297,66 @@ namespace UE::DreamShader::Editor::Private
 		}
 	}
 
+	static const TCHAR* GetDefaultTextureObjectPath(const ETextShaderTextureType TextureType)
+	{
+		switch (TextureType)
+		{
+		case ETextShaderTextureType::TextureCube:
+			return TEXT("/Engine/EngineResources/DefaultTextureCube.DefaultTextureCube");
+		case ETextShaderTextureType::VolumeTexture:
+			return TEXT("/Engine/EngineResources/DefaultVolumeTexture.DefaultVolumeTexture");
+		case ETextShaderTextureType::Texture2DArray:
+			return nullptr;
+		case ETextShaderTextureType::Texture2D:
+		default:
+			return TEXT("/Engine/EngineResources/DefaultTexture.DefaultTexture");
+		}
+	}
+
+	static bool DoesTextureMatchType(const UTexture* Texture, const ETextShaderTextureType TextureType)
+	{
+		if (!Texture)
+		{
+			return false;
+		}
+
+		switch (TextureType)
+		{
+		case ETextShaderTextureType::TextureCube:
+			return Cast<UTextureCube>(Texture) != nullptr;
+		case ETextShaderTextureType::Texture2DArray:
+			return Cast<UTexture2DArray>(Texture) != nullptr;
+		case ETextShaderTextureType::VolumeTexture:
+			return Cast<UVolumeTexture>(Texture) != nullptr;
+		case ETextShaderTextureType::Texture2D:
+		default:
+			return !Cast<UTextureCube>(Texture)
+				&& !Cast<UTexture2DArray>(Texture)
+				&& !Cast<UVolumeTexture>(Texture);
+		}
+	}
+
+	static bool ValidateTextureType(
+		const FTextShaderPropertyDefinition& Property,
+		const UTexture* Texture,
+		const TCHAR* Context,
+		FString& OutError)
+	{
+		if (DoesTextureMatchType(Texture, Property.TextureType))
+		{
+			return true;
+		}
+
+		OutError = FString::Printf(
+			TEXT("%s texture property '%s' expects %s but '%s' is a '%s'."),
+			Context,
+			*Property.Name,
+			GetTextureTypeLabel(Property.TextureType),
+			Property.TextureDefaultObjectPath.IsEmpty() ? TEXT("<default>") : *Property.TextureDefaultObjectPath,
+			Texture ? *Texture->GetClass()->GetName() : TEXT("None"));
+		return false;
+	}
+
 	static FString FormatMetadataContext(const FTextShaderPropertyDefinition& Property)
 	{
 		return FString::Printf(TEXT("property '%s'"), *Property.Name);
@@ -3588,60 +3648,31 @@ namespace UE::DreamShader::Editor::Private
 					return nullptr;
 				}
 
-				if (Property.TextureType == ETextShaderTextureType::TextureCube)
+				if (!ValidateTextureType(Property, DefaultTexture, TEXT("Const"), OutError))
 				{
-					if (!Cast<UTextureCube>(DefaultTexture))
-					{
-						OutError = FString::Printf(
-							TEXT("Const texture property '%s' expects %s but '%s' is a '%s'."),
-							*Property.Name,
-							GetTextureTypeLabel(Property.TextureType),
-							*Property.TextureDefaultObjectPath,
-							*DefaultTexture->GetClass()->GetName());
-						return nullptr;
-					}
-				}
-				else if (Property.TextureType == ETextShaderTextureType::Texture2DArray)
-				{
-					if (!Cast<UTexture2DArray>(DefaultTexture))
-					{
-						OutError = FString::Printf(
-							TEXT("Const texture property '%s' expects %s but '%s' is a '%s'."),
-							*Property.Name,
-							GetTextureTypeLabel(Property.TextureType),
-							*Property.TextureDefaultObjectPath,
-							*DefaultTexture->GetClass()->GetName());
-						return nullptr;
-					}
-				}
-				else if (Property.TextureType == ETextShaderTextureType::VolumeTexture)
-				{
-					if (!Cast<UVolumeTexture>(DefaultTexture))
-					{
-						OutError = FString::Printf(
-							TEXT("Const texture property '%s' expects %s but '%s' is a '%s'."),
-							*Property.Name,
-							GetTextureTypeLabel(Property.TextureType),
-							*Property.TextureDefaultObjectPath,
-							*DefaultTexture->GetClass()->GetName());
-						return nullptr;
-					}
-				}
-				else if (Cast<UTextureCube>(DefaultTexture) || Cast<UTexture2DArray>(DefaultTexture) || Cast<UVolumeTexture>(DefaultTexture))
-				{
-					OutError = FString::Printf(
-						TEXT("Const texture property '%s' expects %s but '%s' is a '%s'."),
-						*Property.Name,
-						GetTextureTypeLabel(Property.TextureType),
-						*Property.TextureDefaultObjectPath,
-						*DefaultTexture->GetClass()->GetName());
 					return nullptr;
 				}
 
 				TextureObjectExpression->Texture = DefaultTexture;
 				TextureObjectExpression->AutoSetSampleType();
 			}
-			else if (Property.TextureType != ETextShaderTextureType::Texture2D)
+			else if (const TCHAR* DefaultTexturePath = GetDefaultTextureObjectPath(Property.TextureType))
+			{
+				UTexture* DefaultTexture = LoadObject<UTexture>(nullptr, DefaultTexturePath);
+				if (!DefaultTexture || !DoesTextureMatchType(DefaultTexture, Property.TextureType))
+				{
+					OutError = FString::Printf(
+						TEXT("Const texture property '%s' could not load default %s asset '%s'."),
+						*Property.Name,
+						GetTextureTypeLabel(Property.TextureType),
+						DefaultTexturePath);
+					return nullptr;
+				}
+
+				TextureObjectExpression->Texture = DefaultTexture;
+				TextureObjectExpression->AutoSetSampleType();
+			}
+			else
 			{
 				OutError = FString::Printf(
 					TEXT("Const texture property '%s' with type %s requires an explicit default asset."),
@@ -3750,53 +3781,24 @@ namespace UE::DreamShader::Editor::Private
 				return nullptr;
 			}
 
-			if (Property.TextureType == ETextShaderTextureType::TextureCube)
+			if (!ValidateTextureType(Property, DefaultTexture, TEXT("Texture"), OutError))
 			{
-				if (!Cast<UTextureCube>(DefaultTexture))
-				{
-					OutError = FString::Printf(
-						TEXT("Texture property '%s' expects %s but '%s' is a '%s'."),
-						*Property.Name,
-						GetTextureTypeLabel(Property.TextureType),
-						*Property.TextureDefaultObjectPath,
-						*DefaultTexture->GetClass()->GetName());
-					return nullptr;
-				}
+				return nullptr;
 			}
-			else if (Property.TextureType == ETextShaderTextureType::Texture2DArray)
-			{
-				if (!Cast<UTexture2DArray>(DefaultTexture))
-				{
-					OutError = FString::Printf(
-						TEXT("Texture property '%s' expects %s but '%s' is a '%s'."),
-						*Property.Name,
-						GetTextureTypeLabel(Property.TextureType),
-						*Property.TextureDefaultObjectPath,
-						*DefaultTexture->GetClass()->GetName());
-					return nullptr;
-				}
-			}
-			else if (Property.TextureType == ETextShaderTextureType::VolumeTexture)
-			{
-				if (!Cast<UVolumeTexture>(DefaultTexture))
-				{
-					OutError = FString::Printf(
-						TEXT("Texture property '%s' expects %s but '%s' is a '%s'."),
-						*Property.Name,
-						GetTextureTypeLabel(Property.TextureType),
-						*Property.TextureDefaultObjectPath,
-						*DefaultTexture->GetClass()->GetName());
-					return nullptr;
-				}
-			}
-			else if (Cast<UTextureCube>(DefaultTexture) || Cast<UTexture2DArray>(DefaultTexture) || Cast<UVolumeTexture>(DefaultTexture))
+
+			Expression->Texture = DefaultTexture;
+			Expression->AutoSetSampleType();
+		}
+		else if (const TCHAR* DefaultTexturePath = GetDefaultTextureObjectPath(Property.TextureType))
+		{
+			UTexture* DefaultTexture = LoadObject<UTexture>(nullptr, DefaultTexturePath);
+			if (!DefaultTexture || !DoesTextureMatchType(DefaultTexture, Property.TextureType))
 			{
 				OutError = FString::Printf(
-					TEXT("Texture property '%s' expects %s but '%s' is a '%s'."),
+					TEXT("Texture property '%s' could not load default %s asset '%s'."),
 					*Property.Name,
 					GetTextureTypeLabel(Property.TextureType),
-					*Property.TextureDefaultObjectPath,
-					*DefaultTexture->GetClass()->GetName());
+					DefaultTexturePath);
 				return nullptr;
 			}
 
@@ -3805,7 +3807,11 @@ namespace UE::DreamShader::Editor::Private
 		}
 		else
 		{
-			Expression->SetDefaultTexture();
+			OutError = FString::Printf(
+				TEXT("Texture property '%s' with type %s requires an explicit default asset."),
+				*Property.Name,
+				GetTextureTypeLabel(Property.TextureType));
+			return nullptr;
 		}
 		if (!ApplyExpressionMetadata(Expression, Property.Metadata, OutError))
 		{
@@ -4609,9 +4615,10 @@ namespace UE::DreamShader::Editor::Private
 		return TypeName.Equals(TEXT("MaterialAttributes"), ESearchCase::IgnoreCase);
 	}
 
-	bool TryResolveCodeDeclaredType(const FString& InTypeName, int32& OutComponentCount, bool& bOutIsTexture)
+	bool TryResolveCodeDeclaredType(const FString& InTypeName, int32& OutComponentCount, bool& bOutIsTexture, ETextShaderTextureType& OutTextureType)
 	{
 		bOutIsTexture = false;
+		OutTextureType = ETextShaderTextureType::Texture2D;
 
 		ECustomMaterialOutputType OutputType = CMOT_Float1;
 		if (TryResolveCustomOutputType(InTypeName, OutputType) && TryGetComponentCountForOutputType(OutputType, OutComponentCount))
@@ -4620,15 +4627,58 @@ namespace UE::DreamShader::Editor::Private
 		}
 
 		if (InTypeName.Equals(TEXT("Texture2D"), ESearchCase::IgnoreCase)
-			|| InTypeName.Equals(TEXT("TextureCube"), ESearchCase::IgnoreCase)
-			|| InTypeName.Equals(TEXT("Texture2DArray"), ESearchCase::IgnoreCase)
-			|| InTypeName.Equals(TEXT("Texture3D"), ESearchCase::IgnoreCase)
-			|| InTypeName.Equals(TEXT("VolumeTexture"), ESearchCase::IgnoreCase)
 			|| InTypeName.Equals(TEXT("SamplerState"), ESearchCase::IgnoreCase))
 		{
 			OutComponentCount = 0;
 			bOutIsTexture = true;
+			OutTextureType = ETextShaderTextureType::Texture2D;
 			return true;
+		}
+		if (InTypeName.Equals(TEXT("TextureCube"), ESearchCase::IgnoreCase))
+		{
+			OutComponentCount = 0;
+			bOutIsTexture = true;
+			OutTextureType = ETextShaderTextureType::TextureCube;
+			return true;
+		}
+		if (InTypeName.Equals(TEXT("Texture2DArray"), ESearchCase::IgnoreCase))
+		{
+			OutComponentCount = 0;
+			bOutIsTexture = true;
+			OutTextureType = ETextShaderTextureType::Texture2DArray;
+			return true;
+		}
+		if (InTypeName.Equals(TEXT("Texture3D"), ESearchCase::IgnoreCase)
+			|| InTypeName.Equals(TEXT("VolumeTexture"), ESearchCase::IgnoreCase))
+		{
+			OutComponentCount = 0;
+			bOutIsTexture = true;
+			OutTextureType = ETextShaderTextureType::VolumeTexture;
+			return true;
+		}
+
+		return false;
+	}
+
+	bool TryResolveCodeDeclaredType(const FString& InTypeName, int32& OutComponentCount, bool& bOutIsTexture)
+	{
+		ETextShaderTextureType TextureType = ETextShaderTextureType::Texture2D;
+		return TryResolveCodeDeclaredType(InTypeName, OutComponentCount, bOutIsTexture, TextureType);
+	}
+
+	bool TryResolveOutputVariableComponentCount(
+		const FTextShaderDefinition& Definition,
+		const FString& VariableName,
+		int32& OutComponentCount,
+		bool& bOutIsTexture,
+		ETextShaderTextureType& OutTextureType)
+	{
+		for (const FTextShaderVariableDeclaration& Declaration : Definition.OutputDeclarations)
+		{
+			if (Declaration.Name.Equals(VariableName, ESearchCase::IgnoreCase))
+			{
+				return TryResolveCodeDeclaredType(Declaration.Type, OutComponentCount, bOutIsTexture, OutTextureType);
+			}
 		}
 
 		return false;
@@ -4640,15 +4690,8 @@ namespace UE::DreamShader::Editor::Private
 		int32& OutComponentCount,
 		bool& bOutIsTexture)
 	{
-		for (const FTextShaderVariableDeclaration& Declaration : Definition.OutputDeclarations)
-		{
-			if (Declaration.Name.Equals(VariableName, ESearchCase::IgnoreCase))
-			{
-				return TryResolveCodeDeclaredType(Declaration.Type, OutComponentCount, bOutIsTexture);
-			}
-		}
-
-		return false;
+		ETextShaderTextureType TextureType = ETextShaderTextureType::Texture2D;
+		return TryResolveOutputVariableComponentCount(Definition, VariableName, OutComponentCount, bOutIsTexture, TextureType);
 	}
 
 	static bool AppendSanitizedPackageSegment(

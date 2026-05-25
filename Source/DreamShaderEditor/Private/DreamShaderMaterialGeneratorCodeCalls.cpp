@@ -53,6 +53,20 @@ namespace UE::DreamShader::Editor::Private
 
 			return false;
 		}
+
+		FString BuildFunctionSourceArgumentList(const FTextShaderFunctionDefinition& Function, const TArray<FString>& ResultVariableNames)
+		{
+			TArray<FString> Parameters;
+			for (const FTextShaderFunctionParameter& Input : Function.Inputs)
+			{
+				Parameters.Add(Input.Name);
+			}
+			for (const FString& ResultVariableName : ResultVariableNames)
+			{
+				Parameters.Add(ResultVariableName);
+			}
+			return FString::Join(Parameters, TEXT(", "));
+		}
 	}
 
 	const FTextShaderFunctionDefinition* FCodeGraphBuilder::FindFunctionDefinition(const FString& FunctionName) const
@@ -191,13 +205,30 @@ namespace UE::DreamShader::Editor::Private
 		InputValues.Reserve(Function->Inputs.Num());
 		for (int32 InputIndex = 0; InputIndex < Function->Inputs.Num(); ++InputIndex)
 		{
+			const FTextShaderFunctionParameter& InputDefinition = Function->Inputs[InputIndex];
 			FCodeValue InputValue;
 			if (!EvaluateExpression(Arguments[InputIndex].Expression, InputValue, OutError))
 			{
-				OutError = FString::Printf(TEXT("DreamShader Function '%s' input '%s': %s"), *FunctionName, *Function->Inputs[InputIndex].Name, *OutError);
+				OutError = FString::Printf(TEXT("DreamShader Function '%s' input '%s': %s"), *FunctionName, *InputDefinition.Name, *OutError);
 				return false;
 			}
-			InputValues.Add(InputValue);
+
+			int32 ExpectedComponentCount = 1;
+			bool bExpectedTexture = false;
+			ETextShaderTextureType ExpectedTextureType = ETextShaderTextureType::Texture2D;
+			if (!TryResolveCodeDeclaredType(InputDefinition.Type, ExpectedComponentCount, bExpectedTexture, ExpectedTextureType))
+			{
+				OutError = FString::Printf(TEXT("DreamShader Function '%s' input '%s' uses unsupported type '%s'."), *FunctionName, *InputDefinition.Name, *InputDefinition.Type);
+				return false;
+			}
+
+			FCodeValue CoercedValue;
+			if (!CoerceValueToType(InputValue, ExpectedComponentCount, bExpectedTexture, ExpectedTextureType, CoercedValue, OutError))
+			{
+				OutError = FString::Printf(TEXT("DreamShader Function '%s' input '%s': %s"), *FunctionName, *InputDefinition.Name, *OutError);
+				return false;
+			}
+			InputValues.Add(CoercedValue);
 		}
 
 		auto* CustomExpression = Cast<UMaterialExpressionCustom>(
@@ -226,7 +257,9 @@ namespace UE::DreamShader::Editor::Private
 		const FString CustomCode = FString::Printf(
 			TEXT("return %s(%s);"),
 			*BuildGeneratedFunctionSymbolName(*Function),
-			*BuildFunctionArgumentList(*Function, TArray<FString>()));
+			*(Function->bSelfContained
+				? BuildFunctionSourceArgumentList(*Function, TArray<FString>())
+				: BuildFunctionArgumentList(*Function, TArray<FString>())));
 
 		if (Function->bSelfContained)
 		{
@@ -392,13 +425,30 @@ namespace UE::DreamShader::Editor::Private
 		InputValues.Reserve(Function.Inputs.Num());
 		for (int32 InputIndex = 0; InputIndex < Function.Inputs.Num(); ++InputIndex)
 		{
+			const FTextShaderFunctionParameter& InputDefinition = Function.Inputs[InputIndex];
 			FCodeValue InputValue;
 			if (!EvaluateExpression(Arguments[InputIndex].Expression, InputValue, OutError))
 			{
-				OutError = FString::Printf(TEXT("DreamShader Function '%s' input '%s': %s"), *Function.Name, *Function.Inputs[InputIndex].Name, *OutError);
+				OutError = FString::Printf(TEXT("DreamShader Function '%s' input '%s': %s"), *Function.Name, *InputDefinition.Name, *OutError);
 				return false;
 			}
-			InputValues.Add(InputValue);
+
+			int32 ExpectedComponentCount = 1;
+			bool bExpectedTexture = false;
+			ETextShaderTextureType ExpectedTextureType = ETextShaderTextureType::Texture2D;
+			if (!TryResolveCodeDeclaredType(InputDefinition.Type, ExpectedComponentCount, bExpectedTexture, ExpectedTextureType))
+			{
+				OutError = FString::Printf(TEXT("DreamShader Function '%s' input '%s' uses unsupported type '%s'."), *Function.Name, *InputDefinition.Name, *InputDefinition.Type);
+				return false;
+			}
+
+			FCodeValue CoercedValue;
+			if (!CoerceValueToType(InputValue, ExpectedComponentCount, bExpectedTexture, ExpectedTextureType, CoercedValue, OutError))
+			{
+				OutError = FString::Printf(TEXT("DreamShader Function '%s' input '%s': %s"), *Function.Name, *InputDefinition.Name, *OutError);
+				return false;
+			}
+			InputValues.Add(CoercedValue);
 		}
 
 		TArray<FString> ResultTargetNames;
@@ -480,11 +530,21 @@ namespace UE::DreamShader::Editor::Private
 			SecondaryResultVariables.Add(ResultVariableNames[ResultIndex]);
 		}
 
-		CustomCode += FString::Printf(
-			TEXT("%s = %s(%s);\n"),
-			*ResultVariableNames[0],
-			*BuildGeneratedFunctionSymbolName(Function),
-			*BuildFunctionArgumentList(Function, SecondaryResultVariables));
+		if (Function.bSelfContained)
+		{
+			CustomCode += FString::Printf(
+				TEXT("%s(%s);\n"),
+				*BuildGeneratedFunctionSymbolName(Function),
+				*BuildFunctionSourceArgumentList(Function, ResultVariableNames));
+		}
+		else
+		{
+			CustomCode += FString::Printf(
+				TEXT("%s = %s(%s);\n"),
+				*ResultVariableNames[0],
+				*BuildGeneratedFunctionSymbolName(Function),
+				*BuildFunctionArgumentList(Function, SecondaryResultVariables));
+		}
 
 		for (int32 ResultIndex = 1; ResultIndex < ResultVariableNames.Num(); ++ResultIndex)
 		{
@@ -665,14 +725,15 @@ namespace UE::DreamShader::Editor::Private
 
 			int32 ExpectedComponentCount = 1;
 			bool bExpectedTexture = false;
-			if (!TryResolveCodeDeclaredType(InputDefinition.Type, ExpectedComponentCount, bExpectedTexture))
+			ETextShaderTextureType ExpectedTextureType = ETextShaderTextureType::Texture2D;
+			if (!TryResolveCodeDeclaredType(InputDefinition.Type, ExpectedComponentCount, bExpectedTexture, ExpectedTextureType))
 			{
 				OutError = FString::Printf(TEXT("DreamShader GraphFunction '%s' input '%s' uses unsupported type '%s'."), *Function.Name, *InputDefinition.Name, *InputDefinition.Type);
 				return false;
 			}
 
 			FCodeValue CoercedValue;
-			if (!CoerceValueToType(InputValue, ExpectedComponentCount, bExpectedTexture, CoercedValue, OutError))
+			if (!CoerceValueToType(InputValue, ExpectedComponentCount, bExpectedTexture, ExpectedTextureType, CoercedValue, OutError))
 			{
 				OutError = FString::Printf(TEXT("DreamShader GraphFunction '%s' input '%s': %s"), *Function.Name, *InputDefinition.Name, *OutError);
 				return false;
@@ -1409,7 +1470,8 @@ namespace UE::DreamShader::Editor::Private
 		{
 			int32 OutputComponents = 0;
 			bool bIsTextureObject = false;
-			if (!TryResolveCodeDeclaredType(Outputs[OutputIndex].Type, OutputComponents, bIsTextureObject))
+			ETextShaderTextureType TextureType = ETextShaderTextureType::Texture2D;
+			if (!TryResolveCodeDeclaredType(Outputs[OutputIndex].Type, OutputComponents, bIsTextureObject, TextureType))
 			{
 				OutError = FString::Printf(TEXT("%s '%s' output '%s' uses unsupported type '%s'."), *CallKind, *FunctionName, *Outputs[OutputIndex].Name, *Outputs[OutputIndex].Type);
 				return false;
@@ -1444,6 +1506,7 @@ namespace UE::DreamShader::Editor::Private
 			OutputValue.OutputIndex = FunctionOutputIndex;
 			OutputValue.ComponentCount = OutputComponents;
 			OutputValue.bIsTextureObject = bIsTextureObject;
+			OutputValue.TextureType = TextureType;
 			OutputValue.bIsMaterialAttributes = IsMaterialAttributesComponentType(OutputComponents, bIsTextureObject);
 			(*Values).Add(OutputTargetNames[OutputIndex], OutputValue);
 		}
@@ -1548,7 +1611,8 @@ namespace UE::DreamShader::Editor::Private
 
 		int32 OutputComponents = 0;
 		bool bIsTextureObject = false;
-		if (!TryResolveCodeDeclaredType(Outputs[OutputIndex].Type, OutputComponents, bIsTextureObject))
+		ETextShaderTextureType TextureType = ETextShaderTextureType::Texture2D;
+		if (!TryResolveCodeDeclaredType(Outputs[OutputIndex].Type, OutputComponents, bIsTextureObject, TextureType))
 		{
 			OutError = FString::Printf(TEXT("%s '%s' output '%s' uses unsupported type '%s'."), *CallKind, *FunctionName, *Outputs[OutputIndex].Name, *Outputs[OutputIndex].Type);
 			return false;
@@ -1582,6 +1646,7 @@ namespace UE::DreamShader::Editor::Private
 		OutValue.OutputIndex = FunctionOutputIndex;
 		OutValue.ComponentCount = OutputComponents;
 		OutValue.bIsTextureObject = bIsTextureObject;
+		OutValue.TextureType = TextureType;
 		OutValue.bIsMaterialAttributes = IsMaterialAttributesComponentType(OutputComponents, bIsTextureObject);
 		return true;
 	}

@@ -113,6 +113,7 @@ namespace UE::DreamShader::Editor::Private
 		int32 OutputIndex = 0;
 		int32 ComponentCount = 1;
 		bool bIsTextureObject = false;
+		ETextShaderTextureType TextureType = ETextShaderTextureType::Texture2D;
 		bool bIsMaterialAttributes = false;
 	};
 
@@ -174,11 +175,18 @@ namespace UE::DreamShader::Editor::Private
 	bool TryGetComponentCountForOutputType(ECustomMaterialOutputType OutputType, int32& OutComponentCount);
 	bool IsMaterialAttributesType(const FString& InTypeName);
 	bool TryResolveCodeDeclaredType(const FString& InTypeName, int32& OutComponentCount, bool& bOutIsTexture);
+	bool TryResolveCodeDeclaredType(const FString& InTypeName, int32& OutComponentCount, bool& bOutIsTexture, ETextShaderTextureType& OutTextureType);
 	bool TryResolveOutputVariableComponentCount(
 		const FTextShaderDefinition& Definition,
 		const FString& VariableName,
 		int32& OutComponentCount,
 		bool& bOutIsTexture);
+	bool TryResolveOutputVariableComponentCount(
+		const FTextShaderDefinition& Definition,
+		const FString& VariableName,
+		int32& OutComponentCount,
+		bool& bOutIsTexture,
+		ETextShaderTextureType& OutTextureType);
 	bool CreateOrReuseMaterial(const FTextShaderDefinition& Definition, UMaterial*& OutMaterial, FString& OutError);
 	bool CreateOrReuseMaterialFunction(const FTextShaderMaterialFunctionDefinition& Definition, UMaterialFunction*& OutFunction, FString& OutError);
 	bool TryResolveMaterialFunctionParameterType(
@@ -243,6 +251,7 @@ namespace UE::DreamShader::Editor::Private
 		bool CreateMaterialAttributesValue(FCodeValue& OutValue, FString& OutError);
 		bool CreateDefaultValue(const FString& DeclaredType, FCodeValue& OutValue, FString& OutError);
 		bool CoerceValueToType(const FCodeValue& InValue, int32 ExpectedComponentCount, bool bExpectedTexture, FCodeValue& OutValue, FString& OutError);
+		bool CoerceValueToType(const FCodeValue& InValue, int32 ExpectedComponentCount, bool bExpectedTexture, ETextShaderTextureType ExpectedTextureType, FCodeValue& OutValue, FString& OutError);
 		bool EvaluateBraceInitializer(const FString& ConstructorType, const FString& InitializerText, FCodeValue& OutValue, FString& OutError);
 		bool ResolveTargetTypeForAssignment(const FCodeStatement& Statement, FString& OutTypeName, FString& OutError) const;
 		bool ResolveMaterialAttributesMemberType(const FString& MemberName, int32& OutComponentCount, FString& OutTypeName, FString& OutError) const;
