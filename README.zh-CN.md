@@ -327,7 +327,7 @@ git tag v1.3.7
 git push origin v1.3.7
 ```
 
-发布包名为 `DreamShader-<Version>.zip`，包含插件源码、资源、内置库、文档、README、CHANGELOG 和 LICENSE，不包含 `Binaries` / `Intermediate`。Release workflow 还会附带 `TypeDreamMoon/dreamshader-language-support` 的最新 VSCode 扩展资产。
+发布包名为 `DreamShader-<Version>.zip`，包含插件源码、资源、文档、README、CHANGELOG 和 LICENSE，不包含 `Binaries` / `Intermediate`。Release workflow 还会附带 `TypeDreamMoon/dreamshader-language-support` 的最新 VSCode 扩展资产。
 
 ## 项目信息
 

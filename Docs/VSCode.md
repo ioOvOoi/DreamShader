@@ -31,7 +31,6 @@ DreamShaderLang 的 VSCode 扩展位于：
 - `Path(...)` helper
 - `Root="Plugin."` / `Path(Plugins.)` 后的项目内容插件名
 - `ShaderFunction` / `VirtualFunction` Graph 调用名
-- `Builtin/*.dsh` import 路径
 - `DShader/Packages` package import 路径
 
 ### 作用域感知补全
@@ -46,7 +45,7 @@ DreamShaderLang 的 VSCode 扩展位于：
 
 - `import` 跳转到 `.dsh`
 - `Function` / `Namespace::Function` 跳转到定义
-- 项目头文件和插件内置头文件都会参与解析
+- 项目头文件和 Package 头文件都会参与解析
 
 ### Signature Help / Hover / References
 
@@ -152,8 +151,6 @@ Package store 配置：
 
 - `.dsm` 里写主逻辑
 - `.dsh` 里写共用 `Function` 或 `Namespace`
-- 常用共用能力可直接 `import "Builtin/Texture.dsh";`
-- 也可以直接导入 `Builtin/Math.dsh`、`Builtin/Color.dsh`、`Builtin/UV.dsh`、`Builtin/Noise.dsh`、`Builtin/SDF.dsh`、`Builtin/Normal.dsh`、`Builtin/PBR.dsh`、`Builtin/PostProcess.dsh`
 - 第三方 package 可直接 `import "@scope/package/Library/File.dsh";`
 - 尽量让 `Function` 名、参数名、输出名清晰稳定
 - 写 `Texture2D` 默认值时直接用 `Path(...)`，这样扩展和 Unreal 两侧都能识别

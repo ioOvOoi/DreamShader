@@ -81,7 +81,6 @@ jobs:
           $Items = @(
             'Source',
             'Resources',
-            'Library',
             'Docs',
             'DreamShader.uplugin',
             'README.md',

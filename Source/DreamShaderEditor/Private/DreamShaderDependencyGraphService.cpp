@@ -31,8 +31,7 @@ namespace UE::DreamShader::Editor::Private
 			const TArray<FString> RootDirectories =
 			{
 				UE::DreamShader::GetSourceShaderDirectory(),
-				UE::DreamShader::GetPackageShaderDirectory(),
-				UE::DreamShader::GetBuiltinShaderLibraryDirectory()
+				UE::DreamShader::GetPackageShaderDirectory()
 			};
 
 			FString BestRootDirectory;
@@ -152,8 +151,7 @@ namespace UE::DreamShader::Editor::Private
 		{
 			{ FPaths::Combine(FPaths::GetPath(CurrentFilePath), NormalizedImport), GetImportRootDirectoryForFile(CurrentFilePath) },
 			{ FPaths::Combine(UE::DreamShader::GetSourceShaderDirectory(), NormalizedImport), UE::DreamShader::GetSourceShaderDirectory() },
-			{ FPaths::Combine(UE::DreamShader::GetPackageShaderDirectory(), NormalizedImport), UE::DreamShader::GetPackageShaderDirectory() },
-			{ FPaths::Combine(UE::DreamShader::GetBuiltinShaderLibraryDirectory(), NormalizedImport), UE::DreamShader::GetBuiltinShaderLibraryDirectory() }
+			{ FPaths::Combine(UE::DreamShader::GetPackageShaderDirectory(), NormalizedImport), UE::DreamShader::GetPackageShaderDirectory() }
 		};
 
 		for (const FImportCandidate& Candidate : Candidates)

@@ -41,9 +41,6 @@ public:
 	FDirectoryPath SourceDirectory;
 
 	UPROPERTY(Config, EditAnywhere, Category="Paths", meta=(RelativeToGameDir))
-	FDirectoryPath BuiltinLibraryDirectory;
-
-	UPROPERTY(Config, EditAnywhere, Category="Paths", meta=(RelativeToGameDir))
 	FDirectoryPath GeneratedShaderDirectory;
 
 	UPROPERTY(Config, EditAnywhere, Category="Compiler")

@@ -463,7 +463,6 @@ Graph = {
 ```c
 import "Shared/Common.dsh";
 import "Functions/F_PulseTint.dsf";
-import "Builtin/Texture.dsh";
 import "@typedreammoon/dream-noise/Library/Noise.dsh";
 ```
 
@@ -473,7 +472,6 @@ import "@typedreammoon/dream-noise/Library/Noise.dsh";
 | --- | --- |
 | `"Shared/Common.dsh"` | 当前文件目录和项目 `DShader` 根目录。 |
 | `"Functions/F_PulseTint.dsf"` | 当前文件目录和项目 `DShader` 根目录。 |
-| `"Builtin/Texture.dsh"` | 插件内置库目录。 |
 | `"@scope/package/Library/File.dsh"` | 项目 `DShader/Packages`。 |
 
 规则：

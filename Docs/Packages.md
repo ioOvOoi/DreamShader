@@ -92,7 +92,6 @@ import "@typedreammoon/dream-noise/Library/Noise";
 - 当前文件相对路径
 - 项目 `DShader/`
 - 项目 `DShader/Packages/`
-- 插件内置 `Plugins/DreamShader/Library/`
 
 ## 5. VSCode 命令
 

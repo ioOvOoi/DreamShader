@@ -49,18 +49,6 @@ Moon_Dev/
 │              └─ Noise.dsh
 └─ Plugins/
    └─ DreamShader/
-      └─ Library/
-         └─ Builtin/
-            ├─ Common.dsh
-            ├─ Texture.dsh
-            ├─ Math.dsh
-            ├─ Color.dsh
-            ├─ UV.dsh
-            ├─ Noise.dsh
-            ├─ SDF.dsh
-            ├─ Normal.dsh
-            ├─ PBR.dsh
-            └─ PostProcess.dsh
 ```
 
 ## 基本工作流
@@ -100,7 +88,6 @@ Moon_Dev/
 - `Function Inline` / `Function SelfContained` 自包含模式。
 - `Namespace(Name="...") { Function ... }` 命名空间。
 - `import "Shared/Common.dsh";`
-- `import "Builtin/Texture.dsh";`
 - `import "@scope/package/Library/File.dsh";`
 - HLSL 风格类型与 GLSL 风格别名混用，例如 `float3` 与 `vec3`。
 - `Graph` 中的声明、赋值、构造、brace initializer、基础 `if` / `else`、独立函数调用。
