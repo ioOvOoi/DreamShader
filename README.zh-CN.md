@@ -1,100 +1,107 @@
-# DreamShader
+<p align="center">
+  <img alt="DreamShader banner" src="./Images/banner.png" />
+</p>
 
-[English](README.md) | [语法参考](Docs/LanguageReference.md) | [示例](Docs/Examples.md) | [Package](Docs/Packages.md) | [VSCode](Docs/VSCode.md)
+<table>
+  <tr>
+    <td width="64%" valign="top">
+      <h1>DreamShader</h1>
+      <p><strong>用 DreamShaderLang 以文本优先的方式编写 Unreal Engine 材质。</strong></p>
+      <p>
+        DreamShader 会把 <code>.dsm</code>、<code>.dsf</code> 和 <code>.dsh</code> 源文件转换为 Unreal
+        <code>UMaterial</code>、<code>UMaterialFunction</code>、Material Layer 和 Material Layer Blend 资产。
+      </p>
+      <p>
+        <img alt="Unreal Engine 5.7" src="https://img.shields.io/badge/Unreal%20Engine-5.7-313131" />
+        <img alt="Version 1.3.8" src="https://img.shields.io/badge/version-1.3.8-blue" />
+        <img alt="License MIT" src="https://img.shields.io/badge/license-MIT-green" />
+      </p>
+      <p>
+        <a href="README.md">English</a> |
+        <a href="Docs/LanguageReference.md">语法参考</a> |
+        <a href="Docs/Examples.md">示例</a> |
+        <a href="Docs/Packages.md">Package</a> |
+        <a href="Docs/VSCode.md">VSCode</a> |
+        <a href="CHANGELOG.md">Changelog</a>
+      </p>
+      <p>
+        <a href="https://github.com/TypeDreamMoon/DreamShader/issues">
+          <img alt="Issues" src="https://img.shields.io/github/issues/TypeDreamMoon/DreamShader" />
+        </a>
+        <a href="https://github.com/TypeDreamMoon/dreamshader-language-support/releases">
+          <img alt="VSCode Extension" src="https://img.shields.io/badge/VSCode-DreamShaderLang-007ACC" />
+        </a>
+        <a href="https://github.com/tsdaer/dreamshader-language-support">
+          <img alt="Rider Plugin" src="https://img.shields.io/badge/Rider-DreamShaderLang-7F52FF" />
+        </a>
+      </p>
+      <p><strong>QQ 群：</strong><a href="https://qm.qq.com/q/X9uCLjVcY">466585194</a></p>
+    </td>
+    <td width="36%" align="center" valign="middle">
+      <img src="./Images/character.png" width="260" alt="DreamShader character" />
+    </td>
+  </tr>
+</table>
 
-DreamShader 是一个 Unreal Engine 材质生成插件。它提供 `DreamShaderLang` 文本语言，让你用 `.dsm` / `.dsf` / `.dsh` 源文件描述材质、材质函数、Material Layer 和 Material Layer Blend，并自动生成对应的 Unreal 资产。
+> [!TIP]
+>
+> DreamShader 目前基于 Unreal Engine `5.7` 持续开发，其他 Unreal 版本尚未完整测试。
+>
+> 建议把所有 `.dsm`、`.dsf` 和 `.dsh` 源文件纳入版本管理。生成的 Unreal 资产可以随时从源文件重新生成。
+>
+> 反编译器定位是迁移辅助工具。它能处理很多常见材质和部分 Lyra 大型材质案例，但目前还不是完整稳定的双向往返系统。
 
+## 总览
 
+<p align="center">
+  <img alt="DreamShader workflow overview" src="./Images/workflow-overview.png" />
+</p>
 
-**Tip**
+| 工作流 | 语言能力 | 工具链 |
+| :----- | :------- | :----- |
+| 通过 `Shader` 生成 `UMaterial`。 | 使用 `Graph = { ... }` 编写面向材质节点的 DSL。 | 在 Unreal Editor 中保存源文件后自动刷新资产。 |
+| 通过 `ShaderFunction` 生成 `UMaterialFunction`。 | 使用 `Function`、`GraphFunction` 和 `Namespace` 编写 HLSL 风格 helper。 | 从编辑器工具栏打开生成的 VSCode workspace。 |
+| 生成原生 Material Layer 和 Layer Blend 函数资产。 | 使用 typed `Properties` 声明 scalar、vector、texture、switch、MPC 和反射节点属性。 | 从 Content Browser 将已有材质和材质函数导出为 `.dsm` / `.dsf` 初稿。 |
+| 通过 `VirtualFunction` 引用已有 Unreal 材质函数。 | 在 graph 代码中传递 `Texture2D`、`Texture2DArray`、`VolumeTexture` 和 `MaterialAttributes`。 | 配套 VSCode 扩展和 Rider 插件提供高亮、补全、导航、诊断和 Package 工具。 |
 
+## 快速开始
 
+1. 把插件复制到 Unreal 项目中：
 
-> 当前版本：`1.3.7`。
-> 
-> DreamShader 仍在持续开发中，核心工作流已经可用。建议把所有 `.dsm` / `.dsf` / `.dsh` 源文件纳入版本管理。
-> 
-> 本插件目前基于 Unreal Engine `5.7` 开发，其他版本尚未完整测试。
+   ```text
+   MyProject/Plugins/DreamShader/
+   ```
 
+2. 在 Unreal Editor 中启用 `DreamShader` 并重启编辑器。
+3. 在项目根目录创建源文件目录：
 
+   ```text
+   MyProject/DShader/
+   ```
 
-> 目前反编译器能通过Lyra的部分大型材质/材质函数测试 但是目前还并不稳定 请酌情使用，小型材质基本上都可以正常支持。有任何问题，请提交Issues
+4. 新建一个材质源文件，例如：
 
+   ```text
+   MyProject/DShader/Materials/M_Minimal.dsm
+   ```
 
+5. 保存文件后，DreamShader 会解析源文件并生成或更新目标 Unreal 资产。
 
-问题和 Bug 可以提交到 [Issues](https://github.com/TypeDreamMoon/DreamShader/issues/new)。需要更快的中文支持，也可以加入 [QQ群 466585194](https://qm.qq.com/q/X9uCLjVcY)。
-
-## 核心能力
-
-- 用文本源文件维护 Unreal 材质逻辑，减少重复手动连节点。
-- 通过 `Shader(Name="...")` 生成 `UMaterial`。
-- 通过 `ShaderFunction(Name="...")` 生成 `UMaterialFunction`。
-- 通过 `ShaderLayer(...)` / `ShaderLayerBlend(...)` 生成 Unreal 原生 Material Layer / Layer Blend 函数资产。
-- 通过 `VirtualFunction(...)` 声明已有 Unreal 材质函数，并在 DreamShader 图中调用，不生成、不保存、不覆盖原资产。
-- 使用 `Graph = { ... }` 编写图逻辑，支持变量、赋值、构造、`UE.*` 材质节点、函数调用和基础 `if` / `else` 图分支。
-- 使用 `Function`、`GraphFunction`、`Namespace` 编写可复用 HLSL 风格 helper。
-- 支持 `MaterialAttributes` 聚合值，以及 `Attrs.BaseColor = ...` 形式的成员写入。
-- 支持 typed `Properties`，包括参数节点、常量 helper、Texture Object、Static Switch、Material Parameter Collection 和 Unreal 反射属性块。
-- 支持 `.dsh` header、`.dsf` 函数文件 import graph 和 `DShader/Packages` 可复用包。
-- 支持从 Content Browser 将已有 `UMaterial` / `UMaterialFunction` 导出为 `.dsm` / `.dsf` 初稿，便于把手工节点图迁移到 DreamShader。
-- 配套 VSCode 扩展提供语法高亮、补全、跳转、Hover、Signature Help、诊断、Package 命令和 Unreal 桥接诊断。
-
-## 文件模型
-
-| 项目                 | 用途                                                                                          |
-| ------------------ | ------------------------------------------------------------------------------------------- |
-| `.dsm`             | 材质实现文件，通常包含 `Shader`、`ShaderFunction`、`ShaderLayer`、`ShaderLayerBlend` 或 `VirtualFunction`。 |
-| `.dsf`             | Dream Shader Function 文件，用于生成可复用 `ShaderFunction` 资产，并可被 `.dsm` 导入。                         |
-| `.dsh`             | 共享头文件，通常包含 `import`、`Function`、`GraphFunction`、`Namespace` 和 `VirtualFunction` 声明。          |
-| `Shader`           | 生成 Unreal `UMaterial`。                                                                      |
-| `ShaderFunction`   | 生成 Unreal `UMaterialFunction`。                                                              |
-| `ShaderLayer`      | 生成原生 `UMaterialFunctionMaterialLayer`。                                                      |
-| `ShaderLayerBlend` | 生成原生 `UMaterialFunctionMaterialLayerBlend`。                                                 |
-| `VirtualFunction`  | 描述已有 Unreal `UMaterialFunction`，供 `Graph` 调用。                                               |
-| `Graph`            | 用于生成材质节点的图 DSL。                                                                             |
-| `Function`         | 可复用 HLSL 风格 helper。                                                                         |
-| `GraphFunction`    | 可复用 Custom 节点 helper，可把 body 中的 `UE.*` 材质节点自动转成 Custom 输入。                                  |
-| `Namespace`        | 对 helper 分组，例如 `Texture::Sample2DRGB(...)`。                                                 |
-| `Path(...)`        | 声明纹理、对象设置或虚拟函数使用的 Unreal 资产路径。                                                              |
+配置位于 `Project Settings > DreamPlugin > Dream Shader`。
 
 推荐项目结构：
 
 ```text
 MyProject/
-├─ DShader/
-│  ├─ Materials/
-│  │  └─ M_Sample.dsm
-│  ├─ Shared/
-│  │  └─ Common.dsh
-│  └─ Packages/
-└─ Plugins/
-   └─ DreamShader/
+|- DShader/
+|  |- Materials/
+|  |  `- M_Sample.dsm
+|  |- Shared/
+|  |  `- Common.dsh
+|  `- Packages/
+`- Plugins/
+   `- DreamShader/
 ```
-
-## 快速开始
-
-1. 把插件复制到 Unreal 项目的 `Plugins/DreamShader`。
-2. 在 Unreal Editor 中启用插件并重启编辑器。
-3. 在项目根目录创建 `DShader` 目录。
-4. 新建 `.dsm` 文件，例如 `DShader/Materials/M_Minimal.dsm`。
-5. 保存文件后，DreamShader 会解析源文件并生成或更新目标 Unreal 资产。
-
-配置位于 `Project Settings > DreamPlugin > Dream Shader`。
-
-| 设置                         | 默认值                                         | 说明                                        |
-| -------------------------- | ------------------------------------------- | ----------------------------------------- |
-| `SourceDirectory`          | `DShader`                                   | DreamShader 源文件根目录。                       |
-| `GeneratedShaderDirectory` | `Intermediate/DreamShader/GeneratedShaders` | 生成 `.ush` helper 文件的目录。                   |
-| `AutoCompileOnSave`        | `true`                                      | 保存 `.dsm` / `.dsf` / `.dsh` 时刷新受影响资产。     |
-| `SaveDebounceSeconds`      | `0.25`                                      | 文件保存防抖时间。                                 |
-| `VerboseLogs`              | `false`                                     | 输出更详细日志。                                  |
-| `OpenInNewWindow`          | `true`                                      | 打开 DreamShader VSCode workspace 时默认使用新窗口。 |
-
-## 反编译导出
-
-在 Content Browser 右键 `Material` 或 `Material Function`，选择 `DreamShader > Export DSM/DSF`。导出的源文件会写入 `DShader/Decompiled/Materials` 或 `DShader/Decompiled/Functions`，并自动打开。
-
-第一版反编译面向迁移和二次编辑：常见参数、常量、算术、swizzle、纹理采样、Custom 节点和 MaterialFunctionCall 会尽量导出为 DreamShader 图代码；少见节点会用 `UE.Expression(...)` 保留可生成结构，复杂材质仍建议导出后人工整理。
 
 ## 最小材质
 
@@ -130,11 +137,33 @@ Shader(Name="DreamMaterials/M_Minimal", Root="Plugin.MyPlugin")
 }
 ```
 
-这会生成 Unreal object path `/MyPlugin/DreamMaterials/M_Minimal.M_Minimal`，并保存到 `[Project]/Plugins/MyPlugin/Content/DreamMaterials/M_Minimal.uasset`。
+这会生成 `/MyPlugin/DreamMaterials/M_Minimal.M_Minimal`，并保存到 `[Project]/Plugins/MyPlugin/Content/DreamMaterials/M_Minimal.uasset`。
+
+## 语言模型
+
+<p align="center">
+  <img alt="DreamShader language model" src="./Images/language-model.png" />
+</p>
+
+| 项目 | 用途 |
+| :--- | :--- |
+| `.dsm` | 材质实现文件，通常包含 `Shader`、`ShaderFunction`、`ShaderLayer`、`ShaderLayerBlend` 或 `VirtualFunction`。 |
+| `.dsf` | Dream Shader Function 文件，用于生成可复用 `ShaderFunction` 资产，并可被 `.dsm` 导入。 |
+| `.dsh` | 共享头文件，通常包含 `import`、`Function`、`GraphFunction`、`Namespace` 和 `VirtualFunction` 声明。 |
+| `Shader` | 生成 Unreal `UMaterial`。 |
+| `ShaderFunction` | 生成 Unreal `UMaterialFunction`。 |
+| `ShaderLayer` | 生成原生 `UMaterialFunctionMaterialLayer`。 |
+| `ShaderLayerBlend` | 生成原生 `UMaterialFunctionMaterialLayerBlend`。 |
+| `VirtualFunction` | 描述已有 Unreal `UMaterialFunction`，供 `Graph` 调用。 |
+| `Graph` | 用于生成材质节点的图 DSL。 |
+| `Function` | 可复用 HLSL 风格 helper。 |
+| `GraphFunction` | 可复用 Custom 节点 helper，可把 body 中的 `UE.*` 材质节点自动转成 Custom 输入。 |
+| `Namespace` | 对 helper 分组，例如 `Texture::Sample2DRGB(...)`。 |
+| `Path(...)` | 声明纹理、对象设置或虚拟函数使用的 Unreal 资产路径。 |
 
 ## Properties
 
-`Properties` 可以使用 `float`、`float3`、`Texture2D` 等简写，也可以显式声明 Unreal 参数节点。声明尾部的 `[...]` 块会通过反射写入 Unreal 表达式属性。
+`Properties` 可以使用 `float`、`float3`、`Texture2D`、`Texture2DArray` 和 `VolumeTexture` 等简写，也可以显式声明 Unreal 参数节点。声明尾部的 `[...]` 块会通过反射写入 Unreal 表达式属性。
 
 ```c
 Properties = {
@@ -183,7 +212,7 @@ Graph = {
 }
 ```
 
-`Function` 是 HLSL 风格可复用代码，适合复杂计算、循环，以及应该放进 Custom 节点的逻辑。
+`Function` 是 HLSL 风格可复用代码，适合计算、循环，以及应该放进 Custom 节点的逻辑。
 
 ```c
 Namespace(Name="Color")
@@ -206,7 +235,9 @@ Graph = {
 
 `GraphFunction` 同样会生成 Custom 节点，但它的 body 中可以直接写 `UE.*` 调用。DreamShader 会先创建对应 Unreal 材质节点，再把节点输出作为自动输入引脚接入 Custom 节点。
 
-## MaterialAttributes
+## 材质工作流
+
+### MaterialAttributes
 
 `MaterialAttributes` 可以作为 Graph 值、函数输出、虚拟函数输出和材质输出绑定使用。当 `Shader` 绑定到 `Base.MaterialAttributes` 时，DreamShader 会自动启用 Unreal 材质的 `Use Material Attributes`。
 
@@ -222,7 +253,7 @@ Graph = {
 }
 ```
 
-## Material Layer
+### Material Layer
 
 `ShaderLayer` 和 `ShaderLayerBlend` 会生成 Unreal 原生 Material Layer 函数资产。
 
@@ -249,9 +280,9 @@ ShaderLayer(Name="Layers/L_SimpleSurface")
 - `ShaderLayerBlend` 必须至少声明两个 `MaterialAttributes` 输入。
 - 旧语法 `MaterialLayer(...)` 和 `MaterialLayerBlend(...)` 仍可解析，但会产生废弃警告。
 
-当前支持的是原生 Layer Function 资产生成；完整 Material Layer Stack / Layer Instance 工作流仍在 Roadmap 中。
+当前支持的是原生 Layer Function 资产生成；完整 Material Layer Stack 和 Layer Instance 工作流仍在 Roadmap 中。
 
-## VirtualFunction
+### VirtualFunction
 
 `VirtualFunction` 用于把已有 Unreal `UMaterialFunction` 暴露给 DreamShader，不生成、不保存、不覆盖对应资产。
 
@@ -279,7 +310,19 @@ Graph = {
 
 Unreal Material Function 资产右键菜单和编辑器工具栏中会提供 DreamShader 操作，用于复制虚拟函数定义、创建 `.dsh` 声明文件、打开已有声明，以及复制调用示例。
 
-## Package
+## 编辑器工具
+
+<p align="center">
+  <img alt="DreamShader editor tools" src="./Images/editor-tools.png" />
+</p>
+
+### 反编译导出
+
+在 Content Browser 右键 `Material` 或 `Material Function`，选择 `DreamShader > Export DSM/DSF`。导出的源文件会写入 `DShader/Decompiled/Materials` 或 `DShader/Decompiled/Functions`，并自动打开。
+
+反编译面向迁移和二次编辑：常见参数、常量、算术、swizzle、纹理采样、Custom 节点和 MaterialFunctionCall 会尽量导出为 DreamShader 图代码；少见节点会用 `UE.Expression(...)` 保留可生成结构。
+
+### Package
 
 DreamShader Package 是可复用 `.dsh` 函数库，安装位置为：
 
@@ -295,50 +338,53 @@ import "@typedreammoon/dream-noise/Library/Noise.dsh";
 
 Package 结构、锁文件、安装命令和包开发方式见 [Docs/Packages.md](Docs/Packages.md)。
 
-## VSCode 扩展
+### 编辑器语言插件
 
-DreamShaderLang VSCode 扩展提供：
+DreamShaderLang 目前提供 VSCode 和 JetBrains Rider 两套编辑器支持。
 
-- `.dsm` / `.dsh` 语法高亮和 snippets。
-- block、section、helper、`UE.*`、`Path(...)`、Package import 和 Unreal 桥接数据补全。
-- Go to Definition、Find References、Hover、Signature Help。
-- 本地诊断和 Unreal 桥接诊断。
-- Package 安装、更新、移除和浏览命令。
-- 快速创建材质、头文件、纹理采样和噪声材质模板。
+| 编辑器 | 仓库 | 主要能力 |
+| :----- | :--- | :------- |
+| VSCode | [TypeDreamMoon/dreamshader-language-support](https://github.com/TypeDreamMoon/dreamshader-language-support/releases) | 语法高亮、snippets、补全、Go to Definition、Find References、Hover、Signature Help、本地诊断、Unreal 桥接诊断、Package 命令和快速模板。 |
+| Rider | [tsdaer/dreamshader-language-support](https://github.com/tsdaer/dreamshader-language-support) | `.dsm` / `.dsf` / `.dsh` 文件类型、语法和 PSI 解析、高亮、补全、导航、诊断、Unreal Bridge 集成、语义 token、inlay hints 和 Package 工具。 |
 
 Unreal 编辑器的 `Tools > DreamShader` 菜单和 DreamShader 工具栏可以打开生成的 `DShader/DreamShader.code-workspace`。
 
 扩展发布地址：[dreamshader-language-support](https://github.com/TypeDreamMoon/dreamshader-language-support/releases)。
 
-## 文档
+## 配置
 
-- [文档总览](Docs/README.md)
-- [语法参考](Docs/LanguageReference.md)
-- [示例与模式](Docs/Examples.md)
-- [Package 系统](Docs/Packages.md)
-- [VSCode 支持](Docs/VSCode.md)
+| 设置 | 默认值 | 说明 |
+| :--- | :----- | :--- |
+| `SourceDirectory` | `DShader` | DreamShader 源文件根目录。 |
+| `GeneratedShaderDirectory` | `Intermediate/DreamShader/GeneratedShaders` | 生成 `.ush` helper 文件的目录。 |
+| `AutoCompileOnSave` | `true` | 保存 `.dsm`、`.dsf` 或 `.dsh` 时刷新受影响资产。 |
+| `SaveDebounceSeconds` | `0.25` | 文件保存防抖时间。 |
+| `VerboseLogs` | `false` | 输出更详细日志。 |
+| `OpenInNewWindow` | `true` | 打开 DreamShader VSCode workspace 时默认使用新窗口。 |
 
 ## 发布
 
 仓库包含 GitHub Actions 自动发布流程。推送与 `DreamShader.uplugin` 中 `VersionName` 一致的 tag 即可：
 
 ```powershell
-git tag v1.3.7
-git push origin v1.3.7
+git tag v1.3.8
+git push origin v1.3.8
 ```
 
 发布包名为 `DreamShader-<Version>.zip`，包含插件源码、资源、文档、README、CHANGELOG 和 LICENSE，不包含 `Binaries` / `Intermediate`。Release workflow 还会附带 `TypeDreamMoon/dreamshader-language-support` 的最新 VSCode 扩展资产。
 
 ## 项目信息
 
-| 项目        | 内容                                                     |
-| --------- | ------------------------------------------------------ |
-| Version   | `1.3.7`                                                |
-| Language  | `DreamShaderLang`                                      |
-| Author    | TypeDreamMoon                                          |
-| GitHub    | <https://github.com/TypeDreamMoon>                     |
-| Docs      | <https://lang.64hz.cn/>                                |
-| Web       | <https://dev.64hz.cn>                                  |
+| 项目 | 内容 |
+| :--- | :--- |
+| Version | `1.3.8` |
+| Language | `DreamShaderLang` |
+| Unreal Engine | `5.7` |
+| Author | TypeDreamMoon |
+| GitHub | <https://github.com/TypeDreamMoon> |
+| Docs | <https://lang.64hz.cn/> |
+| Web | <https://dev.64hz.cn> |
+| License | [MIT](LICENSE) |
 | Copyright | Copyright (c) 2026 TypeDreamMoon. All rights reserved. |
 
 ## Roadmap
@@ -348,3 +394,9 @@ git push origin v1.3.7
 - 完整 Substrate 支持。
 - 更深入的 Material Layer 工作流支持。
 - 更深入的 Moon Engine 集成。参考：<https://zhuanlan.zhihu.com/p/21979494450>
+
+## License
+
+DreamShader 使用 [MIT license](LICENSE) 发布。
+
+问题和功能请求可以提交到 [Issues](https://github.com/TypeDreamMoon/DreamShader/issues/new)。

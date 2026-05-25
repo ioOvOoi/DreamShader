@@ -1,5 +1,16 @@
 # DreamShader ChangeLog
 
+## 1.3.8 - 2026-05-25
+
+### Texture Support
+
+- Added `VolumeTexture` property parsing, code generation, and default texture handling.
+- Preserved texture object subtypes during code generation so `Texture2D`, `Texture2DArray`, and `VolumeTexture` inputs are passed to generated HLSL with the correct Unreal texture type.
+
+### Plugin Cleanup
+
+- Removed built-in shader library path support from project settings and documentation.
+
 ## 1.3.7 - 2026-05-18
 
 ### Decompiler
