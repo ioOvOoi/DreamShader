@@ -98,6 +98,9 @@ namespace UE::DreamShader::Editor::Private
 		bool bIsExpressionStatement = false;
 		bool bIsIfStatement = false;
 		bool bUsesBraceInitializer = false;
+		bool bHasSourceLocation = false;
+		int32 SourceLine = 1;
+		int32 SourceColumn = 1;
 		FString DeclaredType;
 		FString TargetName;
 		FString InitializerText;
@@ -112,13 +115,23 @@ namespace UE::DreamShader::Editor::Private
 		UMaterialExpression* Expression = nullptr;
 		int32 OutputIndex = 0;
 		int32 ComponentCount = 1;
+		bool bHasInputMask = false;
+		bool InputMaskR = false;
+		bool InputMaskG = false;
+		bool InputMaskB = false;
+		bool InputMaskA = false;
 		bool bIsTextureObject = false;
 		ETextShaderTextureType TextureType = ETextShaderTextureType::Texture2D;
 		bool bIsMaterialAttributes = false;
 	};
 
 	bool ParseCodeExpression(const FString& InExpression, TSharedPtr<FCodeExpression>& OutExpression, FString& OutError);
-	bool ParseCodeStatements(const FString& InCode, TArray<FCodeStatement>& OutStatements, FString& OutError);
+	bool ParseCodeStatements(
+		const FString& InCode,
+		TArray<FCodeStatement>& OutStatements,
+		FString& OutError,
+		int32* OutErrorLine = nullptr,
+		int32* OutErrorColumn = nullptr);
 	bool MakeCodeDeclarationStatement(
 		const FString& DeclaredType,
 		const FString& TargetName,
@@ -155,6 +168,12 @@ namespace UE::DreamShader::Editor::Private
 	bool WriteGeneratedInclude(const FString& SourceFilePath, const FTextShaderDefinition& Definition, FString& OutError);
 	void ClearMaterialExpressions(UMaterial* Material);
 	void ClearMaterialFunctionExpressions(UMaterialFunction* MaterialFunction);
+	FCodeValue CreateOutputRerouteValue(
+		UMaterial* Material,
+		UMaterialFunction* MaterialFunction,
+		const FCodeValue& SourceValue,
+		const FString& RouteName,
+		int32 RouteIndex);
 	void LayoutGeneratedExpressions(UMaterial* Material, UMaterialFunction* MaterialFunction);
 	void ResetMaterialToDefaults(UMaterial* Material);
 	bool ValidateSettings(const FTextShaderDefinition& Definition, FString& OutError);
@@ -220,7 +239,10 @@ namespace UE::DreamShader::Editor::Private
 			const FTextShaderDefinition& InDefinition,
 			const FString& InSourceFilePath,
 			const FString& InIncludeVirtualPath,
-			const TArray<FTextShaderPropertyDefinition>* InLocalProperties = nullptr);
+			const TArray<FTextShaderPropertyDefinition>* InLocalProperties = nullptr,
+			const FString& InCodeSourceFilePath = FString(),
+			int32 InCodeStartLine = 1,
+			int32 InCodeStartColumn = 1);
 
 		bool Build(
 			const TArray<FCodeStatement>& Statements,
@@ -235,8 +257,12 @@ namespace UE::DreamShader::Editor::Private
 		const TArray<FTextShaderPropertyDefinition>* LocalProperties = nullptr;
 		FString SourceFilePath;
 		FString IncludeVirtualPath;
+		FString CodeSourceFilePath;
+		int32 CodeStartLine = 1;
+		int32 CodeStartColumn = 1;
 		TMap<FString, FCodeValue>* Values = nullptr;
 		TMap<FString, UMaterialExpression*> GeneratedPropertyExpressions;
+		TMap<FString, FCodeValue> ReusableExpressionValues;
 		TSet<FString> CreatingPropertyNames;
 		int32 NextPropertyNodeY = -620;
 		int32 NextNodeY = -120;
@@ -247,7 +273,7 @@ namespace UE::DreamShader::Editor::Private
 		bool TryCreatePropertyValue(const FString& Name, FCodeValue& OutValue, FString& OutError);
 		int32 ConsumeNodeY();
 		UMaterialExpression* CreateExpression(TSubclassOf<UMaterialExpression> ExpressionClass, int32 PositionX, int32 PositionY) const;
-		UMaterialExpression* CreateScalarLiteralNode(double Value, int32 PositionY) const;
+		UMaterialExpression* CreateScalarLiteralNode(double Value, int32 PositionY);
 		bool CreateMaterialAttributesValue(FCodeValue& OutValue, FString& OutError);
 		bool CreateDefaultValue(const FString& DeclaredType, FCodeValue& OutValue, FString& OutError);
 		bool CoerceValueToType(const FCodeValue& InValue, int32 ExpectedComponentCount, bool bExpectedTexture, FCodeValue& OutValue, FString& OutError);
@@ -269,6 +295,7 @@ namespace UE::DreamShader::Editor::Private
 		const FCodeCallArgument* FindPositionalArgument(const TArray<FCodeCallArgument>& Arguments, int32 PositionIndex) const;
 		bool ExecuteExpressionStatement(const TSharedPtr<FCodeExpression>& Expression, FString& OutError);
 		bool ExecuteStatement(const FCodeStatement& Statement, FString& OutError);
+		FString FormatStatementError(const FCodeStatement& Statement, const FString& Error) const;
 		bool ExecuteIfStatement(const FCodeStatement& Statement, FString& OutError);
 		bool CreateConditionalValue(
 			const FCodeCondition& Condition,
@@ -286,6 +313,20 @@ namespace UE::DreamShader::Editor::Private
 			FCodeValue& OutValue,
 			FString& OutError);
 		bool EvaluateMathBuiltinCall(const FString& FunctionName, const TArray<FCodeCallArgument>& Arguments, FCodeValue& OutValue, FString& OutError);
+		bool TryBuildReusableCallKey(
+			const FString& CallKind,
+			const FString& FunctionName,
+			const TArray<FCodeCallArgument>& Arguments,
+			FString& OutKey) const;
+		bool TryBuildReusableCallKey(
+			const FString& CallKind,
+			const FString& FunctionName,
+			const TArray<FCodeCallArgument>& Arguments,
+			const TSet<FString>& ExcludedNormalizedArgumentNames,
+			FString& OutKey) const;
+		bool BuildReusableExpressionToken(const TSharedPtr<FCodeExpression>& Expression, FString& OutToken) const;
+		bool TryFindReusableExpressionValue(const FString& Key, FCodeValue& OutValue) const;
+		void AddReusableExpressionValue(const FString& Key, const FCodeValue& Value);
 		bool EvaluateMemberAccess(const TSharedPtr<FCodeExpression>& Expression, FCodeValue& OutValue, FString& OutError);
 		bool CreateSingleChannelMask(
 			const FCodeValue& BaseValue,

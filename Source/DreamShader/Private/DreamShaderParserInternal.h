@@ -21,6 +21,7 @@ namespace UE::DreamShader::Private
 		bool ParseSimpleValue(FString& OutValue, FString& OutError);
 		bool ParseAttributes(TMap<FString, FString>& OutAttributes, FString& OutError);
 		bool ExtractBalancedBlock(FString& OutBlock, FString& OutError);
+		bool ExtractBalancedBlock(FString& OutBlock, int32& OutContentStartIndex, FString& OutError);
 	};
 
 	FString RemoveComments(const FString& Input);
@@ -52,8 +53,8 @@ namespace UE::DreamShader::Private
 		TArray<FTextShaderOutputBinding>& OutOutputs,
 		FString& OutError);
 	bool ParseTypedParameterStatements(const FString& BlockContent, TArray<FTextShaderFunctionParameter>& OutParameters, FString& OutError);
-	bool ParseShaderBody(const FString& BodyContent, FTextShaderDefinition& OutDefinition, FString& OutError);
+	bool ParseShaderBody(const FString& BodyContent, int32 BodyContentStartIndex, FTextShaderDefinition& OutDefinition, FString& OutError);
 	bool ParseFunctionBody(const FString& BodyContent, FTextShaderFunctionDefinition& OutFunction, FString& OutError);
-	bool ParseMaterialFunctionBody(const FString& BodyContent, FTextShaderMaterialFunctionDefinition& OutFunction, FString& OutError);
+	bool ParseMaterialFunctionBody(const FString& BodyContent, int32 BodyContentStartIndex, FTextShaderMaterialFunctionDefinition& OutFunction, FString& OutError);
 	bool ParseVirtualFunctionBody(const FString& BodyContent, FTextShaderVirtualFunctionDefinition& OutFunction, FString& OutError);
 }

@@ -59,12 +59,63 @@
 
 namespace UE::DreamShader::Editor::Private
 {
+	inline FString NormalizeCodeReuseLiteralText(FString Text)
+	{
+		Text.TrimStartAndEndInline();
+		Text.ReplaceInline(TEXT("\r\n"), TEXT("\n"));
+		while (Text.Contains(TEXT("  ")))
+		{
+			Text.ReplaceInline(TEXT("  "), TEXT(" "));
+		}
+		return Text;
+	}
+
 	inline void ConnectCodeValueToInput(FExpressionInput& Input, const FCodeValue& Value)
 	{
 		if (Value.Expression)
 		{
 			Input.Connect(Value.OutputIndex, Value.Expression);
+			Input.Mask = 0;
+			Input.MaskR = 0;
+			Input.MaskG = 0;
+			Input.MaskB = 0;
+			Input.MaskA = 0;
+			if (Value.bHasInputMask)
+			{
+				Input.Mask = 1;
+				Input.MaskR = Value.InputMaskR ? 1 : 0;
+				Input.MaskG = Value.InputMaskG ? 1 : 0;
+				Input.MaskB = Value.InputMaskB ? 1 : 0;
+				Input.MaskA = Value.InputMaskA ? 1 : 0;
+			}
 		}
+	}
+
+	inline void ClearCodeValueInputMask(FCodeValue& Value)
+	{
+		Value.bHasInputMask = false;
+		Value.InputMaskR = false;
+		Value.InputMaskG = false;
+		Value.InputMaskB = false;
+		Value.InputMaskA = false;
+	}
+
+	inline bool ApplyCodeValueInputMask(FCodeValue& Value, const int32 ChannelMask, const int32 ComponentCount)
+	{
+		if (ChannelMask == 0 || ComponentCount <= 0 || ComponentCount > 4)
+		{
+			return false;
+		}
+
+		Value.bHasInputMask = true;
+		Value.InputMaskR = (ChannelMask & 0x1) != 0;
+		Value.InputMaskG = (ChannelMask & 0x2) != 0;
+		Value.InputMaskB = (ChannelMask & 0x4) != 0;
+		Value.InputMaskA = (ChannelMask & 0x8) != 0;
+		Value.ComponentCount = ComponentCount;
+		Value.bIsTextureObject = false;
+		Value.bIsMaterialAttributes = false;
+		return true;
 	}
 
 	inline bool TryResolveExpressionOutputIndex(const UMaterialExpression* Expression, const FString& OutputSpecifier, int32& OutIndex)

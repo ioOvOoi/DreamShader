@@ -113,6 +113,7 @@ namespace UE::DreamShader
 		TArray<FTextShaderFunctionParameter> Outputs;
 		TMap<FString, FString> Settings;
 		FString Code;
+		int32 CodeStartIndex = INDEX_NONE;
 		FString HLSL;
 	};
 
@@ -134,6 +135,7 @@ namespace UE::DreamShader
 		TArray<FTextShaderVariableDeclaration> OutputDeclarations;
 		TArray<FTextShaderOutputBinding> Outputs;
 		FString Code;
+		int32 CodeStartIndex = INDEX_NONE;
 		FString HLSL;
 		TArray<FTextShaderFunctionDefinition> Functions;
 		TArray<FTextShaderFunctionDefinition> GraphFunctions;

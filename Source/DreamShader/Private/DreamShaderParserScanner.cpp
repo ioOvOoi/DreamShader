@@ -219,6 +219,12 @@ namespace UE::DreamShader::Private
 
 	bool FScanner::ExtractBalancedBlock(FString& OutBlock, FString& OutError)
 	{
+		int32 ContentStartIndex = INDEX_NONE;
+		return ExtractBalancedBlock(OutBlock, ContentStartIndex, OutError);
+	}
+
+	bool FScanner::ExtractBalancedBlock(FString& OutBlock, int32& OutContentStartIndex, FString& OutError)
+	{
 		SkipIgnored();
 		if (Peek() != TCHAR('{'))
 		{
@@ -228,6 +234,7 @@ namespace UE::DreamShader::Private
 
 		++Index;
 		const int32 BlockStart = Index;
+		OutContentStartIndex = BlockStart;
 		int32 Depth = 1;
 
 		bool bInString = false;

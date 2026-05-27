@@ -574,12 +574,13 @@ namespace UE::DreamShader
 				}
 
 				FString BodyContent;
-				if (!Scanner.ExtractBalancedBlock(BodyContent, OutError))
+				int32 BodyContentStartIndex = INDEX_NONE;
+				if (!Scanner.ExtractBalancedBlock(BodyContent, BodyContentStartIndex, OutError))
 				{
 					return false;
 				}
 
-				if (!Private::ParseShaderBody(BodyContent, OutDefinition, OutError))
+				if (!Private::ParseShaderBody(BodyContent, BodyContentStartIndex, OutDefinition, OutError))
 				{
 					return false;
 				}
@@ -728,12 +729,13 @@ namespace UE::DreamShader
 				}
 
 				FString BodyContent;
-				if (!Scanner.ExtractBalancedBlock(BodyContent, OutError))
+				int32 BodyContentStartIndex = INDEX_NONE;
+				if (!Scanner.ExtractBalancedBlock(BodyContent, BodyContentStartIndex, OutError))
 				{
 					return false;
 				}
 
-				if (!Private::ParseMaterialFunctionBody(BodyContent, Function, OutError))
+				if (!Private::ParseMaterialFunctionBody(BodyContent, BodyContentStartIndex, Function, OutError))
 				{
 					return false;
 				}

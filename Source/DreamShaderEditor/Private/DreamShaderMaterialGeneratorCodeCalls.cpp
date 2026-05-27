@@ -241,7 +241,7 @@ namespace UE::DreamShader::Editor::Private
 
 		CustomExpression->Description = Function->Name;
 		CustomExpression->OutputType = ResultOutputType;
-		CustomExpression->ShowCode = true;
+		CustomExpression->ShowCode = false;
 		CustomExpression->Inputs.Reset();
 		CustomExpression->AdditionalOutputs.Reset();
 		CustomExpression->IncludeFilePaths.Reset();
@@ -493,7 +493,7 @@ namespace UE::DreamShader::Editor::Private
 
 		CustomExpression->Description = Function.Name;
 		CustomExpression->OutputType = PrimaryOutputType;
-		CustomExpression->ShowCode = true;
+		CustomExpression->ShowCode = false;
 		CustomExpression->Inputs.Reset();
 		CustomExpression->AdditionalOutputs.Reset();
 		CustomExpression->IncludeFilePaths.Reset();
@@ -785,7 +785,7 @@ namespace UE::DreamShader::Editor::Private
 
 		CustomExpression->Description = Function.Name;
 		CustomExpression->OutputType = PrimaryOutputType;
-		CustomExpression->ShowCode = true;
+		CustomExpression->ShowCode = false;
 		CustomExpression->Inputs.Reset();
 		CustomExpression->AdditionalOutputs.Reset();
 		CustomExpression->IncludeFilePaths.Reset();
@@ -1524,6 +1524,113 @@ namespace UE::DreamShader::Editor::Private
 		FCodeValue& OutValue,
 		FString& OutError)
 	{
+		auto TryInlineBreakOutFunction = [&]() -> bool
+		{
+			if (!CallKind.Equals(TEXT("VirtualFunction"), ESearchCase::IgnoreCase)
+				|| !(FunctionName.Equals(TEXT("BreakOutFloat2Components"), ESearchCase::IgnoreCase)
+					|| FunctionName.Equals(TEXT("BreakOutFloat3Components"), ESearchCase::IgnoreCase)
+					|| FunctionName.Equals(TEXT("BreakOutFloat4Components"), ESearchCase::IgnoreCase)))
+			{
+				return false;
+			}
+
+			const FCodeCallArgument* InputArgument = FindPositionalArgument(Arguments, 0);
+			if (!InputArgument && !Inputs.IsEmpty())
+			{
+				InputArgument = FindNamedArgument(Arguments, *Inputs[0].Name);
+			}
+			if (!InputArgument || IsDefaultArgument(InputArgument->Expression))
+			{
+				return false;
+			}
+
+			const FCodeCallArgument* OutputArgument = FindNamedArgument(Arguments, TEXT("Output"));
+			const FCodeCallArgument* OutputIndexOnlyArgument = FindNamedArgument(Arguments, TEXT("OutputIndex"));
+			if (OutputArgument && OutputIndexOnlyArgument)
+			{
+				return false;
+			}
+
+			bool bOutputIndexArgument = false;
+			if (!OutputArgument)
+			{
+				OutputArgument = FindNamedArgument(Arguments, TEXT("OutputName"));
+				if (OutputArgument && OutputIndexOnlyArgument)
+				{
+					return false;
+				}
+			}
+			if (!OutputArgument)
+			{
+				OutputArgument = OutputIndexOnlyArgument;
+				bOutputIndexArgument = OutputArgument != nullptr;
+			}
+			if (!OutputArgument)
+			{
+				return false;
+			}
+
+			int32 OutputChannelIndex = INDEX_NONE;
+			if (bOutputIndexArgument)
+			{
+				if (!TryExtractIntegerLiteral(OutputArgument->Expression, OutputChannelIndex)
+					|| !Outputs.IsValidIndex(OutputChannelIndex))
+				{
+					return false;
+				}
+			}
+			else
+			{
+				FString OutputText;
+				if (!TryExtractLiteralText(OutputArgument->Expression, OutputText))
+				{
+					return false;
+				}
+				OutputText.TrimStartAndEndInline();
+
+				if (ParseIntegerLiteral(OutputText, OutputChannelIndex))
+				{
+					if (!Outputs.IsValidIndex(OutputChannelIndex))
+					{
+						return false;
+					}
+				}
+				else
+				{
+					for (int32 CandidateIndex = 0; CandidateIndex < Outputs.Num(); ++CandidateIndex)
+					{
+						if (Outputs[CandidateIndex].Name.Equals(OutputText, ESearchCase::IgnoreCase))
+						{
+							OutputChannelIndex = CandidateIndex;
+							break;
+						}
+					}
+				}
+			}
+
+			static const TCHAR* Swizzles[] = { TEXT("r"), TEXT("g"), TEXT("b"), TEXT("a") };
+			if (OutputChannelIndex < 0 || OutputChannelIndex >= UE_ARRAY_COUNT(Swizzles))
+			{
+				return false;
+			}
+
+			FCodeValue InputValue;
+			if (!EvaluateExpression(InputArgument->Expression, InputValue, OutError))
+			{
+				return true;
+			}
+			if (!CreateSwizzleExpression(InputValue, Swizzles[OutputChannelIndex], OutValue, OutError))
+			{
+				return true;
+			}
+			return true;
+		};
+
+		if (TryInlineBreakOutFunction())
+		{
+			return OutError.IsEmpty();
+		}
+
 		const FCodeCallArgument* OutputNameArgument = FindNamedArgument(Arguments, TEXT("Output"));
 		if (!OutputNameArgument)
 		{
@@ -1553,18 +1660,63 @@ namespace UE::DreamShader::Editor::Private
 			InputArguments.Add(Argument);
 		}
 
+		FString FunctionCallReuseKey;
+		FString OutputReuseKey;
+		if (TryBuildReusableCallKey(CallKind, FunctionName, InputArguments, FunctionCallReuseKey))
+		{
+			FunctionCallReuseKey = FString::Printf(TEXT("%s|Asset=%s"), *FunctionCallReuseKey, *ObjectPath);
+			if (OutputNameArgument)
+			{
+				FString OutputNameText;
+				if (TryExtractLiteralText(OutputNameArgument->Expression, OutputNameText))
+				{
+					OutputReuseKey = FunctionCallReuseKey + FString::Printf(TEXT("|OutputName=%s"), *NormalizeCodeReuseLiteralText(OutputNameText));
+				}
+			}
+			else if (OutputIndexArgument)
+			{
+				FString OutputIndexText;
+				if (TryExtractLiteralText(OutputIndexArgument->Expression, OutputIndexText))
+				{
+					OutputReuseKey = FunctionCallReuseKey + FString::Printf(TEXT("|OutputIndex=%s"), *NormalizeCodeReuseLiteralText(OutputIndexText));
+				}
+			}
+			else if (Outputs.Num() == 1)
+			{
+				OutputReuseKey = FunctionCallReuseKey + TEXT("|OutputIndex=0");
+			}
+			if (TryFindReusableExpressionValue(OutputReuseKey, OutValue))
+			{
+				return true;
+			}
+		}
+
 		UMaterialExpressionMaterialFunctionCall* FunctionCall = nullptr;
-		if (!CreateAndConnectMaterialFunctionCallAsset(
-			CallKind,
-			FunctionName,
-			ObjectPath,
-			Inputs,
-			Outputs,
-			InputArguments,
-			FunctionCall,
-			OutError))
+		FCodeValue ReusableFunctionCallValue;
+		if (TryFindReusableExpressionValue(FunctionCallReuseKey, ReusableFunctionCallValue))
+		{
+			FunctionCall = Cast<UMaterialExpressionMaterialFunctionCall>(ReusableFunctionCallValue.Expression);
+		}
+		if (!FunctionCall
+			&& !CreateAndConnectMaterialFunctionCallAsset(
+				CallKind,
+				FunctionName,
+				ObjectPath,
+				Inputs,
+				Outputs,
+				InputArguments,
+				FunctionCall,
+				OutError))
 		{
 			return false;
+		}
+		if (!FunctionCallReuseKey.IsEmpty() && FunctionCall)
+		{
+			FCodeValue FunctionCallValue;
+			FunctionCallValue.Expression = FunctionCall;
+			FunctionCallValue.OutputIndex = 0;
+			FunctionCallValue.ComponentCount = 0;
+			AddReusableExpressionValue(FunctionCallReuseKey, FunctionCallValue);
 		}
 
 		int32 OutputIndex = 0;
@@ -1648,6 +1800,7 @@ namespace UE::DreamShader::Editor::Private
 		OutValue.bIsTextureObject = bIsTextureObject;
 		OutValue.TextureType = TextureType;
 		OutValue.bIsMaterialAttributes = IsMaterialAttributesComponentType(OutputComponents, bIsTextureObject);
+		AddReusableExpressionValue(OutputReuseKey, OutValue);
 		return true;
 	}
 

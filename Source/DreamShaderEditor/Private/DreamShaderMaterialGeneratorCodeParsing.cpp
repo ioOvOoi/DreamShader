@@ -2,79 +2,56 @@
 
 namespace UE::DreamShader::Editor::Private
 {
-	static FString RemoveComments(const FString& Input)
+	struct FCodeStatementText
 	{
-		FString Output;
-		Output.Reserve(Input.Len());
-
-		bool bInString = false;
-		bool bInLineComment = false;
-		bool bInBlockComment = false;
-
-		for (int32 Index = 0; Index < Input.Len(); ++Index)
+		FCodeStatementText() = default;
+		FCodeStatementText(const FString& InText, const int32 InLine, const int32 InColumn)
+			: Text(InText)
+			, Line(InLine)
+			, Column(InColumn)
 		{
-			const TCHAR Char = Input[Index];
-			const TCHAR Next = Input.IsValidIndex(Index + 1) ? Input[Index + 1] : TCHAR('\0');
-
-			if (bInLineComment)
-			{
-				if (Char == TCHAR('\n'))
-				{
-					bInLineComment = false;
-					Output.AppendChar(Char);
-				}
-				continue;
-			}
-
-			if (bInBlockComment)
-			{
-				if (Char == TCHAR('*') && Next == TCHAR('/'))
-				{
-					bInBlockComment = false;
-					++Index;
-				}
-				continue;
-			}
-
-			if (bInString)
-			{
-				Output.AppendChar(Char);
-				if (Char == TCHAR('\\') && Input.IsValidIndex(Index + 1))
-				{
-					Output.AppendChar(Input[++Index]);
-				}
-				else if (Char == TCHAR('"'))
-				{
-					bInString = false;
-				}
-				continue;
-			}
-
-			if (Char == TCHAR('"'))
-			{
-				bInString = true;
-				Output.AppendChar(Char);
-				continue;
-			}
-
-			if (Char == TCHAR('/') && Next == TCHAR('/'))
-			{
-				bInLineComment = true;
-				++Index;
-				continue;
-			}
-
-			if (Char == TCHAR('/') && Next == TCHAR('*'))
-			{
-				bInBlockComment = true;
-				++Index;
-				continue;
-			}
-
-			Output.AppendChar(Char);
 		}
 
-		return Output;
+		FString Text;
+		int32 Line = 1;
+		int32 Column = 1;
+	};
+
+	static void AdvanceCodeLocation(const TCHAR Char, int32& InOutLine, int32& InOutColumn)
+	{
+		if (Char == TCHAR('\n'))
+		{
+			++InOutLine;
+			InOutColumn = 1;
+		}
+		else
+		{
+			++InOutColumn;
+		}
+	}
+
+	static void CalculateCodeLineColumnAtIndex(const FString& Text, const int32 TargetIndex, int32& OutLine, int32& OutColumn)
+	{
+		OutLine = 1;
+		OutColumn = 1;
+		for (int32 Index = 0; Index < TargetIndex && Text.IsValidIndex(Index); ++Index)
+		{
+			AdvanceCodeLocation(Text[Index], OutLine, OutColumn);
+		}
+	}
+
+	static void CombineCodeLineColumn(
+		const int32 BaseLine,
+		const int32 BaseColumn,
+		const int32 RelativeLine,
+		const int32 RelativeColumn,
+		int32& OutLine,
+		int32& OutColumn)
+	{
+		OutLine = BaseLine + FMath::Max(1, RelativeLine) - 1;
+		OutColumn = RelativeLine <= 1
+			? BaseColumn + FMath::Max(1, RelativeColumn) - 1
+			: FMath::Max(1, RelativeColumn);
 	}
 
 	static TArray<FString> SplitTopLevelSegments(const FString& InText, const TCHAR Delimiter)
@@ -332,9 +309,99 @@ namespace UE::DreamShader::Editor::Private
 		return true;
 	}
 
-	static bool SplitStatements(const FString& BlockContent, TArray<FString>& OutStatements, FString& OutError)
+	static FString RemoveCommentsPreservingLayout(const FString& Input)
+	{
+		FString Output;
+		Output.Reserve(Input.Len());
+
+		bool bInString = false;
+		bool bInLineComment = false;
+		bool bInBlockComment = false;
+
+		for (int32 Index = 0; Index < Input.Len(); ++Index)
+		{
+			const TCHAR Char = Input[Index];
+			const TCHAR Next = Input.IsValidIndex(Index + 1) ? Input[Index + 1] : TCHAR('\0');
+
+			if (bInLineComment)
+			{
+				if (Char == TCHAR('\n'))
+				{
+					bInLineComment = false;
+					Output.AppendChar(Char);
+				}
+				else
+				{
+					Output.AppendChar(FChar::IsWhitespace(Char) ? Char : TCHAR(' '));
+				}
+				continue;
+			}
+
+			if (bInBlockComment)
+			{
+				if (Char == TCHAR('*') && Next == TCHAR('/'))
+				{
+					Output.AppendChar(TCHAR(' '));
+					Output.AppendChar(TCHAR(' '));
+					bInBlockComment = false;
+					++Index;
+				}
+				else
+				{
+					Output.AppendChar(Char == TCHAR('\n') ? Char : TCHAR(' '));
+				}
+				continue;
+			}
+
+			if (bInString)
+			{
+				Output.AppendChar(Char);
+				if (Char == TCHAR('\\') && Input.IsValidIndex(Index + 1))
+				{
+					Output.AppendChar(Input[++Index]);
+				}
+				else if (Char == TCHAR('"'))
+				{
+					bInString = false;
+				}
+				continue;
+			}
+
+			if (Char == TCHAR('"'))
+			{
+				bInString = true;
+				Output.AppendChar(Char);
+				continue;
+			}
+
+			if (Char == TCHAR('/') && Next == TCHAR('/'))
+			{
+				Output.AppendChar(TCHAR(' '));
+				Output.AppendChar(TCHAR(' '));
+				bInLineComment = true;
+				++Index;
+				continue;
+			}
+
+			if (Char == TCHAR('/') && Next == TCHAR('*'))
+			{
+				Output.AppendChar(TCHAR(' '));
+				Output.AppendChar(TCHAR(' '));
+				bInBlockComment = true;
+				++Index;
+				continue;
+			}
+
+			Output.AppendChar(Char);
+		}
+
+		return Output;
+	}
+
+	static bool SplitStatementsWithLocations(const FString& InCode, TArray<FCodeStatementText>& OutStatements, FString& OutError)
 	{
 		OutStatements.Reset();
+		const FString BlockContent = RemoveCommentsPreservingLayout(InCode);
 
 		int32 Index = 0;
 		while (Index < BlockContent.Len())
@@ -352,6 +419,9 @@ namespace UE::DreamShader::Editor::Private
 			}
 
 			const int32 StatementStartIndex = Index;
+			int32 StatementLine = 1;
+			int32 StatementColumn = 1;
+			CalculateCodeLineColumnAtIndex(BlockContent, StatementStartIndex, StatementLine, StatementColumn);
 			if (MatchesKeywordAt(BlockContent, Index, TEXT("if")))
 			{
 				int32 StatementEndIndex = INDEX_NONE;
@@ -363,7 +433,7 @@ namespace UE::DreamShader::Editor::Private
 				FString Statement = BlockContent.Mid(StatementStartIndex, StatementEndIndex - StatementStartIndex).TrimStartAndEnd();
 				if (!Statement.IsEmpty())
 				{
-					OutStatements.Add(Statement);
+					OutStatements.Add(FCodeStatementText{ Statement, StatementLine, StatementColumn });
 				}
 				Index = StatementEndIndex;
 				continue;
@@ -436,7 +506,7 @@ namespace UE::DreamShader::Editor::Private
 			FString Statement = BlockContent.Mid(StatementStartIndex, Index - StatementStartIndex).TrimStartAndEnd();
 			if (!Statement.IsEmpty())
 			{
-				OutStatements.Add(Statement);
+				OutStatements.Add(FCodeStatementText{ Statement, StatementLine, StatementColumn });
 			}
 
 			if (BlockContent.IsValidIndex(Index) && BlockContent[Index] == TCHAR(';'))
@@ -1178,7 +1248,23 @@ namespace UE::DreamShader::Editor::Private
 		return true;
 	}
 
-	static bool ParseIfStatement(const FString& StatementText, FCodeStatement& OutStatement, FString& OutError)
+	static bool ParseCodeStatementsInternal(
+		const FString& InCode,
+		int32 BaseLine,
+		int32 BaseColumn,
+		TArray<FCodeStatement>& OutStatements,
+		FString& OutError,
+		int32* OutErrorLine,
+		int32* OutErrorColumn);
+
+	static bool ParseIfStatement(
+		const FString& StatementText,
+		int32 StatementLine,
+		int32 StatementColumn,
+		FCodeStatement& OutStatement,
+		FString& OutError,
+		int32* OutErrorLine,
+		int32* OutErrorColumn)
 	{
 		int32 Index = 0;
 		SkipWhitespace(StatementText, Index);
@@ -1211,11 +1297,13 @@ namespace UE::DreamShader::Editor::Private
 			return false;
 		}
 
-		const FString ThenBody = StatementText.Mid(Index + 1, ThenCloseIndex - Index - 1);
+		const int32 ThenBodyStartIndex = Index + 1;
+		const FString ThenBody = StatementText.Mid(ThenBodyStartIndex, ThenCloseIndex - Index - 1);
 		Index = ThenCloseIndex + 1;
 		SkipWhitespace(StatementText, Index);
 
 		FString ElseBody;
+		int32 ElseBodyStartIndex = INDEX_NONE;
 		if (MatchesKeywordAt(StatementText, Index, TEXT("else")))
 		{
 			Index += 4;
@@ -1223,6 +1311,7 @@ namespace UE::DreamShader::Editor::Private
 
 			if (MatchesKeywordAt(StatementText, Index, TEXT("if")))
 			{
+				ElseBodyStartIndex = Index;
 				ElseBody = StatementText.Mid(Index).TrimStartAndEnd();
 				Index = StatementText.Len();
 			}
@@ -1237,7 +1326,8 @@ namespace UE::DreamShader::Editor::Private
 					return false;
 				}
 
-				ElseBody = StatementText.Mid(Index + 1, ElseCloseIndex - Index - 1);
+				ElseBodyStartIndex = Index + 1;
+				ElseBody = StatementText.Mid(ElseBodyStartIndex, ElseCloseIndex - Index - 1);
 				Index = ElseCloseIndex + 1;
 			}
 
@@ -1252,44 +1342,107 @@ namespace UE::DreamShader::Editor::Private
 
 		OutStatement = FCodeStatement{};
 		OutStatement.bIsIfStatement = true;
+		OutStatement.bHasSourceLocation = true;
+		OutStatement.SourceLine = StatementLine;
+		OutStatement.SourceColumn = StatementColumn;
 		if (!ParseCodeCondition(ConditionText, OutStatement.Condition, OutError))
 		{
+			if (OutErrorLine)
+			{
+				*OutErrorLine = StatementLine;
+			}
+			if (OutErrorColumn)
+			{
+				*OutErrorColumn = StatementColumn;
+			}
 			return false;
 		}
 
-		if (!ParseCodeStatements(ThenBody, OutStatement.ThenStatements, OutError))
+		int32 ThenBodyRelativeLine = 1;
+		int32 ThenBodyRelativeColumn = 1;
+		int32 ThenBodyLine = StatementLine;
+		int32 ThenBodyColumn = StatementColumn;
+		CalculateCodeLineColumnAtIndex(StatementText, ThenBodyStartIndex, ThenBodyRelativeLine, ThenBodyRelativeColumn);
+		CombineCodeLineColumn(StatementLine, StatementColumn, ThenBodyRelativeLine, ThenBodyRelativeColumn, ThenBodyLine, ThenBodyColumn);
+		if (!ParseCodeStatementsInternal(ThenBody, ThenBodyLine, ThenBodyColumn, OutStatement.ThenStatements, OutError, OutErrorLine, OutErrorColumn))
 		{
 			OutError = FString::Printf(TEXT("In Graph if body: %s"), *OutError);
 			return false;
 		}
 
-		if (!ElseBody.IsEmpty() && !ParseCodeStatements(ElseBody, OutStatement.ElseStatements, OutError))
+		if (!ElseBody.IsEmpty())
 		{
-			OutError = FString::Printf(TEXT("In Graph else body: %s"), *OutError);
-			return false;
+			int32 ElseBodyLine = StatementLine;
+			int32 ElseBodyColumn = StatementColumn;
+			if (ElseBodyStartIndex != INDEX_NONE)
+			{
+				int32 ElseBodyRelativeLine = 1;
+				int32 ElseBodyRelativeColumn = 1;
+				CalculateCodeLineColumnAtIndex(StatementText, ElseBodyStartIndex, ElseBodyRelativeLine, ElseBodyRelativeColumn);
+				CombineCodeLineColumn(StatementLine, StatementColumn, ElseBodyRelativeLine, ElseBodyRelativeColumn, ElseBodyLine, ElseBodyColumn);
+			}
+
+			if (!ParseCodeStatementsInternal(ElseBody, ElseBodyLine, ElseBodyColumn, OutStatement.ElseStatements, OutError, OutErrorLine, OutErrorColumn))
+			{
+				OutError = FString::Printf(TEXT("In Graph else body: %s"), *OutError);
+				return false;
+			}
 		}
 
 		return true;
 	}
 
-	bool ParseCodeStatements(const FString& InCode, TArray<FCodeStatement>& OutStatements, FString& OutError)
+	static void ApplyCodeStatementSourceLocation(FCodeStatement& Statement, const int32 Line, const int32 Column)
+	{
+		Statement.bHasSourceLocation = true;
+		Statement.SourceLine = Line;
+		Statement.SourceColumn = Column;
+	}
+
+	static bool ParseCodeStatementsInternal(
+		const FString& InCode,
+		const int32 BaseLine,
+		const int32 BaseColumn,
+		TArray<FCodeStatement>& OutStatements,
+		FString& OutError,
+		int32* OutErrorLine,
+		int32* OutErrorColumn)
 	{
 		OutStatements.Reset();
-		TArray<FString> Statements;
-		if (!SplitStatements(RemoveComments(InCode), Statements, OutError))
+		TArray<FCodeStatementText> Statements;
+		if (!SplitStatementsWithLocations(InCode, Statements, OutError))
 		{
 			return false;
 		}
 
-		for (const FString& StatementText : Statements)
+		for (const FCodeStatementText& LocatedStatement : Statements)
 		{
+			const FString& StatementText = LocatedStatement.Text;
+			int32 StatementLine = BaseLine;
+			int32 StatementColumn = BaseColumn;
+			CombineCodeLineColumn(
+				BaseLine,
+				BaseColumn,
+				LocatedStatement.Line,
+				LocatedStatement.Column,
+				StatementLine,
+				StatementColumn);
+
 			int32 StatementProbeIndex = 0;
 			SkipWhitespace(StatementText, StatementProbeIndex);
 			if (MatchesKeywordAt(StatementText, StatementProbeIndex, TEXT("if")))
 			{
 				FCodeStatement IfStatement;
-				if (!ParseIfStatement(StatementText, IfStatement, OutError))
+				if (!ParseIfStatement(StatementText, StatementLine, StatementColumn, IfStatement, OutError, OutErrorLine, OutErrorColumn))
 				{
+					if (OutErrorLine && *OutErrorLine <= 0)
+					{
+						*OutErrorLine = StatementLine;
+					}
+					if (OutErrorColumn && *OutErrorColumn <= 0)
+					{
+						*OutErrorColumn = StatementColumn;
+					}
 					return false;
 				}
 
@@ -1335,6 +1488,14 @@ namespace UE::DreamShader::Editor::Private
 							if (!ParseDeclarationStatement(SharedType, FirstName, InitializerText, Statement))
 							{
 								OutError = FString::Printf(TEXT("In Graph statement '%s': %s"), *StatementText, *OutError);
+								if (OutErrorLine)
+								{
+									*OutErrorLine = StatementLine;
+								}
+								if (OutErrorColumn)
+								{
+									*OutErrorColumn = StatementColumn;
+								}
 								return false;
 							}
 						}
@@ -1350,6 +1511,14 @@ namespace UE::DreamShader::Editor::Private
 									TEXT("In Graph statement '%s': '%s' is not a valid declarator in a comma-separated declaration."),
 									*StatementText,
 									*NameToken.TrimStartAndEnd());
+								if (OutErrorLine)
+								{
+									*OutErrorLine = StatementLine;
+								}
+								if (OutErrorColumn)
+								{
+									*OutErrorColumn = StatementColumn;
+								}
 								return false;
 							}
 
@@ -1358,10 +1527,19 @@ namespace UE::DreamShader::Editor::Private
 							if (!ParseDeclarationStatement(SharedType, TrimmedNameToken, InitializerText, Statement))
 							{
 								OutError = FString::Printf(TEXT("In Graph statement '%s': %s"), *StatementText, *OutError);
+								if (OutErrorLine)
+								{
+									*OutErrorLine = StatementLine;
+								}
+								if (OutErrorColumn)
+								{
+									*OutErrorColumn = StatementColumn;
+								}
 								return false;
 							}
 						}
 
+						ApplyCodeStatementSourceLocation(Statement, StatementLine, StatementColumn);
 						OutStatements.Add(Statement);
 					}
 
@@ -1378,6 +1556,7 @@ namespace UE::DreamShader::Editor::Private
 				if (SplitDeclarationTypeAndName(StatementText, Statement.DeclaredType, Statement.TargetName))
 				{
 					Statement.bIsDeclaration = true;
+					ApplyCodeStatementSourceLocation(Statement, StatementLine, StatementColumn);
 					OutStatements.Add(Statement);
 					continue;
 				}
@@ -1386,10 +1565,19 @@ namespace UE::DreamShader::Editor::Private
 				if (!ExpressionParser.Parse(Statement.Expression, OutError))
 				{
 					OutError = FString::Printf(TEXT("In Graph statement '%s': %s"), *StatementText, *OutError);
+					if (OutErrorLine)
+					{
+						*OutErrorLine = StatementLine;
+					}
+					if (OutErrorColumn)
+					{
+						*OutErrorColumn = StatementColumn;
+					}
 					return false;
 				}
 
 				Statement.bIsExpressionStatement = true;
+				ApplyCodeStatementSourceLocation(Statement, StatementLine, StatementColumn);
 				OutStatements.Add(Statement);
 				continue;
 			}
@@ -1404,6 +1592,7 @@ namespace UE::DreamShader::Editor::Private
 			if (IsBraceInitializerText(Right))
 			{
 				Statement.bUsesBraceInitializer = true;
+				ApplyCodeStatementSourceLocation(Statement, StatementLine, StatementColumn);
 				OutStatements.Add(Statement);
 				continue;
 			}
@@ -1412,13 +1601,32 @@ namespace UE::DreamShader::Editor::Private
 			if (!ExpressionParser.Parse(Statement.Expression, OutError))
 			{
 				OutError = FString::Printf(TEXT("In Graph statement '%s': %s"), *StatementText, *OutError);
+				if (OutErrorLine)
+				{
+					*OutErrorLine = StatementLine;
+				}
+				if (OutErrorColumn)
+				{
+					*OutErrorColumn = StatementColumn;
+				}
 				return false;
 			}
 
+			ApplyCodeStatementSourceLocation(Statement, StatementLine, StatementColumn);
 			OutStatements.Add(Statement);
 		}
 
 		return true;
+	}
+
+	bool ParseCodeStatements(
+		const FString& InCode,
+		TArray<FCodeStatement>& OutStatements,
+		FString& OutError,
+		int32* OutErrorLine,
+		int32* OutErrorColumn)
+	{
+		return ParseCodeStatementsInternal(InCode, 1, 1, OutStatements, OutError, OutErrorLine, OutErrorColumn);
 	}
 
 	bool ParseCodeExpression(const FString& InExpression, TSharedPtr<FCodeExpression>& OutExpression, FString& OutError)

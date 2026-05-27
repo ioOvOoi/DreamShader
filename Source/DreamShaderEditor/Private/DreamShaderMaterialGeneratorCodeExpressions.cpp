@@ -11,13 +11,19 @@ namespace UE::DreamShader::Editor::Private
 		const FTextShaderDefinition& InDefinition,
 		const FString& InSourceFilePath,
 		const FString& InIncludeVirtualPath,
-		const TArray<FTextShaderPropertyDefinition>* InLocalProperties)
+		const TArray<FTextShaderPropertyDefinition>* InLocalProperties,
+		const FString& InCodeSourceFilePath,
+		const int32 InCodeStartLine,
+		const int32 InCodeStartColumn)
 		: Material(InMaterial)
 		, MaterialFunction(InMaterialFunction)
 		, Definition(InDefinition)
 		, LocalProperties(InLocalProperties)
 		, SourceFilePath(InSourceFilePath)
 		, IncludeVirtualPath(InIncludeVirtualPath)
+		, CodeSourceFilePath(InCodeSourceFilePath.IsEmpty() ? InSourceFilePath : InCodeSourceFilePath)
+		, CodeStartLine(FMath::Max(1, InCodeStartLine))
+		, CodeStartColumn(FMath::Max(1, InCodeStartColumn))
 	{
 	}
 
@@ -53,12 +59,53 @@ namespace UE::DreamShader::Editor::Private
 					: FText::GetEmpty());
 			if (!ExecuteStatement(Statement, OutError))
 			{
+				OutError = FormatStatementError(Statement, OutError);
 				return false;
 			}
 			++StatementIndex;
 		}
 
 		return true;
+	}
+
+	static bool LooksLikeLocatedDiagnostic(const FString& Error)
+	{
+		int32 CloseMarkerIndex = INDEX_NONE;
+		if (!Error.FindChar(TCHAR(')'), CloseMarkerIndex))
+		{
+			return false;
+		}
+
+		const int32 OpenMarkerIndex = Error.Find(TEXT("("), ESearchCase::CaseSensitive, ESearchDir::FromEnd, CloseMarkerIndex);
+		return OpenMarkerIndex != INDEX_NONE
+			&& Error.Left(OpenMarkerIndex).Find(TEXT(": ")) == INDEX_NONE
+			&& Error.Find(TEXT(": "), ESearchCase::CaseSensitive, ESearchDir::FromStart, CloseMarkerIndex) != INDEX_NONE;
+	}
+
+	static FString AddStatementErrorContext(const FString& Error, const TCHAR* Context)
+	{
+		const FString ContextPrefix = FString(Context) + TEXT(": ");
+		const int32 CloseMarkerIndex = Error.Find(TEXT("): "));
+		if (CloseMarkerIndex != INDEX_NONE)
+		{
+			return Error.Left(CloseMarkerIndex + 3) + ContextPrefix + Error.Mid(CloseMarkerIndex + 3);
+		}
+
+		return ContextPrefix + Error;
+	}
+
+	FString FCodeGraphBuilder::FormatStatementError(const FCodeStatement& Statement, const FString& Error) const
+	{
+		if (!Statement.bHasSourceLocation || LooksLikeLocatedDiagnostic(Error))
+		{
+			return Error;
+		}
+
+		const int32 Line = CodeStartLine + FMath::Max(1, Statement.SourceLine) - 1;
+		const int32 Column = Statement.SourceLine <= 1
+			? CodeStartColumn + FMath::Max(1, Statement.SourceColumn) - 1
+			: FMath::Max(1, Statement.SourceColumn);
+		return FString::Printf(TEXT("%s(%d,%d): %s"), *CodeSourceFilePath, Line, Column, *Error);
 	}
 
 	bool FCodeGraphBuilder::ExecuteStatement(const FCodeStatement& Statement, FString& OutError)
@@ -227,9 +274,126 @@ namespace UE::DreamShader::Editor::Private
 		return Left.Expression == Right.Expression
 			&& Left.OutputIndex == Right.OutputIndex
 			&& Left.ComponentCount == Right.ComponentCount
+			&& Left.bHasInputMask == Right.bHasInputMask
+			&& Left.InputMaskR == Right.InputMaskR
+			&& Left.InputMaskG == Right.InputMaskG
+			&& Left.InputMaskB == Right.InputMaskB
+			&& Left.InputMaskA == Right.InputMaskA
 			&& Left.bIsTextureObject == Right.bIsTextureObject
 			&& Left.TextureType == Right.TextureType
 			&& Left.bIsMaterialAttributes == Right.bIsMaterialAttributes;
+	}
+
+	static bool IsScalarVectorCompatible(const FCodeValue& LeftValue, const FCodeValue& RightValue)
+	{
+		return LeftValue.ComponentCount == RightValue.ComponentCount
+			|| LeftValue.ComponentCount == 1
+			|| RightValue.ComponentCount == 1;
+	}
+
+	static bool TryResolveSwizzleChannelIndex(const TCHAR ChannelChar, int32& OutChannelIndex)
+	{
+		switch (FChar::ToLower(ChannelChar))
+		{
+		case TCHAR('x'):
+		case TCHAR('r'):
+			OutChannelIndex = 0;
+			return true;
+		case TCHAR('y'):
+		case TCHAR('g'):
+			OutChannelIndex = 1;
+			return true;
+		case TCHAR('z'):
+		case TCHAR('b'):
+			OutChannelIndex = 2;
+			return true;
+		case TCHAR('w'):
+		case TCHAR('a'):
+			OutChannelIndex = 3;
+			return true;
+		default:
+			OutChannelIndex = INDEX_NONE;
+			return false;
+		}
+	}
+
+	static bool TryBuildOrderedSwizzleMask(
+		const FCodeValue& BaseValue,
+		const FString& Swizzle,
+		int32& OutChannelMask,
+		int32& OutComponentCount)
+	{
+		OutChannelMask = 0;
+		OutComponentCount = 0;
+
+		int32 PreviousChannelIndex = INDEX_NONE;
+		TArray<int32> SourceChannels;
+		if (BaseValue.bHasInputMask)
+		{
+			if (BaseValue.InputMaskR)
+			{
+				SourceChannels.Add(0);
+			}
+			if (BaseValue.InputMaskG)
+			{
+				SourceChannels.Add(1);
+			}
+			if (BaseValue.InputMaskB)
+			{
+				SourceChannels.Add(2);
+			}
+			if (BaseValue.InputMaskA)
+			{
+				SourceChannels.Add(3);
+			}
+		}
+
+		for (int32 Index = 0; Index < Swizzle.Len(); ++Index)
+		{
+			int32 ChannelIndex = INDEX_NONE;
+			if (!TryResolveSwizzleChannelIndex(Swizzle[Index], ChannelIndex)
+				|| ChannelIndex >= BaseValue.ComponentCount)
+			{
+				return false;
+			}
+
+			const int32 SourceChannelIndex = BaseValue.bHasInputMask
+				? (SourceChannels.IsValidIndex(ChannelIndex) ? SourceChannels[ChannelIndex] : INDEX_NONE)
+				: ChannelIndex;
+			if (SourceChannelIndex == INDEX_NONE || SourceChannelIndex <= PreviousChannelIndex)
+			{
+				return false;
+			}
+
+			const int32 ChannelBit = 1 << SourceChannelIndex;
+			if ((OutChannelMask & ChannelBit) != 0)
+			{
+				return false;
+			}
+
+			OutChannelMask |= ChannelBit;
+			PreviousChannelIndex = SourceChannelIndex;
+			++OutComponentCount;
+		}
+
+		return OutComponentCount > 0;
+	}
+
+	static FString MakeCodeValueReuseToken(const FCodeValue& Value)
+	{
+		return FString::Printf(
+			TEXT("Expr=%s|Out=%d|Comp=%d|Mask=%d%d%d%d%d|Tex=%d|TexType=%d|MA=%d"),
+			Value.Expression ? *Value.Expression->GetPathName() : TEXT("<null>"),
+			Value.OutputIndex,
+			Value.ComponentCount,
+			Value.bHasInputMask ? 1 : 0,
+			Value.InputMaskR ? 1 : 0,
+			Value.InputMaskG ? 1 : 0,
+			Value.InputMaskB ? 1 : 0,
+			Value.InputMaskA ? 1 : 0,
+			Value.bIsTextureObject ? 1 : 0,
+			static_cast<int32>(Value.TextureType),
+			Value.bIsMaterialAttributes ? 1 : 0);
 	}
 
 	static void CollectChangedValueNames(
@@ -265,7 +429,7 @@ namespace UE::DreamShader::Editor::Private
 			if (!ExecuteStatement(ThenStatement, OutError))
 			{
 				Values = OuterValues;
-				OutError = FString::Printf(TEXT("In Graph if body: %s"), *OutError);
+				OutError = AddStatementErrorContext(FormatStatementError(ThenStatement, OutError), TEXT("In Graph if body"));
 				return false;
 			}
 		}
@@ -277,7 +441,7 @@ namespace UE::DreamShader::Editor::Private
 			if (!ExecuteStatement(ElseStatement, OutError))
 			{
 				Values = OuterValues;
-				OutError = FString::Printf(TEXT("In Graph else body: %s"), *OutError);
+				OutError = AddStatementErrorContext(FormatStatementError(ElseStatement, OutError), TEXT("In Graph else body"));
 				return false;
 			}
 		}
@@ -529,13 +693,25 @@ namespace UE::DreamShader::Editor::Private
 			false);
 	}
 
-	UMaterialExpression* FCodeGraphBuilder::CreateScalarLiteralNode(const double Value, const int32 PositionY) const
+	UMaterialExpression* FCodeGraphBuilder::CreateScalarLiteralNode(const double Value, const int32 PositionY)
 	{
+		const FString ReuseKey = FString::Printf(TEXT("literal-node|%.17g"), Value);
+		FCodeValue ReusableValue;
+		if (TryFindReusableExpressionValue(ReuseKey, ReusableValue))
+		{
+			return ReusableValue.Expression;
+		}
+
 		auto* Expression = Cast<UMaterialExpressionConstant>(
 			CreateExpression(UMaterialExpressionConstant::StaticClass(), -1120, PositionY));
 		if (Expression)
 		{
 			Expression->R = static_cast<float>(Value);
+			FCodeValue LiteralValue;
+			LiteralValue.Expression = Expression;
+			LiteralValue.OutputIndex = 0;
+			LiteralValue.ComponentCount = 1;
+			AddReusableExpressionValue(ReuseKey, LiteralValue);
 		}
 		return Expression;
 	}
@@ -1305,6 +1481,25 @@ namespace UE::DreamShader::Editor::Private
 			OutError = TEXT("Arithmetic operators cannot be applied to MaterialAttributes values.");
 			return false;
 		}
+		if (!IsScalarVectorCompatible(LeftValue, RightValue))
+		{
+			OutError = FString::Printf(
+				TEXT("Operator '%s' requires matching vector sizes or a scalar/vector pair, got %d and %d component(s)."),
+				*Operator,
+				LeftValue.ComponentCount,
+				RightValue.ComponentCount);
+			return false;
+		}
+
+		FString ReuseKey = FString::Printf(
+			TEXT("binary-node|%s|%s|%s"),
+			*Operator,
+			*MakeCodeValueReuseToken(LeftValue),
+			*MakeCodeValueReuseToken(RightValue));
+		if (TryFindReusableExpressionValue(ReuseKey, OutValue))
+		{
+			return true;
+		}
 
 		UMaterialExpression* Expression = nullptr;
 		const int32 PositionY = ConsumeNodeY();
@@ -1362,6 +1557,8 @@ namespace UE::DreamShader::Editor::Private
 
 		OutValue.Expression = Expression;
 		OutValue.ComponentCount = FMath::Max(LeftValue.ComponentCount, RightValue.ComponentCount);
+		ClearCodeValueInputMask(OutValue);
+		AddReusableExpressionValue(ReuseKey, OutValue);
 		return true;
 	}
 
@@ -1421,6 +1618,17 @@ namespace UE::DreamShader::Editor::Private
 				return false;
 			}
 
+			FString ReuseKey = FString::Printf(
+				TEXT("math-unary|%s|%s|%s|%d"),
+				*UE::DreamShader::NormalizeSettingKey(FunctionName),
+				*ExpressionClass->GetName(),
+				*MakeCodeValueReuseToken(InputValue),
+				OutputComponentCount);
+			if (TryFindReusableExpressionValue(ReuseKey, OutValue))
+			{
+				return true;
+			}
+
 			UMaterialExpression* Expression = CreateExpression(ExpressionClass, 360, ConsumeNodeY());
 			if (!Expression)
 			{
@@ -1447,6 +1655,7 @@ namespace UE::DreamShader::Editor::Private
 			OutValue.ComponentCount = OutputComponentCount > 0 ? OutputComponentCount : InputValue.ComponentCount;
 			OutValue.bIsTextureObject = false;
 			OutValue.bIsMaterialAttributes = false;
+			AddReusableExpressionValue(ReuseKey, OutValue);
 			return true;
 		};
 
@@ -1467,6 +1676,16 @@ namespace UE::DreamShader::Editor::Private
 				return false;
 			}
 
+			FString ReuseKey = FString::Printf(
+				TEXT("math-lerp|%s|%s|%s"),
+				*MakeCodeValueReuseToken(A),
+				*MakeCodeValueReuseToken(B),
+				*MakeCodeValueReuseToken(Alpha));
+			if (TryFindReusableExpressionValue(ReuseKey, OutValue))
+			{
+				return true;
+			}
+
 			auto* Expression = Cast<UMaterialExpressionLinearInterpolate>(
 				CreateExpression(UMaterialExpressionLinearInterpolate::StaticClass(), 360, ConsumeNodeY()));
 			if (!Expression)
@@ -1480,6 +1699,7 @@ namespace UE::DreamShader::Editor::Private
 			ConnectCodeValueToInput(Expression->Alpha, Alpha);
 			OutValue.Expression = Expression;
 			OutValue.ComponentCount = FMath::Max(A.ComponentCount, B.ComponentCount);
+			AddReusableExpressionValue(ReuseKey, OutValue);
 			return true;
 		}
 
@@ -1498,6 +1718,15 @@ namespace UE::DreamShader::Editor::Private
 				return false;
 			}
 
+			FString ReuseKey = FString::Printf(
+				TEXT("math-dot|%s|%s"),
+				*MakeCodeValueReuseToken(A),
+				*MakeCodeValueReuseToken(B));
+			if (TryFindReusableExpressionValue(ReuseKey, OutValue))
+			{
+				return true;
+			}
+
 			auto* Expression = Cast<UMaterialExpressionDotProduct>(
 				CreateExpression(UMaterialExpressionDotProduct::StaticClass(), 360, ConsumeNodeY()));
 			if (!Expression)
@@ -1510,6 +1739,7 @@ namespace UE::DreamShader::Editor::Private
 			ConnectCodeValueToInput(Expression->B, B);
 			OutValue.Expression = Expression;
 			OutValue.ComponentCount = 1;
+			AddReusableExpressionValue(ReuseKey, OutValue);
 			return true;
 		}
 
@@ -1528,6 +1758,15 @@ namespace UE::DreamShader::Editor::Private
 				return false;
 			}
 
+			FString ReuseKey = FString::Printf(
+				TEXT("math-pow|%s|%s"),
+				*MakeCodeValueReuseToken(Base),
+				*MakeCodeValueReuseToken(Exponent));
+			if (TryFindReusableExpressionValue(ReuseKey, OutValue))
+			{
+				return true;
+			}
+
 			auto* Expression = Cast<UMaterialExpressionPower>(
 				CreateExpression(UMaterialExpressionPower::StaticClass(), 360, ConsumeNodeY()));
 			if (!Expression)
@@ -1540,6 +1779,7 @@ namespace UE::DreamShader::Editor::Private
 			ConnectCodeValueToInput(Expression->Exponent, Exponent);
 			OutValue.Expression = Expression;
 			OutValue.ComponentCount = Base.ComponentCount;
+			AddReusableExpressionValue(ReuseKey, OutValue);
 			return true;
 		}
 
@@ -1557,6 +1797,16 @@ namespace UE::DreamShader::Editor::Private
 			if (!EvaluateArgument(0, A) || !EvaluateArgument(1, B))
 			{
 				return false;
+			}
+
+			FString ReuseKey = FString::Printf(
+				TEXT("math-%s|%s|%s"),
+				*UE::DreamShader::NormalizeSettingKey(FunctionName),
+				*MakeCodeValueReuseToken(A),
+				*MakeCodeValueReuseToken(B));
+			if (TryFindReusableExpressionValue(ReuseKey, OutValue))
+			{
+				return true;
 			}
 
 			UMaterialExpression* RawExpression = FunctionName.Equals(TEXT("min"), ESearchCase::IgnoreCase)
@@ -1581,6 +1831,7 @@ namespace UE::DreamShader::Editor::Private
 
 			OutValue.Expression = RawExpression;
 			OutValue.ComponentCount = FMath::Max(A.ComponentCount, B.ComponentCount);
+			AddReusableExpressionValue(ReuseKey, OutValue);
 			return true;
 		}
 
@@ -1600,6 +1851,16 @@ namespace UE::DreamShader::Editor::Private
 				return false;
 			}
 
+			FString ReuseKey = FString::Printf(
+				TEXT("math-clamp|%s|%s|%s"),
+				*MakeCodeValueReuseToken(Input),
+				*MakeCodeValueReuseToken(Min),
+				*MakeCodeValueReuseToken(Max));
+			if (TryFindReusableExpressionValue(ReuseKey, OutValue))
+			{
+				return true;
+			}
+
 			auto* Expression = Cast<UMaterialExpressionClamp>(
 				CreateExpression(UMaterialExpressionClamp::StaticClass(), 360, ConsumeNodeY()));
 			if (!Expression)
@@ -1613,6 +1874,7 @@ namespace UE::DreamShader::Editor::Private
 			ConnectCodeValueToInput(Expression->Max, Max);
 			OutValue.Expression = Expression;
 			OutValue.ComponentCount = Input.ComponentCount;
+			AddReusableExpressionValue(ReuseKey, OutValue);
 			return true;
 		}
 
@@ -1654,6 +1916,147 @@ namespace UE::DreamShader::Editor::Private
 		}
 
 		return false;
+	}
+
+	bool FCodeGraphBuilder::TryBuildReusableCallKey(
+		const FString& CallKind,
+		const FString& FunctionName,
+		const TArray<FCodeCallArgument>& Arguments,
+		FString& OutKey) const
+	{
+		const TSet<FString> NoExcludedArguments;
+		return TryBuildReusableCallKey(CallKind, FunctionName, Arguments, NoExcludedArguments, OutKey);
+	}
+
+	bool FCodeGraphBuilder::TryBuildReusableCallKey(
+		const FString& CallKind,
+		const FString& FunctionName,
+		const TArray<FCodeCallArgument>& Arguments,
+		const TSet<FString>& ExcludedNormalizedArgumentNames,
+		FString& OutKey) const
+	{
+		TArray<FString> Parts;
+		Parts.Add(UE::DreamShader::NormalizeSettingKey(CallKind));
+		Parts.Add(UE::DreamShader::NormalizeSettingKey(FunctionName));
+
+		for (int32 ArgumentIndex = 0; ArgumentIndex < Arguments.Num(); ++ArgumentIndex)
+		{
+			const FCodeCallArgument& Argument = Arguments[ArgumentIndex];
+			const FString ArgumentName = Argument.bIsNamed
+				? UE::DreamShader::NormalizeSettingKey(Argument.Name)
+				: FString::Printf(TEXT("#%d"), ArgumentIndex);
+			if (Argument.bIsNamed && ExcludedNormalizedArgumentNames.Contains(ArgumentName))
+			{
+				continue;
+			}
+
+			FString ArgumentToken;
+			if (!BuildReusableExpressionToken(Argument.Expression, ArgumentToken))
+			{
+				return false;
+			}
+			Parts.Add(FString::Printf(TEXT("%s=%s"), *ArgumentName, *ArgumentToken));
+		}
+
+		OutKey = FString::Join(Parts, TEXT("|"));
+		return true;
+	}
+
+	bool FCodeGraphBuilder::BuildReusableExpressionToken(const TSharedPtr<FCodeExpression>& Expression, FString& OutToken) const
+	{
+		if (!Expression)
+		{
+			return false;
+		}
+
+		switch (Expression->Kind)
+		{
+		case ECodeExpressionKind::Name:
+			if (const FCodeValue* ExistingValue = FindValue(Expression->Text))
+			{
+				OutToken = MakeCodeValueReuseToken(*ExistingValue);
+				return true;
+			}
+			OutToken = FString::Printf(TEXT("name:%s"), *UE::DreamShader::NormalizeSettingKey(Expression->Text));
+			return true;
+
+		case ECodeExpressionKind::NumberLiteral:
+		case ECodeExpressionKind::StringLiteral:
+			OutToken = FString::Printf(TEXT("literal:%s"), *NormalizeCodeReuseLiteralText(Expression->Text));
+			return true;
+
+		case ECodeExpressionKind::Unary:
+		{
+			FString InnerToken;
+			if (!BuildReusableExpressionToken(Expression->Left, InnerToken))
+			{
+				return false;
+			}
+			OutToken = FString::Printf(TEXT("unary:%s(%s)"), *Expression->Text, *InnerToken);
+			return true;
+		}
+
+		case ECodeExpressionKind::Binary:
+		{
+			FString LeftToken;
+			FString RightToken;
+			if (!BuildReusableExpressionToken(Expression->Left, LeftToken)
+				|| !BuildReusableExpressionToken(Expression->Right, RightToken))
+			{
+				return false;
+			}
+			OutToken = FString::Printf(TEXT("binary:%s(%s,%s)"), *Expression->Text, *LeftToken, *RightToken);
+			return true;
+		}
+
+		case ECodeExpressionKind::MemberAccess:
+		{
+			FString LeftToken;
+			if (!BuildReusableExpressionToken(Expression->Left, LeftToken))
+			{
+				return false;
+			}
+			OutToken = FString::Printf(TEXT("member:%s.%s"), *LeftToken, *UE::DreamShader::NormalizeSettingKey(Expression->Text));
+			return true;
+		}
+
+		case ECodeExpressionKind::Call:
+		{
+			FString CalleeName;
+			if (!TryFlattenQualifiedName(Expression->Left, CalleeName))
+			{
+				return false;
+			}
+			return TryBuildReusableCallKey(TEXT("call"), CalleeName, Expression->Arguments, OutToken);
+		}
+
+		default:
+			return false;
+		}
+	}
+
+	bool FCodeGraphBuilder::TryFindReusableExpressionValue(const FString& Key, FCodeValue& OutValue) const
+	{
+		if (Key.IsEmpty())
+		{
+			return false;
+		}
+
+		if (const FCodeValue* ExistingValue = ReusableExpressionValues.Find(Key))
+		{
+			OutValue = *ExistingValue;
+			return OutValue.Expression != nullptr;
+		}
+
+		return false;
+	}
+
+	void FCodeGraphBuilder::AddReusableExpressionValue(const FString& Key, const FCodeValue& Value)
+	{
+		if (!Key.IsEmpty() && Value.Expression)
+		{
+			ReusableExpressionValues.Add(Key, Value);
+		}
 	}
 
 	bool FCodeGraphBuilder::EvaluateMemberAccess(const TSharedPtr<FCodeExpression>& Expression, FCodeValue& OutValue, FString& OutError)
@@ -1721,22 +2124,43 @@ namespace UE::DreamShader::Editor::Private
 		FCodeValue& OutValue,
 		FString& OutError)
 	{
-		auto* MaskExpression = Cast<UMaterialExpressionComponentMask>(
-			CreateExpression(UMaterialExpressionComponentMask::StaticClass(), 320, ConsumeNodeY()));
-		if (!MaskExpression)
+		int32 SourceChannelIndex = ChannelIndex;
+		if (BaseValue.bHasInputMask)
 		{
-			OutError = TEXT("Failed to create a ComponentMask node.");
-			return false;
+			TArray<int32> SourceChannels;
+			if (BaseValue.InputMaskR)
+			{
+				SourceChannels.Add(0);
+			}
+			if (BaseValue.InputMaskG)
+			{
+				SourceChannels.Add(1);
+			}
+			if (BaseValue.InputMaskB)
+			{
+				SourceChannels.Add(2);
+			}
+			if (BaseValue.InputMaskA)
+			{
+				SourceChannels.Add(3);
+			}
+
+			if (!SourceChannels.IsValidIndex(ChannelIndex))
+			{
+				OutError = FString::Printf(TEXT("Channel %d is invalid for a value with %d components."), ChannelIndex, BaseValue.ComponentCount);
+				return false;
+			}
+
+			SourceChannelIndex = SourceChannels[ChannelIndex];
 		}
 
-		ConnectCodeValueToInput(MaskExpression->Input, BaseValue);
-		MaskExpression->R = ChannelIndex == 0;
-		MaskExpression->G = ChannelIndex == 1;
-		MaskExpression->B = ChannelIndex == 2;
-		MaskExpression->A = ChannelIndex == 3;
-
-		OutValue.Expression = MaskExpression;
-		OutValue.ComponentCount = 1;
+		OutValue = BaseValue;
+		ClearCodeValueInputMask(OutValue);
+		if (!ApplyCodeValueInputMask(OutValue, 1 << SourceChannelIndex, 1))
+		{
+			OutError = TEXT("Failed to compose swizzle channel mask.");
+			return false;
+		}
 		return true;
 	}
 
@@ -1771,6 +2195,18 @@ namespace UE::DreamShader::Editor::Private
 			return false;
 		}
 
+		TArray<FString> ReuseTokens;
+		ReuseTokens.Reserve(Parts.Num());
+		for (const FCodeValue& Part : Parts)
+		{
+			ReuseTokens.Add(MakeCodeValueReuseToken(Part));
+		}
+		const FString ReuseKey = FString::Printf(TEXT("append|%s"), *FString::Join(ReuseTokens, TEXT("|")));
+		if (TryFindReusableExpressionValue(ReuseKey, OutValue))
+		{
+			return true;
+		}
+
 		FCodeValue Current = Parts[0];
 		for (int32 Index = 1; Index < Parts.Num(); ++Index)
 		{
@@ -1786,10 +2222,13 @@ namespace UE::DreamShader::Editor::Private
 			ConnectCodeValueToInput(AppendExpression->B, Parts[Index]);
 
 			Current.Expression = AppendExpression;
+			Current.OutputIndex = 0;
 			Current.ComponentCount += Parts[Index].ComponentCount;
+			ClearCodeValueInputMask(Current);
 		}
 
 		OutValue = Current;
+		AddReusableExpressionValue(ReuseKey, OutValue);
 		return true;
 	}
 
@@ -1805,16 +2244,14 @@ namespace UE::DreamShader::Editor::Private
 			return false;
 		}
 
-		if (BaseValue.Expression && (Swizzle.Equals(TEXT("rgb"), ESearchCase::IgnoreCase) || Swizzle.Equals(TEXT("rgba"), ESearchCase::IgnoreCase)))
+		int32 DirectChannelMask = 0;
+		int32 DirectComponentCount = 0;
+		if (BaseValue.Expression
+			&& TryBuildOrderedSwizzleMask(BaseValue, Swizzle, DirectChannelMask, DirectComponentCount))
 		{
-			int32 DirectOutputIndex = INDEX_NONE;
-			if (TryResolveExpressionOutputIndex(BaseValue.Expression, Swizzle.ToUpper(), DirectOutputIndex))
+			OutValue = BaseValue;
+			if (ApplyCodeValueInputMask(OutValue, DirectChannelMask, DirectComponentCount))
 			{
-				OutValue.Expression = BaseValue.Expression;
-				OutValue.OutputIndex = DirectOutputIndex;
-				OutValue.ComponentCount = Swizzle.Len();
-				OutValue.bIsTextureObject = false;
-				OutValue.bIsMaterialAttributes = false;
 				return true;
 			}
 		}
@@ -1857,31 +2294,8 @@ namespace UE::DreamShader::Editor::Private
 
 		for (int32 Index = 0; Index < Swizzle.Len(); ++Index)
 		{
-			const TCHAR ChannelChar = FChar::ToLower(Swizzle[Index]);
 			int32 ChannelIndex = INDEX_NONE;
-			switch (ChannelChar)
-			{
-			case TCHAR('x'):
-			case TCHAR('r'):
-				ChannelIndex = 0;
-				break;
-			case TCHAR('y'):
-			case TCHAR('g'):
-				ChannelIndex = 1;
-				break;
-			case TCHAR('z'):
-			case TCHAR('b'):
-				ChannelIndex = 2;
-				break;
-			case TCHAR('w'):
-			case TCHAR('a'):
-				ChannelIndex = 3;
-				break;
-			default:
-				break;
-			}
-
-			if (ChannelIndex == INDEX_NONE || ChannelIndex >= BaseValue.ComponentCount)
+			if (!TryResolveSwizzleChannelIndex(Swizzle[Index], ChannelIndex) || ChannelIndex >= BaseValue.ComponentCount)
 			{
 				OutError = FString::Printf(TEXT("Swizzle '%s' is invalid for a value with %d components."), *Swizzle, BaseValue.ComponentCount);
 				return false;

@@ -1,6 +1,7 @@
 #include "DreamShaderMaterialGenerator.h"
 
 #include "DreamShaderDependencyGraphService.h"
+#include "DreamShaderMaterialGeneratorCodeShared.h"
 #include "DreamShaderMaterialGeneratorPrivate.h"
 
 #include "DreamShaderModule.h"
@@ -251,7 +252,7 @@ namespace UE::DreamShader::Editor
 				return false;
 			}
 
-			InputExpression->Preview.Connect(PreviewExpressionValue.OutputIndex, PreviewExpressionValue.Expression);
+			Private::ConnectCodeValueToInput(InputExpression->Preview, PreviewExpressionValue);
 			return true;
 		}
 
@@ -921,6 +922,65 @@ namespace UE::DreamShader::Editor
 			return FString::Printf(TEXT("%s: %s"), *FallbackSourceFilePath, *ParseError);
 		}
 
+		static bool LooksLikeLocatedDiagnostic(const FString& Error)
+		{
+			int32 CloseMarkerIndex = INDEX_NONE;
+			if (!Error.FindChar(TCHAR(')'), CloseMarkerIndex))
+			{
+				return false;
+			}
+
+			const int32 OpenMarkerIndex = Error.Find(TEXT("("), ESearchCase::CaseSensitive, ESearchDir::FromEnd, CloseMarkerIndex);
+			return OpenMarkerIndex != INDEX_NONE
+				&& Error.Left(OpenMarkerIndex).Find(TEXT(": ")) == INDEX_NONE
+				&& Error.Find(TEXT(": "), ESearchCase::CaseSensitive, ESearchDir::FromStart, CloseMarkerIndex) != INDEX_NONE;
+		}
+
+		static FString FormatGenerateError(const FString& SourceFilePath, const FString& Error)
+		{
+			return LooksLikeLocatedDiagnostic(Error)
+				? Error
+				: FString::Printf(TEXT("%s: %s"), *SourceFilePath, *Error);
+		}
+
+		static void ResolveCodeBlockLocation(
+			const FString& FallbackSourceFilePath,
+			const FString& PreparedSource,
+			const int32 CodeStartIndex,
+			FString& OutFilePath,
+			int32& OutLine,
+			int32& OutColumn)
+		{
+			OutFilePath = FallbackSourceFilePath;
+			OutLine = 1;
+			OutColumn = 1;
+			if (CodeStartIndex != INDEX_NONE)
+			{
+				TryMapPreparedSourceIndexToLocation(PreparedSource, CodeStartIndex, OutFilePath, OutLine, OutColumn);
+			}
+		}
+
+		static FString FormatCodeBlockError(
+			const FString& FallbackSourceFilePath,
+			const FString& CodeSourceFilePath,
+			const int32 CodeStartLine,
+			const int32 CodeStartColumn,
+			const FString& Error,
+			const int32 ErrorLine,
+			const int32 ErrorColumn)
+		{
+			if (LooksLikeLocatedDiagnostic(Error) || ErrorLine <= 0 || ErrorColumn <= 0)
+			{
+				return FormatGenerateError(FallbackSourceFilePath, Error);
+			}
+
+			const int32 Line = CodeStartLine + ErrorLine - 1;
+			const int32 Column = ErrorLine <= 1
+				? CodeStartColumn + ErrorColumn - 1
+				: ErrorColumn;
+			return FString::Printf(TEXT("%s(%d,%d): %s"), *CodeSourceFilePath, Line, Column, *Error);
+		}
+
 		static bool LoadPreparedDreamShaderSourceRecursive(
 			const FString& SourceFilePath,
 			TSet<FString>& InOutVisitedFiles,
@@ -1210,7 +1270,16 @@ namespace UE::DreamShader::Editor
 				return false;
 			}
 
-			TargetInput->Connect(SourceOutputIndex, SourceExpression);
+			Private::FCodeValue SourceValue;
+			SourceValue.Expression = SourceExpression;
+			SourceValue.OutputIndex = SourceOutputIndex;
+			Private::FCodeValue RoutedValue = Private::CreateOutputRerouteValue(
+				SourceExpression->Material,
+				SourceExpression->Function,
+				SourceValue,
+				Binding.TargetText,
+				Binding.ExpressionPinIndex);
+			Private::ConnectCodeValueToInput(*TargetInput, RoutedValue);
 			BoundPins.Add(PinKey);
 			return true;
 		}
@@ -1375,6 +1444,7 @@ namespace UE::DreamShader::Editor
 
 		bool GenerateMaterialFunctionAsset(
 			const FString& SourceFilePath,
+			const FString& PreparedSource,
 			const FString& SourceHash,
 			const FTextShaderDefinition& RootDefinition,
 			const FTextShaderMaterialFunctionDefinition& FunctionDefinition,
@@ -1619,11 +1689,24 @@ namespace UE::DreamShader::Editor
 			if (!FunctionDefinition.Code.IsEmpty())
 			{
 				FunctionSlowTask.EnterProgressFrame(1.0f, FText::FromString(FString::Printf(TEXT("Parsing Graph block for '%s'..."), *FunctionDefinition.Name)));
+				FString CodeSourceFilePath;
+				int32 CodeStartLine = 1;
+				int32 CodeStartColumn = 1;
+				ResolveCodeBlockLocation(SourceFilePath, PreparedSource, FunctionDefinition.CodeStartIndex, CodeSourceFilePath, CodeStartLine, CodeStartColumn);
 				TArray<Private::FCodeStatement> CodeStatements;
 				FString CodeParseError;
-				if (!Private::ParseCodeStatements(FunctionDefinition.Code, CodeStatements, CodeParseError))
+				int32 CodeParseErrorLine = 0;
+				int32 CodeParseErrorColumn = 0;
+				if (!Private::ParseCodeStatements(FunctionDefinition.Code, CodeStatements, CodeParseError, &CodeParseErrorLine, &CodeParseErrorColumn))
 				{
-					OutError = FString::Printf(TEXT("ShaderFunction '%s': %s"), *FunctionDefinition.Name, *CodeParseError);
+					OutError = FormatCodeBlockError(
+						SourceFilePath,
+						CodeSourceFilePath,
+						CodeStartLine,
+						CodeStartColumn,
+						FString::Printf(TEXT("ShaderFunction '%s': %s"), *FunctionDefinition.Name, *CodeParseError),
+						CodeParseErrorLine,
+						CodeParseErrorColumn);
 					return false;
 				}
 
@@ -1633,12 +1716,15 @@ namespace UE::DreamShader::Editor
 					RootDefinition,
 					SourceFilePath,
 					Private::BuildGeneratedIncludeVirtualPath(SourceFilePath),
-					&FunctionDefinition.Properties);
+					&FunctionDefinition.Properties,
+					CodeSourceFilePath,
+					CodeStartLine,
+					CodeStartColumn);
 				FString CodeBuildError;
 				FunctionSlowTask.EnterProgressFrame(2.0f, FText::FromString(FString::Printf(TEXT("Creating Graph nodes for '%s'..."), *FunctionDefinition.Name)));
 				if (!CodeGraphBuilder.Build(CodeStatements, GeneratedValues, CodeBuildError))
 				{
-					OutError = FString::Printf(TEXT("ShaderFunction '%s': %s"), *FunctionDefinition.Name, *CodeBuildError);
+					OutError = CodeBuildError;
 					return false;
 				}
 			}
@@ -1662,7 +1748,7 @@ namespace UE::DreamShader::Editor
 
 				CustomExpression->Description = FunctionDefinition.Name;
 				CustomExpression->OutputType = OutputType;
-				CustomExpression->ShowCode = true;
+				CustomExpression->ShowCode = false;
 				CustomExpression->Inputs.Reset();
 				CustomExpression->AdditionalOutputs.Reset();
 				CustomExpression->IncludeFilePaths.Reset();
@@ -1703,7 +1789,7 @@ namespace UE::DreamShader::Editor
 					FCustomInput Input;
 					Input.InputName = FName(*InputDefinition.Name);
 					CustomExpression->Inputs.Add(Input);
-					CustomExpression->Inputs.Last().Input.Connect(InputValue->OutputIndex, InputValue->Expression);
+					Private::ConnectCodeValueToInput(CustomExpression->Inputs.Last().Input, *InputValue);
 				}
 
 				for (const FTextShaderPropertyDefinition& Property : FunctionDefinition.Properties)
@@ -1828,7 +1914,13 @@ namespace UE::DreamShader::Editor
 					? OutputDefinition.Metadata.SortPriority
 					: OutputIndex;
 				RestoreOrGenerateFunctionOutputId(OutputExpression, ExistingOutputIdsByName);
-				OutputExpression->A.Connect(OutputValue->OutputIndex, OutputValue->Expression);
+				const Private::FCodeValue RoutedOutputValue = Private::CreateOutputRerouteValue(
+					nullptr,
+					MaterialFunction,
+					*OutputValue,
+					OutputDefinition.Name,
+					OutputIndex);
+				Private::ConnectCodeValueToInput(OutputExpression->A, RoutedOutputValue);
 				OutputPositionY += 180;
 			}
 
@@ -1918,9 +2010,9 @@ namespace UE::DreamShader::Editor
 		{
 			FString GeneratedAssetPath;
 			FString FunctionError;
-			if (!GenerateMaterialFunctionAsset(SourceFilePath, SourceHash, Definition, FunctionDefinition, bForce, GeneratedAssetPath, FunctionError))
+			if (!GenerateMaterialFunctionAsset(SourceFilePath, SourceText, SourceHash, Definition, FunctionDefinition, bForce, GeneratedAssetPath, FunctionError))
 			{
-				OutMessage = FString::Printf(TEXT("%s: %s"), *SourceFilePath, *FunctionError);
+				OutMessage = FormatGenerateError(SourceFilePath, FunctionError);
 				return false;
 			}
 
@@ -2155,10 +2247,23 @@ namespace UE::DreamShader::Editor
 				return false;
 			}
 
+			FString CodeSourceFilePath;
+			int32 CodeStartLine = 1;
+			int32 CodeStartColumn = 1;
+			ResolveCodeBlockLocation(SourceFilePath, SourceText, Definition.CodeStartIndex, CodeSourceFilePath, CodeStartLine, CodeStartColumn);
 			TArray<Private::FCodeStatement> GraphStatements;
-			if (!Definition.Code.IsEmpty() && !Private::ParseCodeStatements(Definition.Code, GraphStatements, CodeParseError))
+			int32 CodeParseErrorLine = 0;
+			int32 CodeParseErrorColumn = 0;
+			if (!Definition.Code.IsEmpty() && !Private::ParseCodeStatements(Definition.Code, GraphStatements, CodeParseError, &CodeParseErrorLine, &CodeParseErrorColumn))
 			{
-				OutMessage = FString::Printf(TEXT("%s: %s"), *SourceFilePath, *CodeParseError);
+				OutMessage = FormatCodeBlockError(
+					SourceFilePath,
+					CodeSourceFilePath,
+					CodeStartLine,
+					CodeStartColumn,
+					CodeParseError,
+					CodeParseErrorLine,
+					CodeParseErrorColumn);
 				return false;
 			}
 			CodeStatements.Append(GraphStatements);
@@ -2168,12 +2273,16 @@ namespace UE::DreamShader::Editor
 				nullptr,
 				Definition,
 				SourceFilePath,
-				Private::BuildGeneratedIncludeVirtualPath(SourceFilePath));
+				Private::BuildGeneratedIncludeVirtualPath(SourceFilePath),
+				nullptr,
+				CodeSourceFilePath,
+				CodeStartLine,
+				CodeStartColumn);
 			FString CodeBuildError;
 			MaterialSlowTask.EnterProgressFrame(2.0f, FText::FromString(FString::Printf(TEXT("Creating Graph nodes for '%s'..."), *Definition.Name)));
 			if (!CodeGraphBuilder.Build(CodeStatements, GeneratedCodeValues, CodeBuildError))
 			{
-				OutMessage = FString::Printf(TEXT("%s: %s"), *SourceFilePath, *CodeBuildError);
+				OutMessage = FormatGenerateError(SourceFilePath, CodeBuildError);
 				return false;
 			}
 
@@ -2238,7 +2347,13 @@ namespace UE::DreamShader::Editor
 						return false;
 					}
 
-					MaterialInput->Connect(OutputValue.OutputIndex, OutputValue.Expression);
+					const Private::FCodeValue RoutedOutputValue = Private::CreateOutputRerouteValue(
+						Material,
+						nullptr,
+						OutputValue,
+						Binding.MaterialProperty,
+						static_cast<int32>(ResolvedProperty.Property));
+					Private::ConnectCodeValueToInput(*MaterialInput, RoutedOutputValue);
 				}
 				else
 				{
@@ -2279,7 +2394,7 @@ namespace UE::DreamShader::Editor
 
 			CustomExpression->Description = Definition.Name;
 			CustomExpression->OutputType = bUsesReturn ? ReturnOutputType : CMOT_Float1;
-			CustomExpression->ShowCode = true;
+			CustomExpression->ShowCode = false;
 			CustomExpression->Inputs.Reset();
 			CustomExpression->AdditionalOutputs.Reset();
 			CustomExpression->IncludeFilePaths.Reset();
@@ -2381,7 +2496,16 @@ namespace UE::DreamShader::Editor
 						return false;
 					}
 
-					MaterialInput->Connect(SourceOutputIndex, CustomExpression);
+					Private::FCodeValue OutputValue;
+					OutputValue.Expression = CustomExpression;
+					OutputValue.OutputIndex = SourceOutputIndex;
+					const Private::FCodeValue RoutedOutputValue = Private::CreateOutputRerouteValue(
+						Material,
+						nullptr,
+						OutputValue,
+						Binding.MaterialProperty,
+						static_cast<int32>(ResolvedProperty.Property));
+					Private::ConnectCodeValueToInput(*MaterialInput, RoutedOutputValue);
 				}
 				else
 				{

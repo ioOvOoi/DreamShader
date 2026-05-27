@@ -683,7 +683,78 @@ namespace UE::DreamShader::Editor::Private
 			return false;
 		}
 
-		auto* Expression = Cast<UMaterialExpression>(CreateExpression(ExpressionClass, 520, ConsumeNodeY()));
+		const FCodeCallArgument* OutputNameArgument = FindNamedArgument(Arguments, TEXT("Output"));
+		if (!OutputNameArgument)
+		{
+			OutputNameArgument = FindNamedArgument(Arguments, TEXT("OutputName"));
+		}
+		const FCodeCallArgument* OutputIndexArgument = FindNamedArgument(Arguments, TEXT("OutputIndex"));
+		if (OutputNameArgument && OutputIndexArgument)
+		{
+			OutError = FString::Printf(TEXT("UE.%s cannot use OutputName/Output together with OutputIndex."), *FunctionName);
+			return false;
+		}
+
+		const bool bCanReuseExpressionNode = !ExpressionClass->IsChildOf(UMaterialExpressionCustom::StaticClass());
+		FString ExpressionReuseKey;
+		FString OutputReuseKey;
+		if (bCanReuseExpressionNode)
+		{
+			TSet<FString> ExcludedReuseArguments;
+			ExcludedReuseArguments.Add(UE::DreamShader::NormalizeSettingKey(TEXT("Class")));
+			ExcludedReuseArguments.Add(UE::DreamShader::NormalizeSettingKey(TEXT("OutputType")));
+			ExcludedReuseArguments.Add(UE::DreamShader::NormalizeSettingKey(TEXT("ResultType")));
+			ExcludedReuseArguments.Add(UE::DreamShader::NormalizeSettingKey(TEXT("Output")));
+			ExcludedReuseArguments.Add(UE::DreamShader::NormalizeSettingKey(TEXT("OutputName")));
+			ExcludedReuseArguments.Add(UE::DreamShader::NormalizeSettingKey(TEXT("OutputIndex")));
+
+			if (TryBuildReusableCallKey(TEXT("UE"), FunctionName, Arguments, ExcludedReuseArguments, ExpressionReuseKey))
+			{
+				ExpressionReuseKey = FString::Printf(
+					TEXT("%s|Class=%s|OutputType=%s"),
+					*ExpressionReuseKey,
+					*ExpressionClass->GetName(),
+					*NormalizeCodeReuseLiteralText(OutputTypeText));
+				if (OutputNameArgument)
+				{
+					FString OutputNameText;
+					if (TryExtractLiteralText(OutputNameArgument->Expression, OutputNameText))
+					{
+						OutputReuseKey = ExpressionReuseKey + FString::Printf(TEXT("|OutputName=%s"), *NormalizeCodeReuseLiteralText(OutputNameText));
+					}
+				}
+				else if (OutputIndexArgument)
+				{
+					FString OutputIndexText;
+					if (TryExtractLiteralText(OutputIndexArgument->Expression, OutputIndexText))
+					{
+						OutputReuseKey = ExpressionReuseKey + FString::Printf(TEXT("|OutputIndex=%s"), *NormalizeCodeReuseLiteralText(OutputIndexText));
+					}
+				}
+				else
+				{
+					OutputReuseKey = ExpressionReuseKey + TEXT("|OutputIndex=0");
+				}
+				if (TryFindReusableExpressionValue(OutputReuseKey, OutValue))
+				{
+					return true;
+				}
+			}
+		}
+
+		UMaterialExpression* Expression = nullptr;
+		FCodeValue ReusableExpressionNodeValue;
+		bool bReusedExpressionNode = false;
+		if (TryFindReusableExpressionValue(ExpressionReuseKey, ReusableExpressionNodeValue))
+		{
+			Expression = Cast<UMaterialExpression>(ReusableExpressionNodeValue.Expression);
+			bReusedExpressionNode = Expression != nullptr;
+		}
+
+		if (!Expression)
+		{
+			Expression = Cast<UMaterialExpression>(CreateExpression(ExpressionClass, 520, ConsumeNodeY()));
+		}
 		if (!Expression)
 		{
 			OutError = FString::Printf(TEXT("UE.%s failed to create '%s'."), *FunctionName, *ExpressionClass->GetName());
@@ -691,7 +762,7 @@ namespace UE::DreamShader::Editor::Private
 		}
 
 		UMaterialExpressionCustom* CustomExpression = Cast<UMaterialExpressionCustom>(Expression);
-		if (CustomExpression)
+		if (CustomExpression && !bReusedExpressionNode)
 		{
 			ECustomMaterialOutputType CustomOutputType = CMOT_Float1;
 			if (!TryResolveCustomOutputType(OutputTypeText, CustomOutputType))
@@ -750,14 +821,22 @@ namespace UE::DreamShader::Editor::Private
 
 				FCustomInput CustomInput;
 				CustomInput.InputName = FName(*Argument.Name);
-				CustomExpression->Inputs.Add(CustomInput);
-				ConnectCodeValueToInput(CustomExpression->Inputs.Last().Input, InputValue);
+				if (!bReusedExpressionNode)
+				{
+					CustomExpression->Inputs.Add(CustomInput);
+					ConnectCodeValueToInput(CustomExpression->Inputs.Last().Input, InputValue);
+				}
 				BoundInputValues.Add(TPair<FName, FCodeValue>(FName(*NormalizedArgumentName), InputValue));
 				continue;
 			}
 
 			if (BoundInputByPinName || IsMaterialExpressionInputProperty(BoundProperty))
 			{
+				if (bReusedExpressionNode)
+				{
+					continue;
+				}
+
 				FCodeValue InputValue;
 				if (!EvaluateExpression(Argument.Expression, InputValue, OutError))
 				{
@@ -779,6 +858,11 @@ namespace UE::DreamShader::Editor::Private
 			}
 			else
 			{
+				if (bReusedExpressionNode)
+				{
+					continue;
+				}
+
 				FString LiteralText;
 				const bool bWantsAssetReference = CastField<FObjectPropertyBase>(BoundProperty) != nullptr;
 				if (bWantsAssetReference)
@@ -802,18 +886,6 @@ namespace UE::DreamShader::Editor::Private
 					return false;
 				}
 			}
-		}
-
-		const FCodeCallArgument* OutputNameArgument = FindNamedArgument(Arguments, TEXT("Output"));
-		if (!OutputNameArgument)
-		{
-			OutputNameArgument = FindNamedArgument(Arguments, TEXT("OutputName"));
-		}
-		const FCodeCallArgument* OutputIndexArgument = FindNamedArgument(Arguments, TEXT("OutputIndex"));
-		if (OutputNameArgument && OutputIndexArgument)
-		{
-			OutError = FString::Printf(TEXT("UE.%s cannot use OutputName/Output together with OutputIndex."), *FunctionName);
-			return false;
 		}
 
 		if (CustomExpression)
@@ -1036,6 +1108,15 @@ namespace UE::DreamShader::Editor::Private
 		OutValue.bIsTextureObject = bIsTextureObject;
 		OutValue.TextureType = TextureType;
 		OutValue.bIsMaterialAttributes = IsMaterialAttributesComponentType(OutputComponents, bIsTextureObject);
+		if (!ExpressionReuseKey.IsEmpty())
+		{
+			FCodeValue ExpressionNodeValue;
+			ExpressionNodeValue.Expression = Expression;
+			ExpressionNodeValue.OutputIndex = 0;
+			ExpressionNodeValue.ComponentCount = 0;
+			AddReusableExpressionValue(ExpressionReuseKey, ExpressionNodeValue);
+			AddReusableExpressionValue(OutputReuseKey, OutValue);
+		}
 		return true;
 	}
 }

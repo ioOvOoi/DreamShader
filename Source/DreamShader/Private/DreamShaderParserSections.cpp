@@ -1100,7 +1100,17 @@ namespace UE::DreamShader::Private
 		return true;
 	}
 
-	bool ParseShaderBody(const FString& BodyContent, FTextShaderDefinition& OutDefinition, FString& OutError)
+	static int32 GetTrimStartDelta(const FString& Text)
+	{
+		int32 Index = 0;
+		while (Text.IsValidIndex(Index) && FChar::IsWhitespace(Text[Index]))
+		{
+			++Index;
+		}
+		return Index;
+	}
+
+	bool ParseShaderBody(const FString& BodyContent, const int32 BodyContentStartIndex, FTextShaderDefinition& OutDefinition, FString& OutError)
 	{
 		FScanner Scanner(BodyContent);
 		while (true)
@@ -1123,7 +1133,8 @@ namespace UE::DreamShader::Private
 			}
 
 			FString SectionBody;
-			if (!Scanner.ExtractBalancedBlock(SectionBody, OutError))
+			int32 SectionBodyStartIndex = INDEX_NONE;
+			if (!Scanner.ExtractBalancedBlock(SectionBody, SectionBodyStartIndex, OutError))
 			{
 				return false;
 			}
@@ -1152,6 +1163,7 @@ namespace UE::DreamShader::Private
 			else if (SectionName.Equals(TEXT("Graph"), ESearchCase::IgnoreCase))
 			{
 				OutDefinition.Code = SectionBody.TrimStartAndEnd();
+				OutDefinition.CodeStartIndex = BodyContentStartIndex + SectionBodyStartIndex + GetTrimStartDelta(SectionBody);
 			}
 			else if (SectionName.Equals(TEXT("Code"), ESearchCase::IgnoreCase))
 			{
@@ -1225,7 +1237,7 @@ namespace UE::DreamShader::Private
 		}
 	}
 
-	bool ParseMaterialFunctionBody(const FString& BodyContent, FTextShaderMaterialFunctionDefinition& OutFunction, FString& OutError)
+	bool ParseMaterialFunctionBody(const FString& BodyContent, const int32 BodyContentStartIndex, FTextShaderMaterialFunctionDefinition& OutFunction, FString& OutError)
 	{
 		FScanner Scanner(BodyContent);
 		while (true)
@@ -1248,7 +1260,8 @@ namespace UE::DreamShader::Private
 			}
 
 			FString SectionBody;
-			if (!Scanner.ExtractBalancedBlock(SectionBody, OutError))
+			int32 SectionBodyStartIndex = INDEX_NONE;
+			if (!Scanner.ExtractBalancedBlock(SectionBody, SectionBodyStartIndex, OutError))
 			{
 				return false;
 			}
@@ -1285,6 +1298,7 @@ namespace UE::DreamShader::Private
 			else if (SectionName.Equals(TEXT("Graph"), ESearchCase::IgnoreCase))
 			{
 				OutFunction.Code = SectionBody.TrimStartAndEnd();
+				OutFunction.CodeStartIndex = BodyContentStartIndex + SectionBodyStartIndex + GetTrimStartDelta(SectionBody);
 			}
 			else if (SectionName.Equals(TEXT("Code"), ESearchCase::IgnoreCase))
 			{
