@@ -303,7 +303,21 @@ namespace UE::DreamShader::Editor::Private
 			OutComponentCount = 3;
 			return true;
 		}
+		if (ClassName.Equals(TEXT("MaterialExpressionPixelNormalWS"), ESearchCase::IgnoreCase)
+			|| ClassName.Equals(TEXT("MaterialExpressionCrossProduct"), ESearchCase::IgnoreCase))
+		{
+			OutComponentCount = 3;
+			return true;
+		}
 		if (ClassName.Equals(TEXT("MaterialExpressionPixelDepth"), ESearchCase::IgnoreCase))
+		{
+			OutComponentCount = 1;
+			return true;
+		}
+		if (ClassName.Equals(TEXT("MaterialExpressionTwoSidedSign"), ESearchCase::IgnoreCase)
+			|| ClassName.Equals(TEXT("MaterialExpressionArctangent2Fast"), ESearchCase::IgnoreCase)
+			|| ClassName.Equals(TEXT("MaterialExpressionLength"), ESearchCase::IgnoreCase)
+			|| ClassName.Equals(TEXT("MaterialExpressionMaterialXLuminance"), ESearchCase::IgnoreCase))
 		{
 			OutComponentCount = 1;
 			return true;

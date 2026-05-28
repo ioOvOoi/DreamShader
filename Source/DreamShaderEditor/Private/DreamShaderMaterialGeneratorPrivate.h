@@ -124,6 +124,7 @@ namespace UE::DreamShader::Editor::Private
 		bool bIsTextureObject = false;
 		ETextShaderTextureType TextureType = ETextShaderTextureType::Texture2D;
 		bool bIsMaterialAttributes = false;
+		bool bHasAuthoritativeComponentCount = false;
 	};
 
 	bool ParseCodeExpression(const FString& InExpression, TSharedPtr<FCodeExpression>& OutExpression, FString& OutError);

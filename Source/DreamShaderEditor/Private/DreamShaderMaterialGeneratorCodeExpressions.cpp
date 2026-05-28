@@ -232,6 +232,18 @@ namespace UE::DreamShader::Editor::Private
 				return false;
 			}
 
+			if (EvaluatedValue.bHasAuthoritativeComponentCount
+				&& !EvaluatedValue.bIsTextureObject
+				&& !EvaluatedValue.bIsMaterialAttributes
+				&& !bExpectedTexture
+				&& ExpectedComponentCount > 0
+				&& EvaluatedValue.ComponentCount != ExpectedComponentCount)
+			{
+				(*Values).Add(Statement.TargetName, EvaluatedValue);
+				RegisterGeneratedVariable(Statement, EvaluatedValue);
+				return true;
+			}
+
 			FCodeValue CoercedValue;
 			if (!CoerceValueToType(EvaluatedValue, ExpectedComponentCount, bExpectedTexture, ExpectedTextureType, CoercedValue, OutError))
 			{
@@ -397,7 +409,7 @@ namespace UE::DreamShader::Editor::Private
 	static FString MakeCodeValueReuseToken(const FCodeValue& Value)
 	{
 		return FString::Printf(
-			TEXT("Expr=%s|Out=%d|Comp=%d|Mask=%d%d%d%d%d|Tex=%d|TexType=%d|MA=%d"),
+			TEXT("Expr=%s|Out=%d|Comp=%d|Mask=%d%d%d%d%d|Tex=%d|TexType=%d|MA=%d|Auth=%d"),
 			Value.Expression ? *Value.Expression->GetPathName() : TEXT("<null>"),
 			Value.OutputIndex,
 			Value.ComponentCount,
@@ -408,7 +420,8 @@ namespace UE::DreamShader::Editor::Private
 			Value.InputMaskA ? 1 : 0,
 			Value.bIsTextureObject ? 1 : 0,
 			static_cast<int32>(Value.TextureType),
-			Value.bIsMaterialAttributes ? 1 : 0);
+			Value.bIsMaterialAttributes ? 1 : 0,
+			Value.bHasAuthoritativeComponentCount ? 1 : 0);
 	}
 
 	static void CollectChangedValueNames(
@@ -1486,31 +1499,61 @@ namespace UE::DreamShader::Editor::Private
 		FCodeValue& OutValue,
 		FString& OutError)
 	{
-		if (LeftValue.bIsTextureObject || RightValue.bIsTextureObject)
+		FCodeValue LeftOperand = LeftValue;
+		FCodeValue RightOperand = RightValue;
+
+		if (LeftOperand.bIsTextureObject || RightOperand.bIsTextureObject)
 		{
 			OutError = TEXT("Arithmetic operators cannot be applied to texture values.");
 			return false;
 		}
-		if (LeftValue.bIsMaterialAttributes || RightValue.bIsMaterialAttributes)
+		if (LeftOperand.bIsMaterialAttributes || RightOperand.bIsMaterialAttributes)
 		{
 			OutError = TEXT("Arithmetic operators cannot be applied to MaterialAttributes values.");
 			return false;
 		}
-		if (!IsScalarVectorCompatible(LeftValue, RightValue))
+
+		if (!IsScalarVectorCompatible(LeftOperand, RightOperand))
+		{
+			auto TryCoerceNonAuthoritativeOperand = [this, &OutError](const FCodeValue& AuthoritativeValue, FCodeValue& OtherValue) -> bool
+			{
+				if (!AuthoritativeValue.bHasAuthoritativeComponentCount
+					|| OtherValue.bHasAuthoritativeComponentCount
+					|| AuthoritativeValue.ComponentCount <= 0)
+				{
+					return false;
+				}
+
+				FCodeValue CoercedValue;
+				FString CoerceError;
+				if (!CoerceValueToType(OtherValue, AuthoritativeValue.ComponentCount, false, CoercedValue, CoerceError))
+				{
+					return false;
+				}
+
+				OtherValue = CoercedValue;
+				return true;
+			};
+
+			TryCoerceNonAuthoritativeOperand(LeftOperand, RightOperand)
+				|| TryCoerceNonAuthoritativeOperand(RightOperand, LeftOperand);
+		}
+
+		if (!IsScalarVectorCompatible(LeftOperand, RightOperand))
 		{
 			OutError = FString::Printf(
 				TEXT("Operator '%s' requires matching vector sizes or a scalar/vector pair, got %d and %d component(s)."),
 				*Operator,
-				LeftValue.ComponentCount,
-				RightValue.ComponentCount);
+				LeftOperand.ComponentCount,
+				RightOperand.ComponentCount);
 			return false;
 		}
 
 		FString ReuseKey = FString::Printf(
 			TEXT("binary-node|%s|%s|%s"),
 			*Operator,
-			*MakeCodeValueReuseToken(LeftValue),
-			*MakeCodeValueReuseToken(RightValue));
+			*MakeCodeValueReuseToken(LeftOperand),
+			*MakeCodeValueReuseToken(RightOperand));
 		if (TryFindReusableExpressionValue(ReuseKey, OutValue))
 		{
 			return true;
@@ -1525,8 +1568,8 @@ namespace UE::DreamShader::Editor::Private
 				CreateExpression(UMaterialExpressionAdd::StaticClass(), 160, PositionY));
 			if (AddExpression)
 			{
-				ConnectCodeValueToInput(AddExpression->A, LeftValue);
-				ConnectCodeValueToInput(AddExpression->B, RightValue);
+				ConnectCodeValueToInput(AddExpression->A, LeftOperand);
+				ConnectCodeValueToInput(AddExpression->B, RightOperand);
 				Expression = AddExpression;
 			}
 		}
@@ -1536,8 +1579,8 @@ namespace UE::DreamShader::Editor::Private
 				CreateExpression(UMaterialExpressionSubtract::StaticClass(), 160, PositionY));
 			if (SubtractExpression)
 			{
-				ConnectCodeValueToInput(SubtractExpression->A, LeftValue);
-				ConnectCodeValueToInput(SubtractExpression->B, RightValue);
+				ConnectCodeValueToInput(SubtractExpression->A, LeftOperand);
+				ConnectCodeValueToInput(SubtractExpression->B, RightOperand);
 				Expression = SubtractExpression;
 			}
 		}
@@ -1547,8 +1590,8 @@ namespace UE::DreamShader::Editor::Private
 				CreateExpression(UMaterialExpressionMultiply::StaticClass(), 160, PositionY));
 			if (MultiplyExpression)
 			{
-				ConnectCodeValueToInput(MultiplyExpression->A, LeftValue);
-				ConnectCodeValueToInput(MultiplyExpression->B, RightValue);
+				ConnectCodeValueToInput(MultiplyExpression->A, LeftOperand);
+				ConnectCodeValueToInput(MultiplyExpression->B, RightOperand);
 				Expression = MultiplyExpression;
 			}
 		}
@@ -1558,8 +1601,8 @@ namespace UE::DreamShader::Editor::Private
 				CreateExpression(UMaterialExpressionDivide::StaticClass(), 160, PositionY));
 			if (DivideExpression)
 			{
-				ConnectCodeValueToInput(DivideExpression->A, LeftValue);
-				ConnectCodeValueToInput(DivideExpression->B, RightValue);
+				ConnectCodeValueToInput(DivideExpression->A, LeftOperand);
+				ConnectCodeValueToInput(DivideExpression->B, RightOperand);
 				Expression = DivideExpression;
 			}
 		}
@@ -1571,7 +1614,9 @@ namespace UE::DreamShader::Editor::Private
 		}
 
 		OutValue.Expression = Expression;
-		OutValue.ComponentCount = FMath::Max(LeftValue.ComponentCount, RightValue.ComponentCount);
+		OutValue.ComponentCount = FMath::Max(LeftOperand.ComponentCount, RightOperand.ComponentCount);
+		OutValue.bHasAuthoritativeComponentCount =
+			LeftOperand.bHasAuthoritativeComponentCount || RightOperand.bHasAuthoritativeComponentCount;
 		ClearCodeValueInputMask(OutValue);
 		AddReusableExpressionValue(ReuseKey, OutValue);
 		return true;
@@ -1670,6 +1715,8 @@ namespace UE::DreamShader::Editor::Private
 			OutValue.ComponentCount = OutputComponentCount > 0 ? OutputComponentCount : InputValue.ComponentCount;
 			OutValue.bIsTextureObject = false;
 			OutValue.bIsMaterialAttributes = false;
+			OutValue.bHasAuthoritativeComponentCount =
+				OutputComponentCount > 0 || InputValue.bHasAuthoritativeComponentCount;
 			AddReusableExpressionValue(ReuseKey, OutValue);
 			return true;
 		};
@@ -1714,6 +1761,8 @@ namespace UE::DreamShader::Editor::Private
 			ConnectCodeValueToInput(Expression->Alpha, Alpha);
 			OutValue.Expression = Expression;
 			OutValue.ComponentCount = FMath::Max(A.ComponentCount, B.ComponentCount);
+			OutValue.bHasAuthoritativeComponentCount =
+				A.bHasAuthoritativeComponentCount || B.bHasAuthoritativeComponentCount;
 			AddReusableExpressionValue(ReuseKey, OutValue);
 			return true;
 		}
@@ -1754,6 +1803,7 @@ namespace UE::DreamShader::Editor::Private
 			ConnectCodeValueToInput(Expression->B, B);
 			OutValue.Expression = Expression;
 			OutValue.ComponentCount = 1;
+			OutValue.bHasAuthoritativeComponentCount = true;
 			AddReusableExpressionValue(ReuseKey, OutValue);
 			return true;
 		}
@@ -1794,6 +1844,7 @@ namespace UE::DreamShader::Editor::Private
 			ConnectCodeValueToInput(Expression->Exponent, Exponent);
 			OutValue.Expression = Expression;
 			OutValue.ComponentCount = Base.ComponentCount;
+			OutValue.bHasAuthoritativeComponentCount = Base.bHasAuthoritativeComponentCount;
 			AddReusableExpressionValue(ReuseKey, OutValue);
 			return true;
 		}
@@ -1846,6 +1897,8 @@ namespace UE::DreamShader::Editor::Private
 
 			OutValue.Expression = RawExpression;
 			OutValue.ComponentCount = FMath::Max(A.ComponentCount, B.ComponentCount);
+			OutValue.bHasAuthoritativeComponentCount =
+				A.bHasAuthoritativeComponentCount || B.bHasAuthoritativeComponentCount;
 			AddReusableExpressionValue(ReuseKey, OutValue);
 			return true;
 		}
@@ -1889,6 +1942,7 @@ namespace UE::DreamShader::Editor::Private
 			ConnectCodeValueToInput(Expression->Max, Max);
 			OutValue.Expression = Expression;
 			OutValue.ComponentCount = Input.ComponentCount;
+			OutValue.bHasAuthoritativeComponentCount = Input.bHasAuthoritativeComponentCount;
 			AddReusableExpressionValue(ReuseKey, OutValue);
 			return true;
 		}
@@ -2176,6 +2230,7 @@ namespace UE::DreamShader::Editor::Private
 			OutError = TEXT("Failed to compose swizzle channel mask.");
 			return false;
 		}
+		OutValue.bHasAuthoritativeComponentCount = BaseValue.bHasAuthoritativeComponentCount;
 		return true;
 	}
 
@@ -2236,9 +2291,12 @@ namespace UE::DreamShader::Editor::Private
 			ConnectCodeValueToInput(AppendExpression->A, Current);
 			ConnectCodeValueToInput(AppendExpression->B, Parts[Index]);
 
+			const bool bHasAuthoritativeComponentCount =
+				Current.bHasAuthoritativeComponentCount || Parts[Index].bHasAuthoritativeComponentCount;
 			Current.Expression = AppendExpression;
 			Current.OutputIndex = 0;
 			Current.ComponentCount += Parts[Index].ComponentCount;
+			Current.bHasAuthoritativeComponentCount = bHasAuthoritativeComponentCount;
 			ClearCodeValueInputMask(Current);
 		}
 
@@ -2267,6 +2325,7 @@ namespace UE::DreamShader::Editor::Private
 			OutValue = BaseValue;
 			if (ApplyCodeValueInputMask(OutValue, DirectChannelMask, DirectComponentCount))
 			{
+				OutValue.bHasAuthoritativeComponentCount = BaseValue.bHasAuthoritativeComponentCount;
 				return true;
 			}
 		}

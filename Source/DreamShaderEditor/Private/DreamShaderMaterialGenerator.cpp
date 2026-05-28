@@ -1082,13 +1082,9 @@ namespace UE::DreamShader::Editor
 			}
 
 			if (UE::DreamShader::IsDreamShaderFunctionFile(NormalizedPath)
-				&& (SanitizedSourceText.Contains(TEXT("Shader("), ESearchCase::IgnoreCase)
-					|| SanitizedSourceText.Contains(TEXT("ShaderLayer("), ESearchCase::IgnoreCase)
-					|| SanitizedSourceText.Contains(TEXT("ShaderLayerBlend("), ESearchCase::IgnoreCase)
-					|| SanitizedSourceText.Contains(TEXT("MaterialLayer("), ESearchCase::IgnoreCase)
-					|| SanitizedSourceText.Contains(TEXT("MaterialLayerBlend("), ESearchCase::IgnoreCase)))
+				&& SanitizedSourceText.Contains(TEXT("Shader("), ESearchCase::IgnoreCase))
 			{
-				OutError = FString::Printf(TEXT("DreamShader function file '%s' may only declare imports, Function/Namespace/GraphFunction/VirtualFunction blocks, and ShaderFunction blocks."), *NormalizedPath);
+				OutError = FString::Printf(TEXT("DreamShader function file '%s' may only declare imports, Function/Namespace/GraphFunction/VirtualFunction blocks, and ShaderFunction/ShaderLayer/ShaderLayerBlend blocks."), *NormalizedPath);
 				return false;
 			}
 

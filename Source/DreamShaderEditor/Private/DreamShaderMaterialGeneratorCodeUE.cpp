@@ -460,6 +460,7 @@ namespace UE::DreamShader::Editor::Private
 			OutValue.ComponentCount = OutputComponents;
 			OutValue.bIsTextureObject = false;
 			OutValue.bIsMaterialAttributes = false;
+			OutValue.bHasAuthoritativeComponentCount = true;
 			return true;
 		};
 
@@ -655,6 +656,7 @@ namespace UE::DreamShader::Editor::Private
 		int32 OutputComponents = 0;
 		bool bIsTextureObject = false;
 		ETextShaderTextureType TextureType = ETextShaderTextureType::Texture2D;
+		bool bHasAuthoritativeComponentCount = false;
 		if (!TryResolveCodeDeclaredType(OutputTypeText, OutputComponents, bIsTextureObject, TextureType))
 		{
 			OutError = FString::Printf(TEXT("UE.%s OutputType '%s' is not supported."), *FunctionName, *OutputTypeText);
@@ -1026,16 +1028,17 @@ namespace UE::DreamShader::Editor::Private
 			return nullptr;
 		};
 
-		auto ApplyNumericInputComponentCount = [&OutputComponents, &bIsTextureObject](const FCodeValue* InputValue)
+		auto ApplyNumericInputComponentCount = [&OutputComponents, &bIsTextureObject, &bHasAuthoritativeComponentCount](const FCodeValue* InputValue)
 		{
 			if (InputValue && !InputValue->bIsTextureObject && !InputValue->bIsMaterialAttributes && InputValue->ComponentCount > 0)
 			{
 				OutputComponents = InputValue->ComponentCount;
 				bIsTextureObject = false;
+				bHasAuthoritativeComponentCount = true;
 			}
 		};
 
-		auto ApplyMaxNumericInputComponentCount = [&OutputComponents, &bIsTextureObject](const FCodeValue* FirstInput, const FCodeValue* SecondInput)
+		auto ApplyMaxNumericInputComponentCount = [&OutputComponents, &bIsTextureObject, &bHasAuthoritativeComponentCount](const FCodeValue* FirstInput, const FCodeValue* SecondInput)
 		{
 			int32 MaxComponentCount = 0;
 			for (const FCodeValue* InputValue : { FirstInput, SecondInput })
@@ -1049,6 +1052,7 @@ namespace UE::DreamShader::Editor::Private
 			{
 				OutputComponents = MaxComponentCount;
 				bIsTextureObject = false;
+				bHasAuthoritativeComponentCount = true;
 			}
 		};
 
@@ -1075,6 +1079,24 @@ namespace UE::DreamShader::Editor::Private
 		else if (Expression->IsA<UMaterialExpressionStaticSwitchParameter>())
 		{
 			ApplyMaxNumericInputComponentCount(FindBoundInputValue(TEXT("True")), FindBoundInputValue(TEXT("False")));
+		}
+		else if (Expression->IsA<UMaterialExpressionIf>())
+		{
+			int32 MaxBranchComponentCount = 0;
+			for (const TCHAR* BranchInputName : { TEXT("AGreaterThanB"), TEXT("AEqualsB"), TEXT("ALessThanB") })
+			{
+				const FCodeValue* BranchValue = FindBoundInputValue(BranchInputName);
+				if (BranchValue && !BranchValue->bIsTextureObject && !BranchValue->bIsMaterialAttributes)
+				{
+					MaxBranchComponentCount = FMath::Max(MaxBranchComponentCount, BranchValue->ComponentCount);
+				}
+			}
+			if (MaxBranchComponentCount > 0)
+			{
+				OutputComponents = MaxBranchComponentCount;
+				bIsTextureObject = false;
+				bHasAuthoritativeComponentCount = true;
+			}
 		}
 		else if (UMaterialExpressionStaticComponentMaskParameter* StaticComponentMaskExpression = Cast<UMaterialExpressionStaticComponentMaskParameter>(Expression))
 		{
@@ -1108,6 +1130,17 @@ namespace UE::DreamShader::Editor::Private
 		OutValue.bIsTextureObject = bIsTextureObject;
 		OutValue.TextureType = TextureType;
 		OutValue.bIsMaterialAttributes = IsMaterialAttributesComponentType(OutputComponents, bIsTextureObject);
+		OutValue.bHasAuthoritativeComponentCount = bHasAuthoritativeComponentCount;
+		if (!OutValue.bHasAuthoritativeComponentCount && !bIsTextureObject && OutputComponents > 0)
+		{
+			int32 KnownOutputComponents = 0;
+			if (TryResolveKnownExpressionOutputComponentCount(Expression, ResolvedOutputIndex, KnownOutputComponents)
+				&& KnownOutputComponents > 0
+				&& KnownOutputComponents == OutputComponents)
+			{
+				OutValue.bHasAuthoritativeComponentCount = true;
+			}
+		}
 		if (!ExpressionReuseKey.IsEmpty())
 		{
 			FCodeValue ExpressionNodeValue;

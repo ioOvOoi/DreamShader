@@ -834,6 +834,17 @@ namespace UE::DreamShader::Editor::Private
 			{
 				return Finish(FMath::Max(ResolveInputComponentCount(Lerp->A, 1), ResolveInputComponentCount(Lerp->B, 1)));
 			}
+			if (UMaterialExpressionIf* IfExpression = Cast<UMaterialExpressionIf>(Expression))
+			{
+				int32 ComponentCount = FMath::Max(
+					ResolveInputComponentCount(IfExpression->AGreaterThanB, 1),
+					ResolveInputComponentCount(IfExpression->ALessThanB, 1));
+				if (IfExpression->AEqualsB.GetTracedInput().Expression)
+				{
+					ComponentCount = FMath::Max(ComponentCount, ResolveInputComponentCount(IfExpression->AEqualsB, 1));
+				}
+				return Finish(ComponentCount);
+			}
 			if (UMaterialExpressionStaticSwitchParameter* StaticSwitch = Cast<UMaterialExpressionStaticSwitchParameter>(Expression))
 			{
 				return Finish(FMath::Max(ResolveInputComponentCount(StaticSwitch->A, 1), ResolveInputComponentCount(StaticSwitch->B, 1)));
@@ -890,6 +901,21 @@ namespace UE::DreamShader::Editor::Private
 			if (UMaterialExpressionCosine* Cosine = Cast<UMaterialExpressionCosine>(Expression))
 			{
 				return Finish(ResolveInputComponentCount(Cosine->Input, 1));
+			}
+
+			const FString ClassName = Expression->GetClass()->GetName();
+			if (ClassName.Equals(TEXT("MaterialExpressionPixelNormalWS"), ESearchCase::IgnoreCase)
+				|| ClassName.Equals(TEXT("MaterialExpressionCrossProduct"), ESearchCase::IgnoreCase))
+			{
+				return Finish(3);
+			}
+			if (ClassName.Equals(TEXT("MaterialExpressionPixelDepth"), ESearchCase::IgnoreCase)
+				|| ClassName.Equals(TEXT("MaterialExpressionTwoSidedSign"), ESearchCase::IgnoreCase)
+				|| ClassName.Equals(TEXT("MaterialExpressionArctangent2Fast"), ESearchCase::IgnoreCase)
+				|| ClassName.Equals(TEXT("MaterialExpressionLength"), ESearchCase::IgnoreCase)
+				|| ClassName.Equals(TEXT("MaterialExpressionMaterialXLuminance"), ESearchCase::IgnoreCase))
+			{
+				return Finish(1);
 			}
 
 			const EMaterialValueType OutputType = Expression->GetOutputValueType(OutputIndex);
