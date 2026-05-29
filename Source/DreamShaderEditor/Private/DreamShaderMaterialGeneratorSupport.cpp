@@ -3215,6 +3215,22 @@ namespace UE::DreamShader::Editor::Private
 				ConsumerBlockIndex);
 		}
 
+		static bool IsDistantLayoutConnection(
+			const UMaterialExpression* SourceExpression,
+			const UMaterialExpression* ConsumerExpression)
+		{
+			if (!SourceExpression || !ConsumerExpression)
+			{
+				return false;
+			}
+
+			constexpr int32 MinBridgeDistanceX = 900;
+			constexpr int32 MinBridgeDistanceY = 540;
+			const int32 DeltaX = FMath::Abs(SourceExpression->MaterialExpressionEditorX - ConsumerExpression->MaterialExpressionEditorX);
+			const int32 DeltaY = FMath::Abs(SourceExpression->MaterialExpressionEditorY - ConsumerExpression->MaterialExpressionEditorY);
+			return DeltaX >= MinBridgeDistanceX || DeltaY >= MinBridgeDistanceY;
+		}
+
 		static void ConnectInputToExpressionPreservingMask(
 			FExpressionInput& Input,
 			UMaterialExpression* Expression,
@@ -3559,10 +3575,12 @@ namespace UE::DreamShader::Editor::Private
 			UMaterialExpressionNamedRerouteDeclaration* Declaration,
 			const int32 ConsumerBlockIndex,
 			TMap<FString, UMaterialExpressionNamedRerouteUsage*>& UsagesByDeclarationAndBlock,
+			TMap<int32, int32>& UsageSlotByBlock,
 			TArray<UMaterialExpression*>& Expressions,
 			TSet<UMaterialExpression*>& ExpressionSet,
 			TMap<UMaterialExpression*, int32>& OwnerBlockByExpression,
-			TArray<FGeneratedLayoutBlock>& Blocks)
+			TArray<FGeneratedLayoutBlock>& Blocks,
+			const UMaterialExpression* ConsumerExpression)
 		{
 			if (!Declaration || !Blocks.IsValidIndex(ConsumerBlockIndex) || (!Material && !MaterialFunction))
 			{
@@ -3575,13 +3593,25 @@ namespace UE::DreamShader::Editor::Private
 				return *ExistingUsage;
 			}
 
+			const int32 SlotIndex = UsageSlotByBlock.FindOrAdd(ConsumerBlockIndex)++;
+			const int32 SlotStep = ((SlotIndex + 1) / 2) * 80;
+			const int32 SlotOffsetY = SlotIndex == 0
+				? 0
+				: ((SlotIndex % 2) == 0 ? -SlotStep : SlotStep);
+			const int32 UsageX = ConsumerExpression
+				? ConsumerExpression->MaterialExpressionEditorX - 360
+				: Declaration->MaterialExpressionEditorX;
+			const int32 UsageY = ConsumerExpression
+				? ConsumerExpression->MaterialExpressionEditorY + SlotOffsetY
+				: Declaration->MaterialExpressionEditorY + SlotOffsetY;
+
 			auto* Usage = Cast<UMaterialExpressionNamedRerouteUsage>(
 				CreateOwnedMaterialExpression(
 					Material,
 					MaterialFunction,
 					UMaterialExpressionNamedRerouteUsage::StaticClass(),
-					Declaration->MaterialExpressionEditorX,
-					Declaration->MaterialExpressionEditorY));
+					UsageX,
+					UsageY));
 			if (!Usage)
 			{
 				return nullptr;
@@ -3605,10 +3635,12 @@ namespace UE::DreamShader::Editor::Private
 			TArray<FGeneratedLayoutBlock>& Blocks,
 			TMap<UMaterialExpression*, int32>& OwnerBlockByExpression,
 			TMap<UMaterialExpression*, TArray<UMaterialExpression*>>& Dependencies,
-			TMap<UMaterialExpression*, TArray<UMaterialExpression*>>& Consumers)
+			TMap<UMaterialExpression*, TArray<UMaterialExpression*>>& Consumers,
+			const bool bOnlyDistantConnections)
 		{
 			TMap<FString, UMaterialExpressionNamedRerouteDeclaration*> DeclarationsBySourceKey;
 			TMap<FString, UMaterialExpressionNamedRerouteUsage*> UsagesByDeclarationAndBlock;
+			TMap<int32, int32> UsageSlotByBlock;
 			int32 BridgeIndex = 0;
 
 			TArray<UMaterialExpression*> ConsumerSnapshot = Expressions;
@@ -3645,6 +3677,11 @@ namespace UE::DreamShader::Editor::Private
 						continue;
 					}
 
+					if (bOnlyDistantConnections && !IsDistantLayoutConnection(SourceExpression, ConsumerExpression))
+					{
+						continue;
+					}
+
 					UMaterialExpressionNamedRerouteDeclaration* Declaration = FindOrCreateLayoutBridgeDeclaration(
 						Material,
 						MaterialFunction,
@@ -3663,10 +3700,12 @@ namespace UE::DreamShader::Editor::Private
 						Declaration,
 						*ConsumerBlockIndex,
 						UsagesByDeclarationAndBlock,
+						UsageSlotByBlock,
 						Expressions,
 						ExpressionSet,
 						OwnerBlockByExpression,
-						Blocks);
+						Blocks,
+						ConsumerExpression);
 					if (!Usage)
 					{
 						continue;
@@ -3720,6 +3759,39 @@ namespace UE::DreamShader::Editor::Private
 			{
 				Material->MaterialGraph->RootNode->NodePosX = RootX;
 				Material->MaterialGraph->RootNode->NodePosY = RootY;
+			}
+		}
+
+		static void PositionMaterialRootNearConnectedOutputs(UMaterial* Material)
+		{
+			if (!Material)
+			{
+				return;
+			}
+
+			FLayoutBounds OutputBounds;
+			for (int32 MaterialPropertyIndex = 0; MaterialPropertyIndex < MP_MAX; ++MaterialPropertyIndex)
+			{
+				const EMaterialProperty MaterialProperty = static_cast<EMaterialProperty>(MaterialPropertyIndex);
+				FExpressionInput* MaterialInput = Material->GetExpressionInputForProperty(MaterialProperty);
+				if (!MaterialInput || !MaterialInput->IsConnected())
+				{
+					continue;
+				}
+
+				if (UMaterialExpression* OutputExpression = GetDirectInputExpression(*MaterialInput))
+				{
+					OutputBounds.IncludeNode(
+						OutputExpression->MaterialExpressionEditorX,
+						OutputExpression->MaterialExpressionEditorY);
+				}
+			}
+
+			if (OutputBounds.IsValid())
+			{
+				TArray<FLayoutBounds> Bounds;
+				Bounds.Add(OutputBounds);
+				PositionMaterialRootNearOutputs(Material, Bounds);
 			}
 		}
 
@@ -3811,8 +3883,10 @@ namespace UE::DreamShader::Editor::Private
 			UMaterial* Material,
 			UMaterialFunction* MaterialFunction,
 			const FTextShaderLayout* Layout,
-			const TMap<FString, UMaterialExpression*>* ExpressionsByVariable)
+			const TMap<FString, UMaterialExpression*>* ExpressionsByVariable,
+			TSet<UMaterialExpression*>& OutPositionedExpressions)
 		{
+			OutPositionedExpressions.Reset();
 			if (!Layout || (Layout->Nodes.IsEmpty() && Layout->Comments.IsEmpty()))
 			{
 				return false;
@@ -3826,6 +3900,7 @@ namespace UE::DreamShader::Editor::Private
 					if (UMaterialExpression* const* Expression = ExpressionsByVariable->Find(Node.Var))
 					{
 						SetGeneratedExpressionPosition(*Expression, Node.X, Node.Y);
+						OutPositionedExpressions.Add(*Expression);
 						bAppliedAnyNode = true;
 					}
 				}
@@ -3845,6 +3920,334 @@ namespace UE::DreamShader::Editor::Private
 			}
 
 			return bAppliedAnyNode || !Layout->Comments.IsEmpty();
+		}
+
+		static void PositionUnmatchedExplicitLayoutExpressions(
+			const TArray<UMaterialExpression*>& Expressions,
+			const TMap<UMaterialExpression*, TArray<UMaterialExpression*>>& Dependencies,
+			const TMap<UMaterialExpression*, TArray<UMaterialExpression*>>& Consumers,
+			TSet<UMaterialExpression*>& InOutPositionedExpressions)
+		{
+			TSet<UMaterialExpression*> PendingExpressions;
+			for (UMaterialExpression* Expression : Expressions)
+			{
+				if (Expression && !InOutPositionedExpressions.Contains(Expression))
+				{
+					PendingExpressions.Add(Expression);
+				}
+			}
+
+			if (PendingExpressions.IsEmpty())
+			{
+				return;
+			}
+
+			TMap<FString, int32> SlotUseCount;
+			auto BuildSlotKey = [](const int32 X, const int32 Y)
+			{
+				return FString::Printf(TEXT("%d:%d"), X / 80, Y / 80);
+			};
+			auto FanOutY = [&SlotUseCount, &BuildSlotKey](const int32 X, const int32 Y)
+			{
+				const FString SlotKey = BuildSlotKey(X, Y);
+				const int32 SlotIndex = SlotUseCount.FindOrAdd(SlotKey)++;
+				if (SlotIndex == 0)
+				{
+					return Y;
+				}
+
+				const int32 Step = ((SlotIndex + 1) / 2) * 120;
+				return Y + ((SlotIndex % 2) == 0 ? -Step : Step);
+			};
+			auto AveragePosition = [&InOutPositionedExpressions](
+				const TArray<UMaterialExpression*>* Neighbors,
+				int32& OutX,
+				int32& OutY)
+			{
+				if (!Neighbors || Neighbors->IsEmpty())
+				{
+					return false;
+				}
+
+				int64 SumX = 0;
+				int64 SumY = 0;
+				int32 Count = 0;
+				for (UMaterialExpression* Neighbor : *Neighbors)
+				{
+					if (!Neighbor || !InOutPositionedExpressions.Contains(Neighbor))
+					{
+						continue;
+					}
+
+					SumX += Neighbor->MaterialExpressionEditorX;
+					SumY += Neighbor->MaterialExpressionEditorY;
+					++Count;
+				}
+
+				if (Count <= 0)
+				{
+					return false;
+				}
+
+				OutX = static_cast<int32>(SumX / Count);
+				OutY = static_cast<int32>(SumY / Count);
+				return true;
+			};
+
+			bool bChanged = true;
+			const int32 MaxPropagationPasses = FMath::Max(32, PendingExpressions.Num());
+			for (int32 PassIndex = 0; bChanged && PassIndex < MaxPropagationPasses; ++PassIndex)
+			{
+				bChanged = false;
+				TArray<UMaterialExpression*> PendingSnapshot = PendingExpressions.Array();
+				for (UMaterialExpression* Expression : PendingSnapshot)
+				{
+					if (!Expression)
+					{
+						PendingExpressions.Remove(Expression);
+						continue;
+					}
+
+					int32 DependencyX = 0;
+					int32 DependencyY = 0;
+					const bool bHasDependencyAnchor = AveragePosition(Dependencies.Find(Expression), DependencyX, DependencyY);
+					int32 ConsumerX = 0;
+					int32 ConsumerY = 0;
+					const bool bHasConsumerAnchor = AveragePosition(Consumers.Find(Expression), ConsumerX, ConsumerY);
+					if (!bHasDependencyAnchor && !bHasConsumerAnchor)
+					{
+						continue;
+					}
+
+					int32 PositionX = Expression->MaterialExpressionEditorX;
+					int32 PositionY = Expression->MaterialExpressionEditorY;
+					if (bHasDependencyAnchor && bHasConsumerAnchor)
+					{
+						PositionX = (DependencyX + ConsumerX) / 2;
+						PositionY = (DependencyY + ConsumerY) / 2;
+					}
+					else if (bHasConsumerAnchor)
+					{
+						PositionX = ConsumerX - 360;
+						PositionY = ConsumerY;
+					}
+					else
+					{
+						PositionX = DependencyX + 360;
+						PositionY = DependencyY;
+					}
+
+					SetGeneratedExpressionPosition(Expression, PositionX, FanOutY(PositionX, PositionY));
+					InOutPositionedExpressions.Add(Expression);
+					PendingExpressions.Remove(Expression);
+					bChanged = true;
+				}
+			}
+
+			if (PendingExpressions.IsEmpty() || InOutPositionedExpressions.IsEmpty())
+			{
+				return;
+			}
+
+			FLayoutBounds PositionedBounds;
+			for (UMaterialExpression* Expression : InOutPositionedExpressions)
+			{
+				if (Expression)
+				{
+					PositionedBounds.IncludeNode(Expression->MaterialExpressionEditorX, Expression->MaterialExpressionEditorY);
+				}
+			}
+
+			const int32 FallbackX = PositionedBounds.IsValid() ? PositionedBounds.MinX - 480 : -1200;
+			int32 FallbackY = PositionedBounds.IsValid() ? PositionedBounds.MaxY + 240 : -620;
+			for (UMaterialExpression* Expression : PendingExpressions)
+			{
+				if (!Expression)
+				{
+					continue;
+				}
+
+				SetGeneratedExpressionPosition(Expression, FallbackX, FallbackY);
+				FallbackY += 180;
+				InOutPositionedExpressions.Add(Expression);
+			}
+		}
+
+		static bool IsExpressionInsideExplicitLayoutComment(
+			const UMaterialExpression* Expression,
+			const FTextShaderLayoutComment& Comment)
+		{
+			if (!Expression)
+			{
+				return false;
+			}
+
+			const int32 X = Expression->MaterialExpressionEditorX;
+			const int32 Y = Expression->MaterialExpressionEditorY;
+			return X >= Comment.X
+				&& Y >= Comment.Y
+				&& X <= Comment.X + Comment.W
+				&& Y <= Comment.Y + Comment.H;
+		}
+
+		static int32 FindOrAddExplicitLayoutBlock(
+			TArray<FGeneratedLayoutBlock>& Blocks,
+			TMap<int32, int32>& BlockIndexByCommentIndex,
+			const FTextShaderLayoutComment& Comment,
+			const int32 CommentIndex)
+		{
+			if (const int32* ExistingBlockIndex = BlockIndexByCommentIndex.Find(CommentIndex))
+			{
+				return *ExistingBlockIndex;
+			}
+
+			FGeneratedLayoutBlock& Block = Blocks.AddDefaulted_GetRef();
+			Block.Title = Comment.Name;
+			Block.SortKey = CommentIndex;
+			const int32 BlockIndex = Blocks.Num() - 1;
+			BlockIndexByCommentIndex.Add(CommentIndex, BlockIndex);
+			return BlockIndex;
+		}
+
+		static int32 FindOrAddNamedExplicitLayoutBlock(
+			TArray<FGeneratedLayoutBlock>& Blocks,
+			TMap<FString, int32>& BlockIndexByName,
+			const FString& Title,
+			const int32 SortKey)
+		{
+			if (const int32* ExistingBlockIndex = BlockIndexByName.Find(Title))
+			{
+				return *ExistingBlockIndex;
+			}
+
+			FGeneratedLayoutBlock& Block = Blocks.AddDefaulted_GetRef();
+			Block.Title = Title;
+			Block.SortKey = SortKey;
+			const int32 BlockIndex = Blocks.Num() - 1;
+			BlockIndexByName.Add(Title, BlockIndex);
+			return BlockIndex;
+		}
+
+		static void BuildExplicitLayoutOwnershipBlocks(
+			const TArray<UMaterialExpression*>& Expressions,
+			const FTextShaderLayout* Layout,
+			const TMap<FString, UMaterialExpression*>* ExpressionsByVariable,
+			const TMap<FString, FString>* RegionByVariable,
+			TArray<FGeneratedLayoutBlock>& OutBlocks,
+			TMap<UMaterialExpression*, int32>& OutOwnerBlockByExpression)
+		{
+			OutBlocks.Reset();
+			OutOwnerBlockByExpression.Reset();
+
+			if (Layout)
+			{
+				TMap<int32, int32> BlockIndexByCommentIndex;
+				for (UMaterialExpression* Expression : Expressions)
+				{
+					if (!Expression)
+					{
+						continue;
+					}
+
+					int32 BestCommentIndex = INDEX_NONE;
+					int32 BestCommentArea = MAX_int32;
+					for (int32 CommentIndex = 0; CommentIndex < Layout->Comments.Num(); ++CommentIndex)
+					{
+						const FTextShaderLayoutComment& Comment = Layout->Comments[CommentIndex];
+						if (!IsExpressionInsideExplicitLayoutComment(Expression, Comment))
+						{
+							continue;
+						}
+
+						const int32 Area = FMath::Max(1, Comment.W) * FMath::Max(1, Comment.H);
+						if (BestCommentIndex == INDEX_NONE || Area < BestCommentArea)
+						{
+							BestCommentIndex = CommentIndex;
+							BestCommentArea = Area;
+						}
+					}
+
+					if (BestCommentIndex == INDEX_NONE)
+					{
+						continue;
+					}
+
+					const int32 BlockIndex = FindOrAddExplicitLayoutBlock(
+						OutBlocks,
+						BlockIndexByCommentIndex,
+						Layout->Comments[BestCommentIndex],
+						BestCommentIndex);
+					AddExpressionToOwnedBlock(OutBlocks, OutOwnerBlockByExpression, Expression, BlockIndex);
+				}
+			}
+
+			if (!ExpressionsByVariable || !RegionByVariable || RegionByVariable->IsEmpty())
+			{
+				return;
+			}
+
+			TSet<UMaterialExpression*> ExpressionSet;
+			for (UMaterialExpression* Expression : Expressions)
+			{
+				if (Expression)
+				{
+					ExpressionSet.Add(Expression);
+				}
+			}
+
+			TMap<FString, int32> BlockIndexByRegion;
+			for (const TPair<FString, FString>& Pair : *RegionByVariable)
+			{
+				UMaterialExpression* const* Expression = ExpressionsByVariable->Find(Pair.Key);
+				if (!Expression || !*Expression || !ExpressionSet.Contains(*Expression) || OutOwnerBlockByExpression.Contains(*Expression))
+				{
+					continue;
+				}
+
+				const int32 BlockIndex = FindOrAddNamedExplicitLayoutBlock(
+					OutBlocks,
+					BlockIndexByRegion,
+					Pair.Value,
+					100000 + BlockIndexByRegion.Num());
+				AddExpressionToOwnedBlock(OutBlocks, OutOwnerBlockByExpression, *Expression, BlockIndex);
+			}
+		}
+
+		static void InsertExplicitLayoutReroutes(
+			UMaterial* Material,
+			UMaterialFunction* MaterialFunction,
+			const FTextShaderLayout* Layout,
+			const TMap<FString, UMaterialExpression*>* ExpressionsByVariable,
+			const TMap<FString, FString>* RegionByVariable,
+			TArray<UMaterialExpression*>& Expressions,
+			TSet<UMaterialExpression*>& ExpressionSet,
+			TMap<UMaterialExpression*, TArray<UMaterialExpression*>>& Dependencies,
+			TMap<UMaterialExpression*, TArray<UMaterialExpression*>>& Consumers)
+		{
+			TArray<FGeneratedLayoutBlock> Blocks;
+			TMap<UMaterialExpression*, int32> OwnerBlockByExpression;
+			BuildExplicitLayoutOwnershipBlocks(
+				Expressions,
+				Layout,
+				ExpressionsByVariable,
+				RegionByVariable,
+				Blocks,
+				OwnerBlockByExpression);
+			if (Blocks.Num() < 2 || OwnerBlockByExpression.Num() < 2)
+			{
+				return;
+			}
+
+			InsertCrossBlockReroutes(
+				Material,
+				MaterialFunction,
+				Expressions,
+				ExpressionSet,
+				Blocks,
+				OwnerBlockByExpression,
+				Dependencies,
+				Consumers,
+				true);
 		}
 
 		static void AddRegionLayoutBlocks(
@@ -4115,8 +4518,39 @@ namespace UE::DreamShader::Editor::Private
 	{
 		TArray<UMaterialExpression*> Expressions;
 		CollectMaterialExpressions(Material, MaterialFunction, Expressions);
-		if (ApplyExplicitDreamShaderLayout(Material, MaterialFunction, Layout, ExpressionsByVariable))
+		TSet<UMaterialExpression*> ExplicitlyPositionedExpressions;
+		if (ApplyExplicitDreamShaderLayout(Material, MaterialFunction, Layout, ExpressionsByVariable, ExplicitlyPositionedExpressions))
 		{
+			TSet<UMaterialExpression*> ExpressionSet;
+			ExpressionSet.Reserve(Expressions.Num());
+			for (UMaterialExpression* Expression : Expressions)
+			{
+				if (Expression)
+				{
+					ExpressionSet.Add(Expression);
+				}
+			}
+
+			TMap<UMaterialExpression*, TArray<UMaterialExpression*>> Dependencies;
+			TMap<UMaterialExpression*, TArray<UMaterialExpression*>> Consumers;
+			BuildExpressionDependencyMaps(Expressions, ExpressionSet, Dependencies, Consumers);
+
+			if (!ExplicitlyPositionedExpressions.IsEmpty() && ExplicitlyPositionedExpressions.Num() < Expressions.Num())
+			{
+				PositionUnmatchedExplicitLayoutExpressions(Expressions, Dependencies, Consumers, ExplicitlyPositionedExpressions);
+			}
+
+			InsertExplicitLayoutReroutes(
+				Material,
+				MaterialFunction,
+				Layout,
+				ExpressionsByVariable,
+				RegionByVariable,
+				Expressions,
+				ExpressionSet,
+				Dependencies,
+				Consumers);
+			PositionMaterialRootNearConnectedOutputs(Material);
 			return;
 		}
 
@@ -4350,7 +4784,8 @@ namespace UE::DreamShader::Editor::Private
 			LayoutBlocks,
 			OwnerBlockByExpression,
 			Dependencies,
-			Consumers);
+			Consumers,
+			false);
 
 		OriginalOrder.Reserve(Expressions.Num());
 		for (int32 Index = 0; Index < Expressions.Num(); ++Index)

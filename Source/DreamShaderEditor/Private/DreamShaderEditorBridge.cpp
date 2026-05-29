@@ -1160,6 +1160,85 @@ namespace UE::DreamShader::Editor::Private
 			return TEXT("DefaultLit");
 		}
 
+		void AppendBoolMaterialSettingIfDifferent(
+			TArray<FString>& Lines,
+			const UMaterial* Material,
+			const TCHAR* PropertyName)
+		{
+			if (!Material || !PropertyName)
+			{
+				return;
+			}
+
+			const FBoolProperty* BoolProperty = FindFProperty<FBoolProperty>(UMaterial::StaticClass(), FName(PropertyName));
+			if (!BoolProperty)
+			{
+				return;
+			}
+
+			const UMaterial* DefaultMaterial = GetDefault<UMaterial>();
+			const bool bValue = BoolProperty->GetPropertyValue_InContainer(Material);
+			const bool bDefaultValue = DefaultMaterial
+				? BoolProperty->GetPropertyValue_InContainer(DefaultMaterial)
+				: false;
+			if (bValue == bDefaultValue)
+			{
+				return;
+			}
+
+			Lines.Add(FString::Printf(
+				TEXT("\t\t%s = %s;"),
+				PropertyName,
+				bValue ? TEXT("true") : TEXT("false")));
+		}
+
+		void AppendAdditionalMaterialSettings(TArray<FString>& Lines, const UMaterial* Material)
+		{
+			const TCHAR* BoolSettingNames[] =
+			{
+				TEXT("TwoSided"),
+				TEXT("Wireframe"),
+				TEXT("DitheredLODTransition"),
+				TEXT("DitherOpacityMask"),
+				TEXT("bAllowNegativeEmissiveColor"),
+				TEXT("bCastDynamicShadowAsMasked"),
+				TEXT("bEnableResponsiveAA"),
+				TEXT("bScreenSpaceReflections"),
+				TEXT("bContactShadows"),
+				TEXT("bDisableDepthTest"),
+				TEXT("bOutputTranslucentVelocity"),
+				TEXT("bTangentSpaceNormal"),
+				TEXT("bFullyRough"),
+				TEXT("bIsSky"),
+				TEXT("bIsThinSurface"),
+				TEXT("bHasPixelAnimation"),
+				TEXT("bUsedWithSkeletalMesh"),
+				TEXT("bUsedWithMorphTargets"),
+				TEXT("bUsedWithClothing"),
+				TEXT("bUsedWithNanite"),
+				TEXT("bUsedWithEditorCompositing"),
+				TEXT("bUsedWithParticleSprites"),
+				TEXT("bUsedWithBeamTrails"),
+				TEXT("bUsedWithMeshParticles"),
+				TEXT("bUsedWithNiagaraSprites"),
+				TEXT("bUsedWithNiagaraRibbons"),
+				TEXT("bUsedWithNiagaraMeshParticles"),
+				TEXT("bUsedWithGeometryCache"),
+				TEXT("bUsedWithStaticLighting"),
+				TEXT("bUsedWithSplineMeshes"),
+				TEXT("bUsedWithInstancedStaticMeshes"),
+				TEXT("bUsedWithGeometryCollections"),
+				TEXT("bUsedWithHairStrands"),
+				TEXT("bUsedWithWater"),
+				TEXT("bUsedWithVirtualHeightfieldMesh")
+			};
+
+			for (const TCHAR* BoolSettingName : BoolSettingNames)
+			{
+				AppendBoolMaterialSettingIfDifferent(Lines, Material, BoolSettingName);
+			}
+		}
+
 		struct FDecompiledExpressionKey
 		{
 			const UMaterialExpression* Expression = nullptr;
@@ -1296,6 +1375,7 @@ namespace UE::DreamShader::Editor::Private
 				Lines.Add(FString::Printf(TEXT("\t\tDomain = \"%s\";"), *GetMaterialDomainText(Material->MaterialDomain)));
 				Lines.Add(FString::Printf(TEXT("\t\tShadingModel = \"%s\";"), *GetShadingModelText(Material)));
 				Lines.Add(FString::Printf(TEXT("\t\tBlendMode = \"%s\";"), *GetBlendModeText(Material->BlendMode)));
+				AppendAdditionalMaterialSettings(Lines, Material);
 				Lines.Add(TEXT("\t}"));
 				Lines.Add(TEXT(""));
 				AppendSection(Lines, TEXT("Outputs"), OutputDeclarations, OutputBindings);
