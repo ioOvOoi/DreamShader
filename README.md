@@ -13,7 +13,7 @@
       </p>
       <p>
         <img alt="Unreal Engine 5.7" src="https://img.shields.io/badge/Unreal%20Engine-5.7-313131" />
-        <img alt="Version 1.3.8" src="https://img.shields.io/badge/version-1.3.8-blue" />
+        <img alt="Version 1.3.9" src="https://img.shields.io/badge/version-1.3.9-blue" />
         <img alt="License MIT" src="https://img.shields.io/badge/license-MIT-green" />
       </p>
       <p>
@@ -367,8 +367,8 @@ Extension releases are available from [dreamshader-language-support](https://git
 The repository includes a GitHub Actions release workflow. Push a tag that matches `VersionName` in `DreamShader.uplugin`:
 
 ```powershell
-git tag v1.3.8
-git push origin v1.3.8
+git tag v1.3.9
+git push origin v1.3.9
 ```
 
 The release archive is named `DreamShader-<Version>.zip` and contains the plugin source, resources, documentation, README, CHANGELOG, and LICENSE. It excludes `Binaries` and `Intermediate`. The release workflow also attaches the latest VSCode extension assets from `TypeDreamMoon/dreamshader-language-support`.
@@ -377,7 +377,7 @@ The release archive is named `DreamShader-<Version>.zip` and contains the plugin
 
 | Item | Value |
 | :--- | :---- |
-| Version | `1.3.8` |
+| Version | `1.3.9` |
 | Language | `DreamShaderLang` |
 | Unreal Engine | `5.7` |
 | Author | TypeDreamMoon |

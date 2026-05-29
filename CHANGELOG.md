@@ -1,5 +1,11 @@
 # DreamShader ChangeLog
 
+## 1.3.9 - 2026-05-29
+
+### Maintenance
+
+- Updated plugin version metadata and documentation references.
+
 ## 1.3.8 - 2026-05-25
 
 ### Texture Support
