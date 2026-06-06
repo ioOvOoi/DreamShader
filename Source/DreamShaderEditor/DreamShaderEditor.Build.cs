@@ -22,10 +22,13 @@ public class DreamShaderEditor : ModuleRules
 				"MaterialEditor",
 				"Projects",
 				"RHI",
+				"RenderCore",
+				"Renderer",
 				"Slate",
 				"SlateCore",
 				"ToolMenus",
-				"UnrealEd"
+				"UnrealEd",
+				"WebSocketNetworking"
 			});
 	}
 }

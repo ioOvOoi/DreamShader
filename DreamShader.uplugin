@@ -32,5 +32,11 @@
 			"LoadingPhase": "Default"
 		}
 	],
+	"Plugins": [
+		{
+			"Name": "WebSocketNetworking",
+			"Enabled": true
+		}
+	],
 	"IsExperimentalVersion": false
 }

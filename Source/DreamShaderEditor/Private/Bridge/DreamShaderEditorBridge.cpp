@@ -1,5 +1,6 @@
 #include "DreamShaderEditorBridge.h"
 
+#include "Bridge/DreamShaderPreviewWebSocketServer.h"
 #include "DreamShaderCompileService.h"
 #include "Decompiler/DreamShaderDecompileService.h"
 #include "Decompiler/DreamShaderGraphDecompiler.h"
@@ -7,6 +8,7 @@
 #include "DependencyGraph/DreamShaderDependencyGraphService.h"
 #include "DreamShaderModule.h"
 #include "DreamShaderSettings.h"
+#include "Preview/DreamShaderPreviewRenderer.h"
 #include "SourceFiles/DreamShaderSourceFileUtils.h"
 #include "VirtualFunction/DreamShaderVirtualFunctionService.h"
 #include "VirtualFunction/DreamShaderVirtualFunctionSyncService.h"
@@ -128,6 +130,7 @@ namespace UE::DreamShader::Editor::Private
 
 		IFileManager::Get().MakeDirectory(*GetBridgeDirectory(), true);
 		IFileManager::Get().MakeDirectory(*GetRequestDirectory(), true);
+		IFileManager::Get().MakeDirectory(*FDreamShaderPreviewRenderer::GetPreviewDirectory(), true);
 
 		FDreamShaderWorkspaceService::ExportMaterialExpressionManifest();
 		FDreamShaderWorkspaceService::ExportDreamShaderSettingsManifest();
@@ -135,6 +138,9 @@ namespace UE::DreamShader::Editor::Private
 		SyncVirtualFunctionDefinitions();
 		QueueFullScan();
 		UpdateDiagnosticsFile();
+
+		PreviewWebSocketServer = MakeUnique<FDreamShaderPreviewWebSocketServer>();
+		PreviewWebSocketServer->Startup(17864);
 
 		FDirectoryWatcherModule& DirectoryWatcherModule = FModuleManager::LoadModuleChecked<FDirectoryWatcherModule>(TEXT("DirectoryWatcher"));
 		if (IDirectoryWatcher* DirectoryWatcher = DirectoryWatcherModule.Get())
@@ -167,6 +173,12 @@ namespace UE::DreamShader::Editor::Private
 		{
 			FTSTicker::GetCoreTicker().RemoveTicker(TickerHandle);
 			TickerHandle.Reset();
+		}
+
+		if (PreviewWebSocketServer)
+		{
+			PreviewWebSocketServer->Shutdown();
+			PreviewWebSocketServer.Reset();
 		}
 
 		if (MaterialCompilationFinishedHandle.IsValid())
@@ -342,6 +354,10 @@ namespace UE::DreamShader::Editor::Private
 
 		ProcessRequestFiles();
 		ProcessReadyFiles();
+		if (PreviewWebSocketServer)
+		{
+			PreviewWebSocketServer->Tick();
+		}
 		return true;
 	}
 
@@ -387,6 +403,32 @@ namespace UE::DreamShader::Editor::Private
 				else if (Action.Equals(TEXT("cleanGeneratedShaders"), ESearchCase::IgnoreCase))
 				{
 					RequestCleanGeneratedShaders();
+				}
+				else if (Action.Equals(TEXT("previewMaterial"), ESearchCase::IgnoreCase))
+				{
+					FDreamShaderPreviewRequest PreviewRequest;
+					RequestObject->TryGetStringField(TEXT("sourceFile"), PreviewRequest.SourceFilePath);
+					RequestObject->TryGetStringField(TEXT("mesh"), PreviewRequest.Mesh);
+					double Width = PreviewRequest.Width;
+					double Height = PreviewRequest.Height;
+					RequestObject->TryGetNumberField(TEXT("width"), Width);
+					RequestObject->TryGetNumberField(TEXT("height"), Height);
+					PreviewRequest.Width = FMath::Clamp(FMath::RoundToInt(Width), 64, 2048);
+					PreviewRequest.Height = FMath::Clamp(FMath::RoundToInt(Height), 64, 2048);
+
+					FDreamShaderPreviewResult PreviewResult;
+					const bool bPreviewSucceeded = FDreamShaderPreviewRenderer::RenderMaterialPreview(PreviewRequest, PreviewResult);
+					FString RequestId;
+					RequestObject->TryGetStringField(TEXT("requestId"), RequestId);
+					FDreamShaderPreviewRenderer::WritePreviewResult(PreviewResult, bPreviewSucceeded ? TEXT("ready") : TEXT("error"), RequestId);
+					if (bPreviewSucceeded)
+					{
+						UE_LOG(LogDreamShader, Display, TEXT("DreamShader preview: %s"), *PreviewResult.Message);
+					}
+					else
+					{
+						UE_LOG(LogDreamShader, Error, TEXT("DreamShader preview: %s"), *PreviewResult.Message);
+					}
 				}
 			}
 

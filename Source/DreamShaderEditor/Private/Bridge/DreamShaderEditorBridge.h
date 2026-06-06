@@ -3,6 +3,7 @@
 #include "CoreMinimal.h"
 
 #include "Diagnostics/DreamShaderDiagnosticsStore.h"
+#include "Bridge/DreamShaderPreviewWebSocketServer.h"
 
 #include "Containers/Ticker.h"
 
@@ -63,6 +64,7 @@ namespace UE::DreamShader::Editor::Private
 	private:
 		TMap<FString, double> PendingFiles;
 		FDreamShaderDiagnosticsStore DiagnosticsStore;
+		TUniquePtr<FDreamShaderPreviewWebSocketServer> PreviewWebSocketServer;
 		TMap<FString, TSet<FString>> HeaderDependentsByFile;
 		FString WatchedSourceDirectory;
 		FDelegateHandle DirectoryWatcherHandle;
