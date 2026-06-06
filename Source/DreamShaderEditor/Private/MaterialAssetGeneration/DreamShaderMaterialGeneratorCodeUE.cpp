@@ -158,8 +158,12 @@ namespace UE::DreamShader::Editor::Private
 		}
 		if (Value == TEXT("periodicworld"))
 		{
+#if DREAMSHADER_UE_VERSION_AT_LEAST(5, 5)
 			OutBasis = TRANSFORMPOSSOURCE_PeriodicWorld;
 			return true;
+#else
+			return false;
+#endif
 		}
 		if (Value == TEXT("translatedworld") || Value == TEXT("camerarelativeworld"))
 		{
@@ -168,8 +172,12 @@ namespace UE::DreamShader::Editor::Private
 		}
 		if (Value == TEXT("firstperson") || Value == TEXT("firstpersontranslatedworld"))
 		{
+#if DREAMSHADER_UE_VERSION_AT_LEAST(5, 6)
 			OutBasis = TRANSFORMPOSSOURCE_FirstPersonTranslatedWorld;
 			return true;
+#else
+			return false;
+#endif
 		}
 		if (Value == TEXT("view"))
 		{
@@ -452,15 +460,19 @@ namespace UE::DreamShader::Editor::Private
 			Expression->Collection = Collection;
 			Expression->ParameterName = ParameterName;
 			Expression->ParameterId = Collection->GetParameterId(ParameterName);
+#if DREAMSHADER_UE_VERSION_AT_LEAST(5, 7)
 			if (!Expression->ExpressionGUID.IsValid())
 			{
 				Expression->ExpressionGUID = FGuid::NewGuid();
 			}
+#endif
 
 			FString GroupText;
 			if (HandleOptionalTextLiteralArgument(TEXT("Group"), GroupText) && !GroupText.IsEmpty())
 			{
+#if DREAMSHADER_UE_VERSION_AT_LEAST(5, 7)
 				Expression->Group = FName(*GroupText);
+#endif
 			}
 			else if (!OutError.IsEmpty())
 			{
@@ -475,7 +487,9 @@ namespace UE::DreamShader::Editor::Private
 					OutError = TEXT("UE.CollectionParam SortPriority must be an integer literal.");
 					return false;
 				}
+#if DREAMSHADER_UE_VERSION_AT_LEAST(5, 7)
 				Expression->SortPriority = SortPriority;
+#endif
 			}
 
 			FString DescriptionText;
@@ -600,11 +614,17 @@ namespace UE::DreamShader::Editor::Private
 		});
 
 		Builtins.Add({ TEXT("WorldPosition"), UMaterialExpressionWorldPosition::StaticClass(), 3, {} });
-		Builtins.Add({ TEXT("ObjectPositionWS"), UMaterialExpressionObjectPositionWS::StaticClass(), 3, {} });
+		if (UClass* ObjectPositionClass = GetDreamShaderObjectPositionExpressionClass())
+		{
+			Builtins.Add({ TEXT("ObjectPositionWS"), ObjectPositionClass, 3, {} });
+		}
 		Builtins.Add({ TEXT("CameraVectorWS"), UMaterialExpressionCameraVectorWS::StaticClass(), 3, {} });
 		Builtins.Add({ TEXT("VertexNormalWS"), UMaterialExpressionVertexNormalWS::StaticClass(), 3, {} });
 		Builtins.Add({ TEXT("VertexTangentWS"), UMaterialExpressionVertexTangentWS::StaticClass(), 3, {} });
-		Builtins.Add({ TEXT("ScreenPosition"), UMaterialExpressionScreenPosition::StaticClass(), 2, {} });
+		if (UClass* ScreenPositionClass = GetDreamShaderScreenPositionExpressionClass())
+		{
+			Builtins.Add({ TEXT("ScreenPosition"), ScreenPositionClass, 2, {} });
+		}
 		Builtins.Add({ TEXT("VertexColor"), UMaterialExpressionVertexColor::StaticClass(), 4, {} });
 
 		Builtins.Add({
@@ -682,12 +702,23 @@ namespace UE::DreamShader::Editor::Private
 				Expression->TransformSourceType = SourceBasis;
 				Expression->TransformType = DestinationBasis;
 
+#if DREAMSHADER_UE_VERSION_AT_LEAST(5, 5)
 				if (!HandleOptionalInputArgument(TEXT("PeriodicWorldTileSize"), Expression->PeriodicWorldTileSize))
 				{
 					return false;
 				}
+#endif
 
+#if DREAMSHADER_UE_VERSION_AT_LEAST(5, 6)
 				return HandleOptionalInputArgument(TEXT("FirstPersonInterpolationAlpha"), Expression->FirstPersonInterpolationAlpha);
+#else
+				if (FindNamedArgument(Arguments, TEXT("FirstPersonInterpolationAlpha")))
+				{
+					Error = TEXT("UE.TransformPosition FirstPersonInterpolationAlpha requires Unreal Engine 5.6 or newer.");
+					return false;
+				}
+				return true;
+#endif
 			}
 		});
 
@@ -920,7 +951,7 @@ namespace UE::DreamShader::Editor::Private
 
 			FExpressionInput* BoundInputByPinName = nullptr;
 			int32 BoundInputIndexByPinName = INDEX_NONE;
-			for (int32 InputIndex = 0; InputIndex < Expression->CountInputs(); ++InputIndex)
+			for (int32 InputIndex = 0; InputIndex < GetDreamShaderExpressionInputCount(Expression); ++InputIndex)
 			{
 				FExpressionInput* CandidateInput = Expression->GetInput(InputIndex);
 				const FName InputName = Expression->GetInputName(InputIndex);
@@ -992,7 +1023,7 @@ namespace UE::DreamShader::Editor::Private
 				int32 BoundInputIndex = BoundInputIndexByPinName;
 				if (BoundInputIndex == INDEX_NONE)
 				{
-					for (int32 InputIndex = 0; InputIndex < Expression->CountInputs(); ++InputIndex)
+					for (int32 InputIndex = 0; InputIndex < GetDreamShaderExpressionInputCount(Expression); ++InputIndex)
 					{
 						if (Expression->GetInput(InputIndex) == Input)
 						{
@@ -1003,7 +1034,7 @@ namespace UE::DreamShader::Editor::Private
 				}
 				if (BoundInputIndex != INDEX_NONE)
 				{
-					const EMaterialValueType InputValueType = Expression->GetInputValueType(BoundInputIndex);
+					const EMaterialValueType InputValueType = GetDreamShaderExpressionInputValueType(Expression, BoundInputIndex);
 					if (IsSubstrateMaterialValueType(InputValueType))
 					{
 						if (!InputValue.bIsSubstrateMaterial)
@@ -1101,7 +1132,7 @@ namespace UE::DreamShader::Editor::Private
 				CustomExpression->AdditionalOutputs.Add(CustomOutput);
 			}
 
-			CustomExpression->RebuildOutputs();
+			RebuildDreamShaderCustomOutputs(CustomExpression);
 		}
 
 		int32 ResolvedOutputIndex = 0;
@@ -1233,7 +1264,7 @@ namespace UE::DreamShader::Editor::Private
 			}
 		};
 
-		const EMaterialValueType ActualOutputValueType = Expression->GetOutputValueType(ResolvedOutputIndex);
+		const EMaterialValueType ActualOutputValueType = GetDreamShaderExpressionOutputValueType(Expression, ResolvedOutputIndex);
 		if (bIsSubstrateMaterial && !IsSubstrateMaterialValueType(ActualOutputValueType))
 		{
 			OutError = FString::Printf(TEXT("%s.%s output is not a Substrate value."), CallNamespace, *FunctionName);
@@ -1274,7 +1305,7 @@ namespace UE::DreamShader::Editor::Private
 		}
 		else if (Expression->IsA<UMaterialExpressionTextureCoordinate>()
 			|| Expression->IsA<UMaterialExpressionPanner>()
-			|| Expression->GetClass()->GetName().Equals(TEXT("MaterialExpressionRotator"), ESearchCase::IgnoreCase))
+			|| IsDreamShaderRotatorExpression(Expression))
 		{
 			OutputComponents = 2;
 			bIsTextureObject = false;

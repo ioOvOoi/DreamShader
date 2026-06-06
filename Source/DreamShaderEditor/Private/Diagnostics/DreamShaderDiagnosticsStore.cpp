@@ -207,7 +207,7 @@ namespace UE::DreamShader::Editor::Private
 
 			if (Line.StartsWith(PathPrefix))
 			{
-				Line.RightChopInline(PathPrefix.Len(), EAllowShrinking::No);
+				Line.RightChopInline(PathPrefix.Len(), DREAMSHADER_ALLOW_SHRINKING_NO);
 			}
 
 			FDreamShaderDiagnosticRecord& Diagnostic = Diagnostics.AddDefaulted_GetRef();

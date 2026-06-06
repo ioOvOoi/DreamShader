@@ -82,7 +82,7 @@ namespace UE::DreamShader::Editor::Private
 			{
 				if (Result[Index] == TCHAR('_') && Result[Index - 1] == TCHAR('_'))
 				{
-					Result.RemoveAt(Index, 1, EAllowShrinking::No);
+					Result.RemoveAt(Index, 1, DREAMSHADER_ALLOW_SHRINKING_NO);
 				}
 			}
 
@@ -216,7 +216,7 @@ namespace UE::DreamShader::Editor::Private
 				MountedPath.ReplaceInline(TEXT("\\"), TEXT("/"));
 				while (MountedPath.EndsWith(TEXT("/")))
 				{
-					MountedPath.LeftChopInline(1, EAllowShrinking::No);
+					MountedPath.LeftChopInline(1, DREAMSHADER_ALLOW_SHRINKING_NO);
 				}
 				if (!MountedPath.StartsWith(TEXT("/")))
 				{
@@ -241,7 +241,7 @@ namespace UE::DreamShader::Editor::Private
 				FString RelativePath = PackageName.Mid(BestMountedPath.Len());
 				while (RelativePath.StartsWith(TEXT("/")))
 				{
-					RelativePath.RightChopInline(1, EAllowShrinking::No);
+					RelativePath.RightChopInline(1, DREAMSHADER_ALLOW_SHRINKING_NO);
 				}
 				OutLiteral = FString::Printf(
 					TEXT("Path(Plugins.%s, \"%s\")"),

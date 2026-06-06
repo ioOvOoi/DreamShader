@@ -63,7 +63,7 @@ namespace UE::DreamShader::Editor::Private
 			return false;
 		}
 
-		TrimmedLine.RightChopInline(ImportKeywordLength, EAllowShrinking::No);
+		TrimmedLine.RightChopInline(ImportKeywordLength, DREAMSHADER_ALLOW_SHRINKING_NO);
 		TrimmedLine.TrimStartAndEndInline();
 		if (TrimmedLine.Len() < 2 || (TrimmedLine[0] != TCHAR('"') && TrimmedLine[0] != TCHAR('\'')))
 		{
@@ -101,7 +101,7 @@ namespace UE::DreamShader::Editor::Private
 		FString TrailingText = TrimmedLine.Mid(ClosingQuoteIndex + 1).TrimStartAndEnd();
 		if (TrailingText.StartsWith(TEXT(";")))
 		{
-			TrailingText.RightChopInline(1, EAllowShrinking::No);
+			TrailingText.RightChopInline(1, DREAMSHADER_ALLOW_SHRINKING_NO);
 			TrailingText.TrimStartAndEndInline();
 		}
 		if (!TrailingText.IsEmpty() && !TrailingText.StartsWith(TEXT("//")))
@@ -119,7 +119,7 @@ namespace UE::DreamShader::Editor::Private
 		Normalized.ReplaceInline(TEXT("\\"), TEXT("/"));
 		while (Normalized.StartsWith(TEXT("./")))
 		{
-			Normalized.RightChopInline(2, EAllowShrinking::No);
+			Normalized.RightChopInline(2, DREAMSHADER_ALLOW_SHRINKING_NO);
 		}
 
 		if (FPaths::GetExtension(Normalized, true).IsEmpty())

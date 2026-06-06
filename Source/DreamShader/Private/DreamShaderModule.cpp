@@ -152,7 +152,7 @@ namespace UE::DreamShader
 		{
 			if (Result[Index] == TCHAR('_') && Result[Index - 1] == TCHAR('_'))
 			{
-				Result.RemoveAt(Index, 1, EAllowShrinking::No);
+				Result.RemoveAt(Index, 1, DREAMSHADER_ALLOW_SHRINKING_NO);
 			}
 		}
 

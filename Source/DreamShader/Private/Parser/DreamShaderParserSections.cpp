@@ -447,7 +447,7 @@ namespace UE::DreamShader::Private
 			return false;
 		}
 
-		CallSpec.RightChopInline(3, EAllowShrinking::No);
+		CallSpec.RightChopInline(3, DREAMSHADER_ALLOW_SHRINKING_NO);
 		CallSpec.TrimStartAndEndInline();
 		if (CallSpec.IsEmpty())
 		{
@@ -590,7 +590,7 @@ namespace UE::DreamShader::Private
 				&& (TypeToken.Len() == 5 || FChar::IsWhitespace(TypeToken[5])))
 			{
 				Property.bConst = true;
-				TypeToken.RightChopInline(5, EAllowShrinking::No);
+				TypeToken.RightChopInline(5, DREAMSHADER_ALLOW_SHRINKING_NO);
 				TypeToken.TrimStartAndEndInline();
 				if (TypeToken.IsEmpty())
 				{
@@ -894,7 +894,7 @@ namespace UE::DreamShader::Private
 			FString TargetText = OutBinding.TargetText;
 			if (TargetText.StartsWith(TEXT("Base."), ESearchCase::IgnoreCase))
 			{
-				TargetText.RightChopInline(5, EAllowShrinking::No);
+				TargetText.RightChopInline(5, DREAMSHADER_ALLOW_SHRINKING_NO);
 				TargetText.TrimStartAndEndInline();
 				OutBinding.TargetKind = FTextShaderOutputBinding::ETargetKind::MaterialProperty;
 				OutBinding.MaterialProperty = TargetText;
@@ -1214,7 +1214,7 @@ namespace UE::DreamShader::Private
 	static FString ParseRegionDirectiveName(const FString& Line, const TCHAR* Directive)
 	{
 		FString Trimmed = Line.TrimStartAndEnd();
-		Trimmed.RightChopInline(FCString::Strlen(Directive), EAllowShrinking::No);
+		Trimmed.RightChopInline(FCString::Strlen(Directive), DREAMSHADER_ALLOW_SHRINKING_NO);
 		Trimmed.TrimStartAndEndInline();
 		return Unquote(Trimmed).TrimStartAndEnd();
 	}
@@ -1274,7 +1274,7 @@ namespace UE::DreamShader::Private
 					return false;
 				}
 
-				FOpenRegion OpenRegion = OpenRegions.Pop(EAllowShrinking::No);
+				FOpenRegion OpenRegion = OpenRegions.Pop(DREAMSHADER_ALLOW_SHRINKING_NO);
 				FTextShaderGraphRegion& Region = OutRegions.AddDefaulted_GetRef();
 				Region.Name = OpenRegion.Name;
 				Region.StartLine = OpenRegion.StartLine;
@@ -1318,7 +1318,7 @@ namespace UE::DreamShader::Private
 				|| Trimmed.Equals(TEXT("opt"), ESearchCase::IgnoreCase))
 			{
 				bOptional = true;
-				Trimmed.RightChopInline(3, EAllowShrinking::No);
+				Trimmed.RightChopInline(3, DREAMSHADER_ALLOW_SHRINKING_NO);
 				Trimmed.TrimStartAndEndInline();
 			}
 

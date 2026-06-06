@@ -1158,13 +1158,13 @@ namespace UE::DreamShader::Editor::Private
 			return false;
 		}
 
-		if (!SetAttributes->ConnectInputAttribute(MP_MaterialAttributes, BaseValue->Expression, BaseValue->OutputIndex))
+		if (!ConnectDreamShaderSetMaterialAttributeInput(SetAttributes, MP_MaterialAttributes, BaseValue->Expression, BaseValue->OutputIndex))
 		{
 			OutError = FString::Printf(TEXT("Failed to connect '%s' as the SetMaterialAttributes base value."), *BaseName);
 			return false;
 		}
 
-		if (!SetAttributes->ConnectInputAttribute(ResolvedProperty.Property, CoercedValue.Expression, CoercedValue.OutputIndex))
+		if (!ConnectDreamShaderSetMaterialAttributeInput(SetAttributes, ResolvedProperty.Property, CoercedValue.Expression, CoercedValue.OutputIndex))
 		{
 			OutError = FString::Printf(TEXT("Failed to connect MaterialAttributes member '%s'."), *MemberName);
 			return false;

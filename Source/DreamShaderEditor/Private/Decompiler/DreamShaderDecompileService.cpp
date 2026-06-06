@@ -68,11 +68,11 @@ namespace UE::DreamShader::Editor::Private
 			PackageName.ReplaceInline(TEXT("\\"), TEXT("/"));
 			while (PackageName.StartsWith(TEXT("/")))
 			{
-				PackageName.RightChopInline(1, EAllowShrinking::No);
+				PackageName.RightChopInline(1, DREAMSHADER_ALLOW_SHRINKING_NO);
 			}
 			while (PackageName.EndsWith(TEXT("/")))
 			{
-				PackageName.LeftChopInline(1, EAllowShrinking::No);
+				PackageName.LeftChopInline(1, DREAMSHADER_ALLOW_SHRINKING_NO);
 			}
 
 			TArray<FString> Segments;
@@ -148,11 +148,11 @@ namespace UE::DreamShader::Editor::Private
 		PackageName.ReplaceInline(TEXT("\\"), TEXT("/"));
 		while (PackageName.StartsWith(TEXT("/")))
 		{
-			PackageName.RightChopInline(1, EAllowShrinking::No);
+			PackageName.RightChopInline(1, DREAMSHADER_ALLOW_SHRINKING_NO);
 		}
 		while (PackageName.EndsWith(TEXT("/")))
 		{
-			PackageName.LeftChopInline(1, EAllowShrinking::No);
+			PackageName.LeftChopInline(1, DREAMSHADER_ALLOW_SHRINKING_NO);
 		}
 
 		TArray<FString> Segments;

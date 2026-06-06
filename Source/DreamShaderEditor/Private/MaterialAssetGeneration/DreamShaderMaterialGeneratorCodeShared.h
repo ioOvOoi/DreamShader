@@ -53,6 +53,7 @@
 #include "Materials/MaterialExpressionVertexNormalWS.h"
 #include "Materials/MaterialExpressionVertexTangentWS.h"
 #include "Materials/MaterialExpressionWorldPosition.h"
+#include "Materials/MaterialAttributeDefinitionMap.h"
 #include "Materials/MaterialFunction.h"
 #include "Materials/MaterialParameterCollection.h"
 #include "MaterialValueType.h"
@@ -291,6 +292,169 @@ namespace UE::DreamShader::Editor::Private
 		return false;
 	}
 
+	inline EMaterialValueType GetDreamShaderExpressionInputValueType(UMaterialExpression* Expression, const int32 InputIndex)
+	{
+		if (!Expression)
+		{
+			return MCT_Unknown;
+		}
+#if DREAMSHADER_UE_VERSION_AT_LEAST(5, 6)
+		return Expression->GetInputValueType(InputIndex);
+#else
+		return static_cast<EMaterialValueType>(Expression->GetInputType(InputIndex));
+#endif
+	}
+
+	inline EMaterialValueType GetDreamShaderExpressionOutputValueType(UMaterialExpression* Expression, const int32 OutputIndex)
+	{
+		if (!Expression)
+		{
+			return MCT_Unknown;
+		}
+#if DREAMSHADER_UE_VERSION_AT_LEAST(5, 6)
+		return Expression->GetOutputValueType(OutputIndex);
+#else
+		return static_cast<EMaterialValueType>(Expression->GetOutputType(OutputIndex));
+#endif
+	}
+
+	inline int32 GetDreamShaderExpressionInputCount(UMaterialExpression* Expression)
+	{
+		if (!Expression)
+		{
+			return 0;
+		}
+#if DREAMSHADER_UE_VERSION_AT_LEAST(5, 5)
+		return Expression->CountInputs();
+#else
+		return Expression->GetInputsView().Num();
+#endif
+	}
+
+	inline bool ConnectDreamShaderSetMaterialAttributeInput(
+		UMaterialExpressionSetMaterialAttributes* Expression,
+		const EMaterialProperty Attribute,
+		UMaterialExpression* InputExpression,
+		const int32 OutputIndex)
+	{
+		if (!Expression || !InputExpression || OutputIndex == INDEX_NONE)
+		{
+			return false;
+		}
+
+		int32 InputIndex = 0;
+		if (Attribute != MP_MaterialAttributes)
+		{
+			const FGuid AttributeId = FMaterialAttributeDefinitionMap::GetID(Attribute);
+			const int32 ExistingAttributeIndex = Expression->AttributeSetTypes.Find(AttributeId);
+			if (ExistingAttributeIndex != INDEX_NONE)
+			{
+				InputIndex = ExistingAttributeIndex + 1;
+			}
+			else
+			{
+				const int32 NewAttributeIndex = Expression->AttributeSetTypes.Add(AttributeId);
+				Expression->PreEditChange(nullptr);
+				InputIndex = Expression->Inputs.Add(FExpressionInput());
+				if (NewAttributeIndex == INDEX_NONE || !Expression->Inputs.IsValidIndex(InputIndex))
+				{
+					return false;
+				}
+				Expression->Inputs[InputIndex].InputName = FName(*FMaterialAttributeDefinitionMap::GetDisplayNameForMaterial(AttributeId, Expression->Material).ToString());
+			}
+		}
+
+		if (!Expression->Inputs.IsValidIndex(InputIndex))
+		{
+			return false;
+		}
+
+		Expression->Inputs[InputIndex].Connect(OutputIndex, InputExpression);
+		return Expression->Inputs[InputIndex].IsConnected();
+	}
+
+	inline void RebuildDreamShaderCustomOutputs(UMaterialExpressionCustom* Expression)
+	{
+		if (!Expression)
+		{
+			return;
+		}
+
+#if DREAMSHADER_UE_VERSION_AT_LEAST(5, 6)
+		Expression->RebuildOutputs();
+#else
+		Expression->Outputs.Reset(Expression->AdditionalOutputs.Num() + 1);
+		if (Expression->AdditionalOutputs.Num() == 0)
+		{
+			Expression->bShowOutputNameOnPin = false;
+			Expression->Outputs.Add(FExpressionOutput(TEXT("")));
+		}
+		else
+		{
+			Expression->bShowOutputNameOnPin = true;
+			Expression->Outputs.Add(FExpressionOutput(TEXT("return")));
+			for (const FCustomOutput& CustomOutput : Expression->AdditionalOutputs)
+			{
+				if (!CustomOutput.OutputName.IsNone())
+				{
+					Expression->Outputs.Add(FExpressionOutput(CustomOutput.OutputName));
+				}
+			}
+		}
+#endif
+	}
+
+	inline UClass* GetDreamShaderScreenPositionExpressionClass()
+	{
+#if DREAMSHADER_UE_VERSION_AT_LEAST(5, 6)
+		return UMaterialExpressionScreenPosition::StaticClass();
+#else
+		return FindObject<UClass>(nullptr, TEXT("/Script/Engine.MaterialExpressionScreenPosition"));
+#endif
+	}
+
+	inline bool IsDreamShaderScreenPositionExpression(const UMaterialExpression* Expression)
+	{
+		if (!Expression)
+		{
+			return false;
+		}
+#if DREAMSHADER_UE_VERSION_AT_LEAST(5, 6)
+		return Expression->IsA<UMaterialExpressionScreenPosition>();
+#else
+		UClass* ScreenPositionClass = GetDreamShaderScreenPositionExpressionClass();
+		return ScreenPositionClass && Expression->IsA(ScreenPositionClass);
+#endif
+	}
+
+	inline UClass* GetDreamShaderObjectPositionExpressionClass()
+	{
+#if DREAMSHADER_UE_VERSION_AT_LEAST(5, 5)
+		return UMaterialExpressionObjectPositionWS::StaticClass();
+#else
+		return FindObject<UClass>(nullptr, TEXT("/Script/Engine.MaterialExpressionObjectPositionWS"));
+#endif
+	}
+
+	inline bool IsDreamShaderObjectPositionExpression(const UMaterialExpression* Expression)
+	{
+		if (!Expression)
+		{
+			return false;
+		}
+#if DREAMSHADER_UE_VERSION_AT_LEAST(5, 5)
+		return Expression->IsA<UMaterialExpressionObjectPositionWS>();
+#else
+		UClass* ObjectPositionClass = GetDreamShaderObjectPositionExpressionClass();
+		return ObjectPositionClass && Expression->IsA(ObjectPositionClass);
+#endif
+	}
+
+	inline bool IsDreamShaderRotatorExpression(const UMaterialExpression* Expression)
+	{
+		return Expression && Expression->GetClass()->GetName().Equals(TEXT("MaterialExpressionRotator"), ESearchCase::IgnoreCase);
+	}
+
 	inline bool TryResolveKnownExpressionOutputComponentCount(
 		const UMaterialExpression* Expression,
 		const int32 OutputIndex,
@@ -305,15 +469,15 @@ namespace UE::DreamShader::Editor::Private
 
 		if (Cast<UMaterialExpressionTextureCoordinate>(Expression)
 			|| Cast<UMaterialExpressionPanner>(Expression)
-			|| Cast<UMaterialExpressionScreenPosition>(Expression)
-			|| Expression->GetClass()->GetName().Equals(TEXT("MaterialExpressionRotator"), ESearchCase::IgnoreCase))
+			|| IsDreamShaderScreenPositionExpression(Expression)
+			|| IsDreamShaderRotatorExpression(Expression))
 		{
 			OutComponentCount = 2;
 			return true;
 		}
 
 		if (Cast<UMaterialExpressionWorldPosition>(Expression)
-			|| Cast<UMaterialExpressionObjectPositionWS>(Expression)
+			|| IsDreamShaderObjectPositionExpression(Expression)
 			|| Cast<UMaterialExpressionCameraVectorWS>(Expression)
 			|| Cast<UMaterialExpressionVertexNormalWS>(Expression)
 			|| Cast<UMaterialExpressionVertexTangentWS>(Expression)

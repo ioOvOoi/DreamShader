@@ -35,7 +35,7 @@ namespace UE::DreamShader::Editor::Private
 		Key.TrimStartAndEndInline();
 		while (Key.StartsWith(TEXT("-")))
 		{
-			Key.RightChopInline(1, EAllowShrinking::No);
+			Key.RightChopInline(1, DREAMSHADER_ALLOW_SHRINKING_NO);
 		}
 		Key.TrimStartAndEndInline();
 		return Key;

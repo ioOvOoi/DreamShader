@@ -1,6 +1,7 @@
 #include "DreamShaderMaterialGeneratorPrivate.h"
 
 #include "DreamShaderModule.h"
+#include "DreamShaderVersionCompat.h"
 
 #include "FileHelpers.h"
 #include "Misc/Crc.h"
@@ -24,7 +25,15 @@ namespace UE::DreamShader::Editor::Private
 				return FString();
 			}
 
+#if DREAMSHADER_UE_VERSION_AT_LEAST(5, 6)
 			return Package->GetMetaData().GetValue(Asset, Key);
+#else
+			if (UMetaData* MetaData = Package->GetMetaData())
+			{
+				return MetaData->GetValue(Asset, Key);
+			}
+			return FString();
+#endif
 		}
 	}
 
@@ -71,6 +80,7 @@ namespace UE::DreamShader::Editor::Private
 			return;
 		}
 
+#if DREAMSHADER_UE_VERSION_AT_LEAST(5, 6)
 		FMetaData& MetaData = Package->GetMetaData();
 		MetaData.SetValue(Asset, TEXT("DreamShader.SourceFile"), *UE::DreamShader::NormalizeSourceFilePath(SourceFilePath));
 		if (!SourceHash.IsEmpty())
@@ -78,6 +88,19 @@ namespace UE::DreamShader::Editor::Private
 			MetaData.SetValue(Asset, TEXT("DreamShader.SourceHash"), *SourceHash);
 			MetaData.SetValue(Asset, TEXT("DreamShader.GeneratedAtUtc"), *FDateTime::UtcNow().ToIso8601());
 		}
+#else
+		UMetaData* MetaData = Package->GetMetaData();
+		if (!MetaData)
+		{
+			return;
+		}
+		MetaData->SetValue(Asset, TEXT("DreamShader.SourceFile"), *UE::DreamShader::NormalizeSourceFilePath(SourceFilePath));
+		if (!SourceHash.IsEmpty())
+		{
+			MetaData->SetValue(Asset, TEXT("DreamShader.SourceHash"), *SourceHash);
+			MetaData->SetValue(Asset, TEXT("DreamShader.GeneratedAtUtc"), *FDateTime::UtcNow().ToIso8601());
+		}
+#endif
 	}
 
 	bool SaveAssetPackage(UObject* Asset, FString& OutError)

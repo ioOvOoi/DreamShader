@@ -1,5 +1,7 @@
 #include "DreamShaderMaterialGeneratorPrivate.h"
 
+#include "DreamShaderVersionCompat.h"
+
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "Factories/MaterialFactoryNew.h"
 #include "Interfaces/IPluginManager.h"
@@ -81,18 +83,20 @@ namespace UE::DreamShader::Editor::Private
 				return false;
 			}
 
+#if DREAMSHADER_UE_VERSION_AT_LEAST(5, 6)
 			if (!Plugin->IsMounted())
 			{
 				OutError = FString::Printf(TEXT("DreamShader Root '%s' references project plugin '%s', but the plugin content is not mounted."), *Root, *PluginName);
 				return false;
 			}
+#endif
 
 			FString MountedAssetPath = Plugin->GetMountedAssetPath();
 			MountedAssetPath.TrimStartAndEndInline();
 			MountedAssetPath.ReplaceInline(TEXT("\\"), TEXT("/"));
 			while (MountedAssetPath.EndsWith(TEXT("/")))
 			{
-				MountedAssetPath.LeftChopInline(1, EAllowShrinking::No);
+				MountedAssetPath.LeftChopInline(1, DREAMSHADER_ALLOW_SHRINKING_NO);
 			}
 			if (!MountedAssetPath.StartsWith(TEXT("/")))
 			{
@@ -126,11 +130,11 @@ namespace UE::DreamShader::Editor::Private
 			const bool bHadLeadingSlash = Normalized.StartsWith(TEXT("/"));
 			while (Normalized.StartsWith(TEXT("/")))
 			{
-				Normalized.RightChopInline(1, EAllowShrinking::No);
+				Normalized.RightChopInline(1, DREAMSHADER_ALLOW_SHRINKING_NO);
 			}
 			while (Normalized.EndsWith(TEXT("/")))
 			{
-				Normalized.LeftChopInline(1, EAllowShrinking::No);
+				Normalized.LeftChopInline(1, DREAMSHADER_ALLOW_SHRINKING_NO);
 			}
 
 			if (Normalized.IsEmpty())
@@ -226,11 +230,11 @@ namespace UE::DreamShader::Editor::Private
 		Normalized.ReplaceInline(TEXT("\\"), TEXT("/"));
 		while (Normalized.StartsWith(TEXT("/")))
 		{
-			Normalized.RightChopInline(1, EAllowShrinking::No);
+			Normalized.RightChopInline(1, DREAMSHADER_ALLOW_SHRINKING_NO);
 		}
 		while (Normalized.EndsWith(TEXT("/")))
 		{
-			Normalized.LeftChopInline(1, EAllowShrinking::No);
+			Normalized.LeftChopInline(1, DREAMSHADER_ALLOW_SHRINKING_NO);
 		}
 
 		if (Normalized.IsEmpty())

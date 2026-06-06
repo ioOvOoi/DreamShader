@@ -202,7 +202,7 @@ namespace UE::DreamShader::Editor::Private
 			{
 				if (Result[CharIndex] == TCHAR('_') && Result[CharIndex - 1] == TCHAR('_'))
 				{
-					Result.RemoveAt(CharIndex, 1, EAllowShrinking::No);
+					Result.RemoveAt(CharIndex, 1, DREAMSHADER_ALLOW_SHRINKING_NO);
 				}
 			}
 
@@ -515,7 +515,7 @@ namespace UE::DreamShader::Editor::Private
 				MountedPath.ReplaceInline(TEXT("\\"), TEXT("/"));
 				while (MountedPath.EndsWith(TEXT("/")))
 				{
-					MountedPath.LeftChopInline(1, EAllowShrinking::No);
+					MountedPath.LeftChopInline(1, DREAMSHADER_ALLOW_SHRINKING_NO);
 				}
 				if (!MountedPath.StartsWith(TEXT("/")))
 				{
@@ -540,7 +540,7 @@ namespace UE::DreamShader::Editor::Private
 				FString RelativePath = PackageName.Mid(BestMountedPath.Len());
 				while (RelativePath.StartsWith(TEXT("/")))
 				{
-					RelativePath.RightChopInline(1, EAllowShrinking::No);
+					RelativePath.RightChopInline(1, DREAMSHADER_ALLOW_SHRINKING_NO);
 				}
 				return FString::Printf(
 					TEXT("Path(Plugins.%s, \"%s\")"),
@@ -691,7 +691,7 @@ namespace UE::DreamShader::Editor::Private
 			}
 			VisitingExpressions->Add(Expression);
 
-			const EMaterialValueType EarlyOutputType = Expression->GetOutputValueType(OutputIndex);
+			const EMaterialValueType EarlyOutputType = GetDreamShaderExpressionOutputValueType(Expression, OutputIndex);
 			if (IsSubstrateMaterialValueType(EarlyOutputType) || EarlyOutputType == MCT_MaterialAttributes || IsTextureMaterialValueType(EarlyOutputType))
 			{
 				VisitingExpressions->Remove(Expression);
@@ -720,13 +720,13 @@ namespace UE::DreamShader::Editor::Private
 
 			if (Cast<UMaterialExpressionTextureCoordinate>(Expression)
 				|| Cast<UMaterialExpressionPanner>(Expression)
-				|| Expression->GetClass()->GetName().Equals(TEXT("MaterialExpressionRotator"), ESearchCase::IgnoreCase))
+				|| IsDreamShaderRotatorExpression(Expression))
 			{
 				return Finish(2);
 			}
 
 			if (Cast<UMaterialExpressionWorldPosition>(Expression)
-				|| Cast<UMaterialExpressionObjectPositionWS>(Expression)
+				|| IsDreamShaderObjectPositionExpression(Expression)
 				|| Cast<UMaterialExpressionCameraVectorWS>(Expression)
 				|| Cast<UMaterialExpressionVertexNormalWS>(Expression)
 				|| Cast<UMaterialExpressionVertexTangentWS>(Expression))
@@ -887,7 +887,7 @@ namespace UE::DreamShader::Editor::Private
 				return Finish(1);
 			}
 
-			const EMaterialValueType OutputType = Expression->GetOutputValueType(OutputIndex);
+			const EMaterialValueType OutputType = GetDreamShaderExpressionOutputValueType(Expression, OutputIndex);
 			if (IsTextureMaterialValueType(OutputType) || OutputType == MCT_MaterialAttributes)
 			{
 				return Finish(0);
@@ -913,7 +913,7 @@ namespace UE::DreamShader::Editor::Private
 			const FExpressionInput TracedInput = OutputExpression->A.GetTracedInput();
 			if (TracedInput.Expression)
 			{
-				const EMaterialValueType OutputType = TracedInput.Expression->GetOutputValueType(TracedInput.OutputIndex);
+				const EMaterialValueType OutputType = GetDreamShaderExpressionOutputValueType(TracedInput.Expression, TracedInput.OutputIndex);
 				if (IsSubstrateMaterialValueType(OutputType))
 				{
 					return TEXT("Substrate");
@@ -942,7 +942,7 @@ namespace UE::DreamShader::Editor::Private
 				return GetDreamShaderTypeForMaterialValueType(OutputType);
 			}
 
-			const EMaterialValueType OutputType = const_cast<UMaterialExpressionFunctionOutput*>(OutputExpression)->GetOutputValueType(0);
+			const EMaterialValueType OutputType = GetDreamShaderExpressionOutputValueType(const_cast<UMaterialExpressionFunctionOutput*>(OutputExpression), 0);
 			if (IsSubstrateMaterialValueType(OutputType))
 			{
 				return TEXT("Substrate");
@@ -980,7 +980,7 @@ namespace UE::DreamShader::Editor::Private
 				}
 			}
 
-			const EMaterialValueType OutputType = Expression->GetOutputValueType(OutputIndex);
+			const EMaterialValueType OutputType = GetDreamShaderExpressionOutputValueType(Expression, OutputIndex);
 			if (IsSubstrateMaterialValueType(OutputType))
 			{
 				return TEXT("Substrate");
@@ -1205,7 +1205,9 @@ namespace UE::DreamShader::Editor::Private
 				TEXT("bFullyRough"),
 				TEXT("bIsSky"),
 				TEXT("bIsThinSurface"),
+#if DREAMSHADER_UE_VERSION_AT_LEAST(5, 4)
 				TEXT("bHasPixelAnimation"),
+#endif
 				TEXT("bUsedWithSkeletalMesh"),
 				TEXT("bUsedWithMorphTargets"),
 				TEXT("bUsedWithClothing"),
@@ -1813,12 +1815,14 @@ namespace UE::DreamShader::Editor::Private
 					StaticEnum<ETextureMipValueMode>(),
 					TextureSample->MipValueMode.GetValue(),
 					TMVM_None);
+#if DREAMSHADER_UE_VERSION_AT_LEAST(5, 6)
 				AddEnumMetadata(
 					Entries,
 					TEXT("GatherMode"),
 					StaticEnum<ETextureGatherMode>(),
 					TextureSample->GatherMode.GetValue(),
 					TGM_None);
+#endif
 				AddBoolMetadata(Entries, TEXT("AutomaticViewMipBias"), TextureSample->AutomaticViewMipBias != 0, true);
 				AddIntMetadata(Entries, TEXT("ConstCoordinate"), TextureSample->ConstCoordinate, 0);
 				AddIntMetadata(Entries, TEXT("ConstMipValue"), TextureSample->ConstMipValue, INDEX_NONE);
@@ -1884,10 +1888,12 @@ namespace UE::DreamShader::Editor::Private
 				{
 					Arguments.Add({ TEXT("MipValueMode"), BuildLiteralEnumArgument(StaticEnum<ETextureMipValueMode>(), TextureSample->MipValueMode.GetValue()), false });
 				}
+#if DREAMSHADER_UE_VERSION_AT_LEAST(5, 6)
 				if (TextureSample->GatherMode.GetValue() != TGM_None)
 				{
 					Arguments.Add({ TEXT("GatherMode"), BuildLiteralEnumArgument(StaticEnum<ETextureGatherMode>(), TextureSample->GatherMode.GetValue()), false });
 				}
+#endif
 				if (!TextureSample->AutomaticViewMipBias)
 				{
 					Arguments.Add({ TEXT("AutomaticViewMipBias"), TEXT("false"), false });
@@ -3327,8 +3333,9 @@ namespace UE::DreamShader::Editor::Private
 					return MakeExpressionValue(Expression, OutputIndex, BuildUEExpressionCall(Expression, OutputIndex, Arguments), false);
 				}
 
-				if (UMaterialExpressionRotator* Rotator = Cast<UMaterialExpressionRotator>(Expression))
+				if (IsDreamShaderRotatorExpression(Expression))
 				{
+					const UMaterialExpressionRotator* Rotator = static_cast<const UMaterialExpressionRotator*>(Expression);
 					TArray<FExpressionCallArgument> Arguments;
 					if (Rotator->Coordinate.IsConnected())
 					{
@@ -3367,12 +3374,12 @@ namespace UE::DreamShader::Editor::Private
 					return MakeExpressionValue(Expression, OutputIndex, BuildUEExpressionCall(Expression, OutputIndex, {}), false);
 				}
 
-				if (UMaterialExpressionObjectPositionWS* ObjectPosition = Cast<UMaterialExpressionObjectPositionWS>(Expression))
+				if (IsDreamShaderObjectPositionExpression(Expression))
 				{
 					return MakeExpressionValue(Expression, OutputIndex, BuildUEExpressionCall(Expression, OutputIndex, {}), false);
 				}
 
-				if (UMaterialExpressionScreenPosition* ScreenPosition = Cast<UMaterialExpressionScreenPosition>(Expression))
+				if (IsDreamShaderScreenPositionExpression(Expression))
 				{
 					return MakeExpressionValue(Expression, OutputIndex, BuildUEExpressionCall(Expression, OutputIndex, {}), false);
 				}
@@ -3768,7 +3775,7 @@ namespace UE::DreamShader::Editor::Private
 				TArray<FExpressionCallArgument> Arguments;
 				if (Expression)
 				{
-					for (int32 InputIndex = 0; InputIndex < Expression->CountInputs(); ++InputIndex)
+					for (int32 InputIndex = 0; InputIndex < GetDreamShaderExpressionInputCount(Expression); ++InputIndex)
 					{
 						FExpressionInput* Input = Expression->GetInput(InputIndex);
 						if (!Input || !Input->IsConnected())

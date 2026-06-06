@@ -6,6 +6,7 @@
 
 #include "DreamShaderModule.h"
 #include "DreamShaderParser.h"
+#include "DreamShaderVersionCompat.h"
 
 #include "CoreGlobals.h"
 #include "MaterialEditingLibrary.h"
@@ -1336,6 +1337,10 @@ namespace UE::DreamShader::Editor
 			}
 		}
 
+		static constexpr int32 DreamShaderAcceptableLayerMaterialAttributesInputs = 1;
+		static constexpr int32 DreamShaderAcceptableBlendMaterialAttributesInputs = 2;
+
+#if DREAMSHADER_UE_VERSION_AT_LEAST(5, 7)
 		EBlendInputRelevance ResolveMaterialLayerBlendInputRelevance(
 			const FTextShaderMaterialFunctionDefinition& FunctionDefinition,
 			const FTextShaderFunctionParameter& InputDefinition,
@@ -1370,6 +1375,7 @@ namespace UE::DreamShader::Editor
 				? EBlendInputRelevance::Bottom
 				: EBlendInputRelevance::Top;
 		}
+#endif
 
 		bool ValidateMaterialLayerFunctionDefinition(const FTextShaderMaterialFunctionDefinition& FunctionDefinition, FString& OutError)
 		{
@@ -1395,7 +1401,7 @@ namespace UE::DreamShader::Editor
 			}
 
 			if (FunctionDefinition.Kind == ETextShaderMaterialFunctionKind::MaterialLayer
-				&& (FunctionDefinition.Inputs.Num() > AcceptableNumLayerMAInputs
+				&& (FunctionDefinition.Inputs.Num() > DreamShaderAcceptableLayerMaterialAttributesInputs
 					|| MaterialAttributesInputCount != FunctionDefinition.Inputs.Num()))
 			{
 				OutError = FString::Printf(TEXT("ShaderLayer '%s' must declare at most one input, and it must be MaterialAttributes. Use Properties for layer controls."), *FunctionDefinition.Name);
@@ -1404,8 +1410,8 @@ namespace UE::DreamShader::Editor
 
 			if (FunctionDefinition.Kind == ETextShaderMaterialFunctionKind::MaterialLayerBlend)
 			{
-				if (FunctionDefinition.Inputs.Num() != AcceptableNumBlendMAInputs
-					|| MaterialAttributesInputCount != AcceptableNumBlendMAInputs)
+				if (FunctionDefinition.Inputs.Num() != DreamShaderAcceptableBlendMaterialAttributesInputs
+					|| MaterialAttributesInputCount != DreamShaderAcceptableBlendMaterialAttributesInputs)
 				{
 					OutError = FString::Printf(TEXT("ShaderLayerBlend '%s' must declare exactly two inputs, both MaterialAttributes. Use Properties for blend controls."), *FunctionDefinition.Name);
 					return false;
@@ -1699,10 +1705,12 @@ namespace UE::DreamShader::Editor
 
 				InputExpression->InputName = FName(*InputDefinition.Name);
 				InputExpression->InputType = static_cast<EFunctionInputType>(FunctionInputTypeValue);
+#if DREAMSHADER_UE_VERSION_AT_LEAST(5, 7)
 				InputExpression->BlendInputRelevance = ResolveMaterialLayerBlendInputRelevance(
 					FunctionDefinition,
 					InputDefinition,
 					MaterialAttributesInputIndex);
+#endif
 				InputExpression->Description = InputDefinition.Metadata.Description;
 				InputExpression->SortPriority = InputDefinition.Metadata.bHasSortPriority
 					? InputDefinition.Metadata.SortPriority
@@ -1851,7 +1859,9 @@ namespace UE::DreamShader::Editor
 
 				CustomExpression->Description = FunctionDefinition.Name;
 				CustomExpression->OutputType = OutputType;
+#if DREAMSHADER_UE_VERSION_AT_LEAST(5, 4)
 				CustomExpression->ShowCode = false;
+#endif
 				CustomExpression->Inputs.Reset();
 				CustomExpression->AdditionalOutputs.Reset();
 				CustomExpression->IncludeFilePaths.Reset();
@@ -1948,7 +1958,7 @@ namespace UE::DreamShader::Editor
 					CustomExpression->AdditionalOutputs.Add(Output);
 				}
 
-				CustomExpression->RebuildOutputs();
+				Private::RebuildDreamShaderCustomOutputs(CustomExpression);
 
 				Private::FCodeValue PrimaryOutputValue;
 				PrimaryOutputValue.Expression = CustomExpression;
@@ -2602,7 +2612,9 @@ namespace UE::DreamShader::Editor
 
 			CustomExpression->Description = Definition.Name;
 			CustomExpression->OutputType = bUsesReturn ? ReturnOutputType : CMOT_Float1;
+#if DREAMSHADER_UE_VERSION_AT_LEAST(5, 4)
 			CustomExpression->ShowCode = false;
+#endif
 			CustomExpression->Inputs.Reset();
 			CustomExpression->AdditionalOutputs.Reset();
 			CustomExpression->IncludeFilePaths.Reset();
@@ -2669,7 +2681,7 @@ namespace UE::DreamShader::Editor
 				CustomExpression->AdditionalOutputs.Add(Output);
 			}
 
-			CustomExpression->RebuildOutputs();
+			Private::RebuildDreamShaderCustomOutputs(CustomExpression);
 
 			for (const FTextShaderOutputBinding& Binding : Definition.Outputs)
 			{

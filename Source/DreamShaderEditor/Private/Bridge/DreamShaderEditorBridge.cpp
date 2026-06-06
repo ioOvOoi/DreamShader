@@ -8,6 +8,7 @@
 #include "DependencyGraph/DreamShaderDependencyGraphService.h"
 #include "DreamShaderModule.h"
 #include "DreamShaderSettings.h"
+#include "DreamShaderVersionCompat.h"
 #include "Preview/DreamShaderPreviewRenderer.h"
 #include "SourceFiles/DreamShaderSourceFileUtils.h"
 #include "VirtualFunction/DreamShaderVirtualFunctionService.h"
@@ -37,6 +38,7 @@
 #include "Modules/ModuleManager.h"
 #include "Serialization/JsonSerializer.h"
 #include "ShaderCore.h"
+#include "RHIStrings.h"
 #include "Styling/AppStyle.h"
 #include "ToolMenu.h"
 #include "ToolMenus.h"
@@ -118,7 +120,14 @@ namespace UE::DreamShader::Editor::Private
 
 		if (UPackage* Package = Asset->GetOutermost())
 		{
+#if DREAMSHADER_UE_VERSION_AT_LEAST(5, 6)
 			return Package->GetMetaData().GetValue(Asset, TEXT("DreamShader.SourceFile"));
+#else
+			if (UMetaData* MetaData = Package->GetMetaData())
+			{
+				return MetaData->GetValue(Asset, TEXT("DreamShader.SourceFile"));
+			}
+#endif
 		}
 
 		return FString();
@@ -502,6 +511,7 @@ namespace UE::DreamShader::Editor::Private
 		TArray<FDreamShaderDiagnosticRecord> Diagnostics;
 		const FString MaterialAssetPath = Material->GetPathName();
 		TSet<FString> SeenDiagnosticKeys;
+#if DREAMSHADER_UE_VERSION_AT_LEAST(5, 7)
 		for (int32 ShaderPlatformIndex = 0; ShaderPlatformIndex < EShaderPlatform::SP_NumPlatforms; ++ShaderPlatformIndex)
 		{
 			const EShaderPlatform ShaderPlatform = static_cast<EShaderPlatform>(ShaderPlatformIndex);
@@ -516,6 +526,27 @@ namespace UE::DreamShader::Editor::Private
 
 				const FString ShaderPlatformLabel = GetShaderPlatformLabel(ShaderPlatform);
 				const FString QualityLabel = GetMaterialQualityLevelLabel(QualityLevel);
+#else
+		static constexpr ERHIFeatureLevel::Type FeatureLevels[] =
+		{
+			ERHIFeatureLevel::ES3_1,
+			ERHIFeatureLevel::SM5,
+			ERHIFeatureLevel::SM6,
+		};
+		for (const ERHIFeatureLevel::Type FeatureLevel : FeatureLevels)
+		{
+			for (int32 QualityLevelIndex = 0; QualityLevelIndex < static_cast<int32>(EMaterialQualityLevel::Num); ++QualityLevelIndex)
+			{
+				const EMaterialQualityLevel::Type QualityLevel = static_cast<EMaterialQualityLevel::Type>(QualityLevelIndex);
+				const FMaterialResource* MaterialResource = Material->GetMaterialResource(FeatureLevel, QualityLevel);
+				if (!MaterialResource)
+				{
+					continue;
+				}
+
+				const FString ShaderPlatformLabel = ::LexToString(FeatureLevel);
+				const FString QualityLabel = GetMaterialQualityLevelLabel(QualityLevel);
+#endif
 				for (const FString& Error : MaterialResource->GetCompileErrors())
 				{
 					const FString RawError = Error.TrimStartAndEnd();

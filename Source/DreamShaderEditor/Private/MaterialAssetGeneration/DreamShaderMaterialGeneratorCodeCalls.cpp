@@ -26,7 +26,7 @@ namespace UE::DreamShader::Editor::Private
 
 			int32 ResolvedComponentCount = 0;
 			bool bResolvedIsTextureObject = false;
-			const EMaterialValueType OutputValueType = FunctionCall->GetOutputValueType(FunctionOutputIndex);
+			const EMaterialValueType OutputValueType = GetDreamShaderExpressionOutputValueType(FunctionCall, FunctionOutputIndex);
 			if (IsSubstrateMaterialValueType(OutputValueType))
 			{
 				InOutComponentCount = 0;
@@ -124,7 +124,7 @@ namespace UE::DreamShader::Editor::Private
 			const int32 SlashIndex = ShortName.Find(TEXT("/"), ESearchCase::IgnoreCase, ESearchDir::FromEnd);
 			if (SlashIndex != INDEX_NONE)
 			{
-				ShortName.RightChopInline(SlashIndex + 1, EAllowShrinking::No);
+				ShortName.RightChopInline(SlashIndex + 1, DREAMSHADER_ALLOW_SHRINKING_NO);
 			}
 
 			if (ShortName.Equals(FunctionName, ESearchCase::IgnoreCase))
@@ -150,7 +150,7 @@ namespace UE::DreamShader::Editor::Private
 			const int32 SlashIndex = ShortName.Find(TEXT("/"), ESearchCase::IgnoreCase, ESearchDir::FromEnd);
 			if (SlashIndex != INDEX_NONE)
 			{
-				ShortName.RightChopInline(SlashIndex + 1, EAllowShrinking::No);
+				ShortName.RightChopInline(SlashIndex + 1, DREAMSHADER_ALLOW_SHRINKING_NO);
 			}
 
 			if (ShortName.Equals(FunctionName, ESearchCase::IgnoreCase))
@@ -272,7 +272,9 @@ namespace UE::DreamShader::Editor::Private
 
 		CustomExpression->Description = Function->Name;
 		CustomExpression->OutputType = ResultOutputType;
+#if DREAMSHADER_UE_VERSION_AT_LEAST(5, 4)
 		CustomExpression->ShowCode = false;
+#endif
 		CustomExpression->Inputs.Reset();
 		CustomExpression->AdditionalOutputs.Reset();
 		CustomExpression->IncludeFilePaths.Reset();
@@ -323,7 +325,7 @@ namespace UE::DreamShader::Editor::Private
 			CustomExpression->IncludeFilePaths.Add(IncludeVirtualPath);
 		}
 
-		CustomExpression->RebuildOutputs();
+		RebuildDreamShaderCustomOutputs(CustomExpression);
 
 		OutValue.Expression = CustomExpression;
 		OutValue.OutputIndex = 0;
@@ -542,7 +544,9 @@ namespace UE::DreamShader::Editor::Private
 
 		CustomExpression->Description = Function.Name;
 		CustomExpression->OutputType = PrimaryOutputType;
+#if DREAMSHADER_UE_VERSION_AT_LEAST(5, 4)
 		CustomExpression->ShowCode = false;
+#endif
 		CustomExpression->Inputs.Reset();
 		CustomExpression->AdditionalOutputs.Reset();
 		CustomExpression->IncludeFilePaths.Reset();
@@ -661,7 +665,7 @@ namespace UE::DreamShader::Editor::Private
 			CustomExpression->AdditionalOutputs.Add(Output);
 		}
 
-		CustomExpression->RebuildOutputs();
+		RebuildDreamShaderCustomOutputs(CustomExpression);
 
 		for (int32 ResultIndex = 0; ResultIndex < Function.Results.Num(); ++ResultIndex)
 		{
@@ -736,7 +740,7 @@ namespace UE::DreamShader::Editor::Private
 			}
 			~FActiveGraphFunctionGuard()
 			{
-				Stack.Pop(EAllowShrinking::No);
+				Stack.Pop(DREAMSHADER_ALLOW_SHRINKING_NO);
 			}
 		};
 		FActiveGraphFunctionGuard ActiveGuard(ActiveGraphFunctionStack, Function.Name);
@@ -1014,7 +1018,9 @@ namespace UE::DreamShader::Editor::Private
 
 		CustomExpression->Description = Function.Name;
 		CustomExpression->OutputType = PrimaryOutputType;
+#if DREAMSHADER_UE_VERSION_AT_LEAST(5, 4)
 		CustomExpression->ShowCode = false;
+#endif
 		CustomExpression->Inputs.Reset();
 		CustomExpression->AdditionalOutputs.Reset();
 		CustomExpression->IncludeFilePaths.Reset();
@@ -1307,7 +1313,7 @@ namespace UE::DreamShader::Editor::Private
 			CustomExpression->AdditionalOutputs.Add(Output);
 		}
 
-		CustomExpression->RebuildOutputs();
+		RebuildDreamShaderCustomOutputs(CustomExpression);
 
 		for (int32 ResultIndex = 0; ResultIndex < Function.Results.Num(); ++ResultIndex)
 		{

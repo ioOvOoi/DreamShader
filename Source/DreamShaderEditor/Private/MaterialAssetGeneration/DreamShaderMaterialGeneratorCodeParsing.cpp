@@ -153,7 +153,7 @@ namespace UE::DreamShader::Editor::Private
 		return Segments;
 	}
 
-	static bool IsIdentifierBoundary(const FString& Text, const int32 Index)
+	static bool IsCodeParsingIdentifierBoundary(const FString& Text, const int32 Index)
 	{
 		if (!Text.IsValidIndex(Index))
 		{
@@ -170,11 +170,11 @@ namespace UE::DreamShader::Editor::Private
 		return Text.IsValidIndex(Index)
 			&& Index + KeywordLength <= Text.Len()
 			&& Text.Mid(Index, KeywordLength).Equals(Keyword, ESearchCase::CaseSensitive)
-			&& IsIdentifierBoundary(Text, Index - 1)
-			&& IsIdentifierBoundary(Text, Index + KeywordLength);
+			&& IsCodeParsingIdentifierBoundary(Text, Index - 1)
+			&& IsCodeParsingIdentifierBoundary(Text, Index + KeywordLength);
 	}
 
-	static void SkipWhitespace(const FString& Text, int32& InOutIndex)
+	static void SkipCodeParsingWhitespace(const FString& Text, int32& InOutIndex)
 	{
 		while (Text.IsValidIndex(InOutIndex) && FChar::IsWhitespace(Text[InOutIndex]))
 		{
@@ -182,7 +182,7 @@ namespace UE::DreamShader::Editor::Private
 		}
 	}
 
-	static bool FindMatchingDelimiter(
+	static bool FindCodeParsingMatchingDelimiter(
 		const FString& Text,
 		const int32 OpenIndex,
 		const TCHAR OpenChar,
@@ -248,7 +248,7 @@ namespace UE::DreamShader::Editor::Private
 		}
 
 		int32 Index = IfIndex + 2;
-		SkipWhitespace(Text, Index);
+		SkipCodeParsingWhitespace(Text, Index);
 		if (!Text.IsValidIndex(Index) || Text[Index] != TCHAR('('))
 		{
 			OutError = TEXT("Graph if statement is missing a condition block.");
@@ -256,14 +256,14 @@ namespace UE::DreamShader::Editor::Private
 		}
 
 		int32 ConditionCloseIndex = INDEX_NONE;
-		if (!FindMatchingDelimiter(Text, Index, TCHAR('('), TCHAR(')'), ConditionCloseIndex))
+		if (!FindCodeParsingMatchingDelimiter(Text, Index, TCHAR('('), TCHAR(')'), ConditionCloseIndex))
 		{
 			OutError = TEXT("Graph if statement has an unterminated condition block.");
 			return false;
 		}
 
 		Index = ConditionCloseIndex + 1;
-		SkipWhitespace(Text, Index);
+		SkipCodeParsingWhitespace(Text, Index);
 		if (!Text.IsValidIndex(Index) || Text[Index] != TCHAR('{'))
 		{
 			OutError = TEXT("Graph if statement is missing a '{ ... }' body.");
@@ -271,18 +271,18 @@ namespace UE::DreamShader::Editor::Private
 		}
 
 		int32 ThenCloseIndex = INDEX_NONE;
-		if (!FindMatchingDelimiter(Text, Index, TCHAR('{'), TCHAR('}'), ThenCloseIndex))
+		if (!FindCodeParsingMatchingDelimiter(Text, Index, TCHAR('{'), TCHAR('}'), ThenCloseIndex))
 		{
 			OutError = TEXT("Graph if statement has an unterminated body block.");
 			return false;
 		}
 
 		Index = ThenCloseIndex + 1;
-		SkipWhitespace(Text, Index);
+		SkipCodeParsingWhitespace(Text, Index);
 		if (MatchesKeywordAt(Text, Index, TEXT("else")))
 		{
 			Index += 4;
-			SkipWhitespace(Text, Index);
+			SkipCodeParsingWhitespace(Text, Index);
 			if (MatchesKeywordAt(Text, Index, TEXT("if")))
 			{
 				return FindIfStatementEnd(Text, Index, OutEndIndex, OutError);
@@ -295,7 +295,7 @@ namespace UE::DreamShader::Editor::Private
 			}
 
 			int32 ElseCloseIndex = INDEX_NONE;
-			if (!FindMatchingDelimiter(Text, Index, TCHAR('{'), TCHAR('}'), ElseCloseIndex))
+			if (!FindCodeParsingMatchingDelimiter(Text, Index, TCHAR('{'), TCHAR('}'), ElseCloseIndex))
 			{
 				OutError = TEXT("Graph else statement has an unterminated body block.");
 				return false;
@@ -406,11 +406,11 @@ namespace UE::DreamShader::Editor::Private
 		int32 Index = 0;
 		while (Index < BlockContent.Len())
 		{
-			SkipWhitespace(BlockContent, Index);
+			SkipCodeParsingWhitespace(BlockContent, Index);
 			while (BlockContent.IsValidIndex(Index) && BlockContent[Index] == TCHAR(';'))
 			{
 				++Index;
-				SkipWhitespace(BlockContent, Index);
+				SkipCodeParsingWhitespace(BlockContent, Index);
 			}
 
 			if (Index >= BlockContent.Len())
@@ -1267,18 +1267,18 @@ namespace UE::DreamShader::Editor::Private
 		int32* OutErrorColumn)
 	{
 		int32 Index = 0;
-		SkipWhitespace(StatementText, Index);
+		SkipCodeParsingWhitespace(StatementText, Index);
 		if (!MatchesKeywordAt(StatementText, Index, TEXT("if")))
 		{
 			return false;
 		}
 
 		Index += 2;
-		SkipWhitespace(StatementText, Index);
+		SkipCodeParsingWhitespace(StatementText, Index);
 		int32 ConditionCloseIndex = INDEX_NONE;
 		if (!StatementText.IsValidIndex(Index)
 			|| StatementText[Index] != TCHAR('(')
-			|| !FindMatchingDelimiter(StatementText, Index, TCHAR('('), TCHAR(')'), ConditionCloseIndex))
+			|| !FindCodeParsingMatchingDelimiter(StatementText, Index, TCHAR('('), TCHAR(')'), ConditionCloseIndex))
 		{
 			OutError = FString::Printf(TEXT("Invalid Graph if statement '%s'."), *StatementText);
 			return false;
@@ -1286,12 +1286,12 @@ namespace UE::DreamShader::Editor::Private
 
 		const FString ConditionText = StatementText.Mid(Index + 1, ConditionCloseIndex - Index - 1).TrimStartAndEnd();
 		Index = ConditionCloseIndex + 1;
-		SkipWhitespace(StatementText, Index);
+		SkipCodeParsingWhitespace(StatementText, Index);
 
 		int32 ThenCloseIndex = INDEX_NONE;
 		if (!StatementText.IsValidIndex(Index)
 			|| StatementText[Index] != TCHAR('{')
-			|| !FindMatchingDelimiter(StatementText, Index, TCHAR('{'), TCHAR('}'), ThenCloseIndex))
+			|| !FindCodeParsingMatchingDelimiter(StatementText, Index, TCHAR('{'), TCHAR('}'), ThenCloseIndex))
 		{
 			OutError = FString::Printf(TEXT("Invalid Graph if body in '%s'."), *StatementText);
 			return false;
@@ -1300,14 +1300,14 @@ namespace UE::DreamShader::Editor::Private
 		const int32 ThenBodyStartIndex = Index + 1;
 		const FString ThenBody = StatementText.Mid(ThenBodyStartIndex, ThenCloseIndex - Index - 1);
 		Index = ThenCloseIndex + 1;
-		SkipWhitespace(StatementText, Index);
+		SkipCodeParsingWhitespace(StatementText, Index);
 
 		FString ElseBody;
 		int32 ElseBodyStartIndex = INDEX_NONE;
 		if (MatchesKeywordAt(StatementText, Index, TEXT("else")))
 		{
 			Index += 4;
-			SkipWhitespace(StatementText, Index);
+			SkipCodeParsingWhitespace(StatementText, Index);
 
 			if (MatchesKeywordAt(StatementText, Index, TEXT("if")))
 			{
@@ -1320,7 +1320,7 @@ namespace UE::DreamShader::Editor::Private
 				int32 ElseCloseIndex = INDEX_NONE;
 				if (!StatementText.IsValidIndex(Index)
 					|| StatementText[Index] != TCHAR('{')
-					|| !FindMatchingDelimiter(StatementText, Index, TCHAR('{'), TCHAR('}'), ElseCloseIndex))
+					|| !FindCodeParsingMatchingDelimiter(StatementText, Index, TCHAR('{'), TCHAR('}'), ElseCloseIndex))
 				{
 					OutError = FString::Printf(TEXT("Invalid Graph else body in '%s'."), *StatementText);
 					return false;
@@ -1331,7 +1331,7 @@ namespace UE::DreamShader::Editor::Private
 				Index = ElseCloseIndex + 1;
 			}
 
-			SkipWhitespace(StatementText, Index);
+			SkipCodeParsingWhitespace(StatementText, Index);
 		}
 
 		if (Index < StatementText.Len())
@@ -1429,7 +1429,7 @@ namespace UE::DreamShader::Editor::Private
 				StatementColumn);
 
 			int32 StatementProbeIndex = 0;
-			SkipWhitespace(StatementText, StatementProbeIndex);
+			SkipCodeParsingWhitespace(StatementText, StatementProbeIndex);
 			if (MatchesKeywordAt(StatementText, StatementProbeIndex, TEXT("if")))
 			{
 				FCodeStatement IfStatement;

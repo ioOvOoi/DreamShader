@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DreamShaderParser.h"
+#include "DreamShaderVersionCompat.h"
 
 namespace UE::DreamShader::Private
 {

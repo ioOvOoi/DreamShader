@@ -801,7 +801,7 @@ namespace UE::DreamShader::Editor::Private
 			FString NormalizedPropertyName = UE::DreamShader::NormalizeSettingKey(Property->GetName());
 			if (NormalizedPropertyName.StartsWith(TEXT("b")))
 			{
-				NormalizedPropertyName.RightChopInline(1, EAllowShrinking::No);
+				NormalizedPropertyName.RightChopInline(1, DREAMSHADER_ALLOW_SHRINKING_NO);
 				if (NormalizedPropertyName == NormalizedArgument)
 				{
 					return Property;
@@ -961,18 +961,20 @@ namespace UE::DreamShader::Editor::Private
 			return false;
 		}
 
+#if DREAMSHADER_UE_VERSION_AT_LEAST(5, 6)
 		if (!Plugin->IsMounted())
 		{
 			OutError = FString::Printf(TEXT("Asset Path root '%s' references plugin '%s', but the plugin content is not mounted."), *Root, *PluginName);
 			return false;
 		}
+#endif
 
 		FString MountedAssetPath = Plugin->GetMountedAssetPath();
 		MountedAssetPath.TrimStartAndEndInline();
 		MountedAssetPath.ReplaceInline(TEXT("\\"), TEXT("/"));
 		while (MountedAssetPath.EndsWith(TEXT("/")))
 		{
-			MountedAssetPath.LeftChopInline(1, EAllowShrinking::No);
+			MountedAssetPath.LeftChopInline(1, DREAMSHADER_ALLOW_SHRINKING_NO);
 		}
 		if (!MountedAssetPath.StartsWith(TEXT("/")))
 		{
@@ -997,11 +999,11 @@ namespace UE::DreamShader::Editor::Private
 		Normalized.ReplaceInline(TEXT("\\"), TEXT("/"));
 		while (Normalized.StartsWith(TEXT("/")))
 		{
-			Normalized.RightChopInline(1, EAllowShrinking::No);
+			Normalized.RightChopInline(1, DREAMSHADER_ALLOW_SHRINKING_NO);
 		}
 		while (Normalized.EndsWith(TEXT("/")))
 		{
-			Normalized.LeftChopInline(1, EAllowShrinking::No);
+			Normalized.LeftChopInline(1, DREAMSHADER_ALLOW_SHRINKING_NO);
 		}
 
 		TArray<FString> Segments;
@@ -3126,7 +3128,7 @@ namespace UE::DreamShader::Editor::Private
 					continue;
 				}
 
-				for (int32 InputIndex = 0; InputIndex < Expression->CountInputs(); ++InputIndex)
+				for (int32 InputIndex = 0; InputIndex < GetDreamShaderExpressionInputCount(Expression); ++InputIndex)
 				{
 					FExpressionInput* Input = Expression->GetInput(InputIndex);
 					if (!Input)
@@ -3660,7 +3662,7 @@ namespace UE::DreamShader::Editor::Private
 					continue;
 				}
 
-				for (int32 InputIndex = 0; InputIndex < ConsumerExpression->CountInputs(); ++InputIndex)
+				for (int32 InputIndex = 0; InputIndex < GetDreamShaderExpressionInputCount(ConsumerExpression); ++InputIndex)
 				{
 					FExpressionInput* Input = ConsumerExpression->GetInput(InputIndex);
 					if (!Input || !Input->Expression)
@@ -4863,7 +4865,9 @@ namespace UE::DreamShader::Editor::Private
 		Material->bFullyRough = false;
 		Material->bIsSky = false;
 		Material->bIsThinSurface = false;
+#if DREAMSHADER_UE_VERSION_AT_LEAST(5, 4)
 		Material->bHasPixelAnimation = false;
+#endif
 		Material->NumCustomizedUVs = 0;
 	}
 
@@ -5737,7 +5741,7 @@ namespace UE::DreamShader::Editor::Private
 				CustomExpression->AdditionalOutputs.Add(CustomOutput);
 			}
 
-			CustomExpression->RebuildOutputs();
+			RebuildDreamShaderCustomOutputs(CustomExpression);
 		}
 
 		if (!ApplyExpressionMetadata(Expression, Property.Metadata, OutError))
@@ -5835,10 +5839,12 @@ namespace UE::DreamShader::Editor::Private
 			Expression->Collection = Collection;
 			Expression->ParameterName = ParameterName;
 			Expression->ParameterId = Collection->GetParameterId(ParameterName);
+#if DREAMSHADER_UE_VERSION_AT_LEAST(5, 7)
 			if (!Expression->ExpressionGUID.IsValid())
 			{
 				Expression->ExpressionGUID = FGuid::NewGuid();
 			}
+#endif
 			if (!ApplyExpressionMetadata(Expression, Property.Metadata, OutError))
 			{
 				OutError = MakeError(OutError);
@@ -6147,8 +6153,10 @@ namespace UE::DreamShader::Editor::Private
 				return nullptr;
 			}
 
-			auto* Expression = Cast<UMaterialExpressionObjectPositionWS>(
-				CreateOwnedMaterialExpression(Material, MaterialFunction, UMaterialExpressionObjectPositionWS::StaticClass(), -800, PositionY));
+			UClass* ObjectPositionClass = GetDreamShaderObjectPositionExpressionClass();
+			auto* Expression = ObjectPositionClass
+				? static_cast<UMaterialExpressionObjectPositionWS*>(CreateOwnedMaterialExpression(Material, MaterialFunction, ObjectPositionClass, -800, PositionY))
+				: nullptr;
 			if (!Expression)
 			{
 				OutError = MakeError(TEXT("Failed to create the native ObjectPositionWS node."));
@@ -6195,9 +6203,10 @@ namespace UE::DreamShader::Editor::Private
 				return nullptr;
 			}
 
-			UMaterialExpression* Expression =
-				Cast<UMaterialExpressionScreenPosition>(
-					CreateOwnedMaterialExpression(Material, MaterialFunction, UMaterialExpressionScreenPosition::StaticClass(), -800, PositionY));
+			UClass* ScreenPositionClass = GetDreamShaderScreenPositionExpressionClass();
+			UMaterialExpression* Expression = ScreenPositionClass
+				? CreateOwnedMaterialExpression(Material, MaterialFunction, ScreenPositionClass, -800, PositionY)
+				: nullptr;
 			if (!Expression)
 			{
 				OutError = MakeError(TEXT("Failed to create the native ScreenPosition node."));

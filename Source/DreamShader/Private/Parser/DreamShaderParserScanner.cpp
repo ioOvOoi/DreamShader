@@ -902,7 +902,7 @@ namespace UE::DreamShader::Private
 		MountedPath.ReplaceInline(TEXT("\\"), TEXT("/"));
 		while (MountedPath.EndsWith(TEXT("/")))
 		{
-			MountedPath.LeftChopInline(1, EAllowShrinking::No);
+			MountedPath.LeftChopInline(1, DREAMSHADER_ALLOW_SHRINKING_NO);
 		}
 		if (!MountedPath.StartsWith(TEXT("/")))
 		{
@@ -923,11 +923,11 @@ namespace UE::DreamShader::Private
 		Normalized.ReplaceInline(TEXT("\\"), TEXT("/"));
 		while (Normalized.StartsWith(TEXT("/")))
 		{
-			Normalized.RightChopInline(1, EAllowShrinking::No);
+			Normalized.RightChopInline(1, DREAMSHADER_ALLOW_SHRINKING_NO);
 		}
 		while (Normalized.EndsWith(TEXT("/")))
 		{
-			Normalized.LeftChopInline(1, EAllowShrinking::No);
+			Normalized.LeftChopInline(1, DREAMSHADER_ALLOW_SHRINKING_NO);
 		}
 
 		TArray<FString> Segments;

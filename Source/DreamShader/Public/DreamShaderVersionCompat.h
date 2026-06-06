@@ -20,3 +20,9 @@
 
 #define DREAMSHADER_UE_VERSION_AT_LEAST(MajorVersion, MinorVersion) \
 	(DREAMSHADER_UE_MAJOR > (MajorVersion) || (DREAMSHADER_UE_MAJOR == (MajorVersion) && DREAMSHADER_UE_MINOR >= (MinorVersion)))
+
+#if DREAMSHADER_UE_VERSION_AT_LEAST(5, 4)
+#define DREAMSHADER_ALLOW_SHRINKING_NO EAllowShrinking::No
+#else
+#define DREAMSHADER_ALLOW_SHRINKING_NO false
+#endif
