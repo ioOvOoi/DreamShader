@@ -1,6 +1,8 @@
 #include "DreamShaderMaterialGeneratorCodeShared.h"
 
+#if DREAMSHADER_WITH_SUBSTRATE_BUILTINS
 #include "Materials/MaterialExpressionSubstrate.h"
+#endif
 
 namespace UE::DreamShader::Editor::Private
 {
@@ -13,6 +15,7 @@ namespace UE::DreamShader::Editor::Private
 			bool bIsSubstrateOutput = true;
 		};
 
+#if DREAMSHADER_WITH_SUBSTRATE_BUILTINS
 		static const FSubstrateBuiltinDescriptor* FindSubstrateBuiltinDescriptor(const FString& FunctionName)
 		{
 			static const FSubstrateBuiltinDescriptor Builtins[] =
@@ -59,6 +62,13 @@ namespace UE::DreamShader::Editor::Private
 				&& (ExpressionClass->IsChildOf(UMaterialExpressionSubstrateBSDF::StaticClass())
 					|| ExpressionClass->IsChildOf(UMaterialExpressionSubstrateUtilityBase::StaticClass()));
 		}
+#else
+		static bool IsSubstrateExpressionClass(const UClass* ExpressionClass)
+		{
+			(void)ExpressionClass;
+			return false;
+		}
+#endif
 	}
 
 	bool FCodeGraphBuilder::TryResolveVectorTransformBasis(const FString& InText, EMaterialVectorCoordTransformSource& OutSource) const
@@ -704,12 +714,17 @@ namespace UE::DreamShader::Editor::Private
 		const FSubstrateBuiltinDescriptor* SubstrateBuiltin = nullptr;
 		if (bIsSubstrateBuiltinCall)
 		{
+#if DREAMSHADER_WITH_SUBSTRATE_BUILTINS
 			SubstrateBuiltin = FindSubstrateBuiltinDescriptor(FunctionName);
 			if (!SubstrateBuiltin)
 			{
 				OutError = FString::Printf(TEXT("Unsupported Substrate builtin call '%s' in Graph."), *CalleeName);
 				return false;
 			}
+#else
+			OutError = FString::Printf(TEXT("Substrate builtin call '%s' requires Unreal Engine 5.4 or newer."), *CalleeName);
+			return false;
+#endif
 		}
 
 		const FCodeCallArgument* OutputTypeArgument = FindNamedArgument(Arguments, TEXT("OutputType"));
@@ -747,6 +762,11 @@ namespace UE::DreamShader::Editor::Private
 
 			if (!TryResolveCodeDeclaredType(OutputTypeText, OutputComponents, bIsTextureObject, TextureType, bIsSubstrateMaterial))
 			{
+				if (IsSubstrateMaterialType(OutputTypeText) && !IsSubstrateMaterialTypeSupported())
+				{
+					OutError = FString::Printf(TEXT("UE.%s OutputType=\"Substrate\" requires Unreal Engine 5.4 or newer."), *FunctionName);
+					return false;
+				}
 				OutError = FString::Printf(TEXT("UE.%s OutputType '%s' is not supported."), *FunctionName, *OutputTypeText);
 				return false;
 			}
@@ -984,7 +1004,7 @@ namespace UE::DreamShader::Editor::Private
 				if (BoundInputIndex != INDEX_NONE)
 				{
 					const EMaterialValueType InputValueType = Expression->GetInputValueType(BoundInputIndex);
-					if (InputValueType == MCT_Substrate)
+					if (IsSubstrateMaterialValueType(InputValueType))
 					{
 						if (!InputValue.bIsSubstrateMaterial)
 						{
@@ -1214,13 +1234,13 @@ namespace UE::DreamShader::Editor::Private
 		};
 
 		const EMaterialValueType ActualOutputValueType = Expression->GetOutputValueType(ResolvedOutputIndex);
-		if (bIsSubstrateMaterial && ActualOutputValueType != MCT_Substrate)
+		if (bIsSubstrateMaterial && !IsSubstrateMaterialValueType(ActualOutputValueType))
 		{
 			OutError = FString::Printf(TEXT("%s.%s output is not a Substrate value."), CallNamespace, *FunctionName);
 			return false;
 		}
 
-		if (ActualOutputValueType == MCT_Substrate)
+		if (IsSubstrateMaterialValueType(ActualOutputValueType))
 		{
 			OutputComponents = 0;
 			bIsTextureObject = false;

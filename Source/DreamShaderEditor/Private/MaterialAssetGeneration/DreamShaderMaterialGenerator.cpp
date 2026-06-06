@@ -1676,6 +1676,11 @@ namespace UE::DreamShader::Editor
 					FunctionInputTypeValue,
 					bIsSubstrateMaterial))
 				{
+					if (Private::IsSubstrateMaterialType(InputDefinition.Type))
+					{
+						OutError = FString::Printf(TEXT("%s '%s' input '%s' uses Substrate, which requires Unreal Engine 5.4 or newer."), BlockKind, *FunctionDefinition.Name, *InputDefinition.Name);
+						return false;
+					}
 					OutError = FString::Printf(TEXT("%s '%s' input '%s' uses unsupported type '%s'."), BlockKind, *FunctionDefinition.Name, *InputDefinition.Name, *InputDefinition.Type);
 					return false;
 				}
@@ -1823,7 +1828,14 @@ namespace UE::DreamShader::Editor
 			{
 				const FTextShaderFunctionParameter& PrimaryOutput = FunctionDefinition.Outputs[0];
 				ECustomMaterialOutputType OutputType = CMOT_Float1;
-				if (Private::IsSubstrateMaterialType(PrimaryOutput.Type) || !Private::TryResolveCustomOutputType(PrimaryOutput.Type, OutputType))
+				if (Private::IsSubstrateMaterialType(PrimaryOutput.Type))
+				{
+					OutError = Private::IsSubstrateMaterialTypeSupported()
+						? FString::Printf(TEXT("%s '%s' output '%s' uses Substrate, which is not supported by HLSL Custom node functions. Use a Graph block and Substrate.* nodes."), BlockKind, *FunctionDefinition.Name, *PrimaryOutput.Name)
+						: FString::Printf(TEXT("%s '%s' output '%s' uses Substrate, which requires Unreal Engine 5.4 or newer."), BlockKind, *FunctionDefinition.Name, *PrimaryOutput.Name);
+					return false;
+				}
+				if (!Private::TryResolveCustomOutputType(PrimaryOutput.Type, OutputType))
 				{
 					OutError = FString::Printf(TEXT("%s '%s' output '%s' uses unsupported type '%s'."), BlockKind, *FunctionDefinition.Name, *PrimaryOutput.Name, *PrimaryOutput.Type);
 					return false;
@@ -1917,7 +1929,14 @@ namespace UE::DreamShader::Editor
 				{
 					const FTextShaderFunctionParameter& OutputDefinition = FunctionDefinition.Outputs[OutputIndex];
 					ECustomMaterialOutputType AdditionalOutputType = CMOT_Float1;
-					if (Private::IsSubstrateMaterialType(OutputDefinition.Type) || !Private::TryResolveCustomOutputType(OutputDefinition.Type, AdditionalOutputType))
+					if (Private::IsSubstrateMaterialType(OutputDefinition.Type))
+					{
+						OutError = Private::IsSubstrateMaterialTypeSupported()
+							? FString::Printf(TEXT("%s '%s' output '%s' uses Substrate, which is not supported by HLSL Custom node functions. Use a Graph block and Substrate.* nodes."), BlockKind, *FunctionDefinition.Name, *OutputDefinition.Name)
+							: FString::Printf(TEXT("%s '%s' output '%s' uses Substrate, which requires Unreal Engine 5.4 or newer."), BlockKind, *FunctionDefinition.Name, *OutputDefinition.Name);
+						return false;
+					}
+					if (!Private::TryResolveCustomOutputType(OutputDefinition.Type, AdditionalOutputType))
 					{
 						OutError = FString::Printf(TEXT("%s '%s' output '%s' uses unsupported type '%s'."), BlockKind, *FunctionDefinition.Name, *OutputDefinition.Name, *OutputDefinition.Type);
 						return false;
@@ -1974,6 +1993,11 @@ namespace UE::DreamShader::Editor
 					IgnoredFunctionInputType,
 					bExpectedSubstrate))
 				{
+					if (Private::IsSubstrateMaterialType(OutputDefinition.Type) && !Private::IsSubstrateMaterialTypeSupported())
+					{
+						OutError = FString::Printf(TEXT("%s '%s' output '%s' uses Substrate, which requires Unreal Engine 5.4 or newer."), BlockKind, *FunctionDefinition.Name, *OutputDefinition.Name);
+						return false;
+					}
 					OutError = FString::Printf(TEXT("%s '%s' output '%s' uses unsupported type '%s'."), BlockKind, *FunctionDefinition.Name, *OutputDefinition.Name, *OutputDefinition.Type);
 					return false;
 				}

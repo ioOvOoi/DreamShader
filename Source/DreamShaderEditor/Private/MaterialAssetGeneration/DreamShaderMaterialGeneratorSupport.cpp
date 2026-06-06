@@ -2,6 +2,7 @@
 
 #include "DreamShaderModule.h"
 #include "DreamShaderSettings.h"
+#include "DreamShaderVersionCompat.h"
 
 #include "Misc/Crc.h"
 
@@ -79,10 +80,12 @@ namespace UE::DreamShader::Editor::Private
 		{
 			OutProperty = { MP_MaterialAttributes, CMOT_MaterialAttributes };
 		}
+#if DREAMSHADER_WITH_SUBSTRATE_BUILTINS
 		else if (Matches(TEXT("FrontMaterial")))
 		{
 			OutProperty = { MP_FrontMaterial, CMOT_Float1, true };
 		}
+#endif
 		else if (Matches(TEXT("EmissiveColor")) || Matches(TEXT("Emissive")))
 		{
 			OutProperty = { MP_EmissiveColor, CMOT_Float3 };
@@ -4878,6 +4881,15 @@ namespace UE::DreamShader::Editor::Private
 
 		if (FString ShadingModelValue; Definition.TryGetSetting(TEXT("ShadingModel"), ShadingModelValue))
 		{
+#if !DREAMSHADER_WITH_SUBSTRATE_BUILTINS
+			const FString TrimmedShadingModelValue = ShadingModelValue.TrimStartAndEnd();
+			if (TrimmedShadingModelValue.Equals(TEXT("Substrate"), ESearchCase::IgnoreCase)
+				|| TrimmedShadingModelValue.Equals(TEXT("Strata"), ESearchCase::IgnoreCase))
+			{
+				OutError = TEXT("ShadingModel=\"Substrate\" requires Unreal Engine 5.4 or newer.");
+				return false;
+			}
+#endif
 			EMaterialShadingModel ShadingModel = MSM_MAX;
 			if (!TryResolveShadingModel(ShadingModelValue, ShadingModel))
 			{
@@ -6300,6 +6312,11 @@ namespace UE::DreamShader::Editor::Private
 		return TypeName.Equals(TEXT("Substrate"), ESearchCase::IgnoreCase);
 	}
 
+	bool IsSubstrateMaterialTypeSupported()
+	{
+		return !!DREAMSHADER_WITH_SUBSTRATE_BUILTINS;
+	}
+
 	bool TryResolveCodeDeclaredType(
 		const FString& InTypeName,
 		int32& OutComponentCount,
@@ -6313,6 +6330,10 @@ namespace UE::DreamShader::Editor::Private
 
 		if (IsSubstrateMaterialType(InTypeName))
 		{
+			if (!IsSubstrateMaterialTypeSupported())
+			{
+				return false;
+			}
 			OutComponentCount = 0;
 			bOutIsSubstrateMaterial = true;
 			return true;
@@ -6444,6 +6465,10 @@ namespace UE::DreamShader::Editor::Private
 
 		if (IsSubstrateMaterialType(InTypeName))
 		{
+			if (!IsSubstrateMaterialTypeSupported())
+			{
+				return false;
+			}
 			OutComponentCount = 0;
 			bOutIsTexture = false;
 			bOutIsSubstrateMaterial = true;
@@ -6550,6 +6575,11 @@ namespace UE::DreamShader::Editor::Private
 
 			ECustomMaterialOutputType DeclaredType = CMOT_Float1;
 			const bool bDeclaredSubstrate = IsSubstrateMaterialType(Declaration.Type);
+			if (bDeclaredSubstrate && !IsSubstrateMaterialTypeSupported())
+			{
+				OutError = FString::Printf(TEXT("Output '%s' uses Substrate, which requires Unreal Engine 5.4 or newer."), *Declaration.Name);
+				return false;
+			}
 			if (!bDeclaredSubstrate && !TryResolveCustomOutputType(Declaration.Type, DeclaredType))
 			{
 				OutError = FString::Printf(TEXT("Unsupported output type '%s' for '%s'."), *Declaration.Type, *Declaration.Name);
@@ -6586,6 +6616,11 @@ namespace UE::DreamShader::Editor::Private
 				FResolvedMaterialProperty ResolvedProperty;
 				if (!ResolveMaterialProperty(Binding.MaterialProperty, ResolvedProperty))
 				{
+					if (Binding.MaterialProperty.TrimStartAndEnd().Equals(TEXT("FrontMaterial"), ESearchCase::IgnoreCase))
+					{
+						OutError = TEXT("Base.FrontMaterial requires Unreal Engine 5.4 or newer.");
+						return false;
+					}
 					OutError = FString::Printf(TEXT("Unsupported material output '%s'."), *Binding.MaterialProperty);
 					return false;
 				}

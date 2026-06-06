@@ -58,7 +58,9 @@
 #include "Materials/MaterialExpressionStaticComponentMaskParameter.h"
 #include "Materials/MaterialExpressionStaticSwitchParameter.h"
 #include "Materials/MaterialExpressionSubtract.h"
+#if DREAMSHADER_WITH_SUBSTRATE_BUILTINS
 #include "Materials/MaterialExpressionSubstrate.h"
+#endif
 #include "Materials/MaterialExpressionTextureBase.h"
 #include "Materials/MaterialExpressionTextureCoordinate.h"
 #include "Materials/MaterialExpressionTextureObjectParameter.h"
@@ -162,7 +164,11 @@ namespace UE::DreamShader::Editor::Private
 				return TEXT("VolumeTexture");
 			case MCT_MaterialAttributes:
 				return TEXT("MaterialAttributes");
+#if DREAMSHADER_WITH_SUBSTRATE_BUILTINS
 			case MCT_Substrate:
+#else
+			case MCT_Strata:
+#endif
 				return TEXT("Substrate");
 			case MCT_StaticBool:
 			case MCT_Bool:
@@ -686,7 +692,7 @@ namespace UE::DreamShader::Editor::Private
 			VisitingExpressions->Add(Expression);
 
 			const EMaterialValueType EarlyOutputType = Expression->GetOutputValueType(OutputIndex);
-			if (EarlyOutputType == MCT_Substrate || EarlyOutputType == MCT_MaterialAttributes || IsTextureMaterialValueType(EarlyOutputType))
+			if (IsSubstrateMaterialValueType(EarlyOutputType) || EarlyOutputType == MCT_MaterialAttributes || IsTextureMaterialValueType(EarlyOutputType))
 			{
 				VisitingExpressions->Remove(Expression);
 				return 0;
@@ -908,7 +914,7 @@ namespace UE::DreamShader::Editor::Private
 			if (TracedInput.Expression)
 			{
 				const EMaterialValueType OutputType = TracedInput.Expression->GetOutputValueType(TracedInput.OutputIndex);
-				if (OutputType == MCT_Substrate)
+				if (IsSubstrateMaterialValueType(OutputType))
 				{
 					return TEXT("Substrate");
 				}
@@ -937,7 +943,7 @@ namespace UE::DreamShader::Editor::Private
 			}
 
 			const EMaterialValueType OutputType = const_cast<UMaterialExpressionFunctionOutput*>(OutputExpression)->GetOutputValueType(0);
-			if (OutputType == MCT_Substrate)
+			if (IsSubstrateMaterialValueType(OutputType))
 			{
 				return TEXT("Substrate");
 			}
@@ -975,7 +981,7 @@ namespace UE::DreamShader::Editor::Private
 			}
 
 			const EMaterialValueType OutputType = Expression->GetOutputValueType(OutputIndex);
-			if (OutputType == MCT_Substrate)
+			if (IsSubstrateMaterialValueType(OutputType))
 			{
 				return TEXT("Substrate");
 			}
@@ -1139,10 +1145,12 @@ namespace UE::DreamShader::Editor::Private
 			{
 				return TEXT("ThinTranslucent");
 			}
+#if DREAMSHADER_WITH_SUBSTRATE_BUILTINS
 			if (ShadingModels.HasShadingModel(MSM_Strata))
 			{
 				return TEXT("Substrate");
 			}
+#endif
 			return TEXT("DefaultLit");
 		}
 
@@ -1312,7 +1320,9 @@ namespace UE::DreamShader::Editor::Private
 					{ MP_Refraction, TEXT("Refraction"), TEXT("float"), TEXT("Base.Refraction"), TEXT("0.0") },
 					{ MP_PixelDepthOffset, TEXT("PixelDepthOffset"), TEXT("float"), TEXT("Base.PixelDepthOffset"), TEXT("0.0") },
 					{ MP_MaterialAttributes, TEXT("MaterialAttributes"), TEXT("MaterialAttributes"), TEXT("Base.MaterialAttributes"), TEXT("MaterialAttributes()") },
+#if DREAMSHADER_WITH_SUBSTRATE_BUILTINS
 					{ MP_FrontMaterial, TEXT("FrontMaterial"), TEXT("Substrate"), TEXT("Base.FrontMaterial"), TEXT("default") },
+#endif
 				};
 
 				for (const FMaterialOutputBinding& Binding : Bindings)

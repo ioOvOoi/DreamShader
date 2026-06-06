@@ -229,6 +229,11 @@ namespace UE::DreamShader::Editor::Private
 			ETextShaderTextureType ExpectedTextureType = ETextShaderTextureType::Texture2D;
 			if (!TryResolveCodeDeclaredType(Statement.DeclaredType, ExpectedComponentCount, bExpectedTexture, ExpectedTextureType, bExpectedSubstrate))
 			{
+				if (IsSubstrateMaterialType(Statement.DeclaredType) && !IsSubstrateMaterialTypeSupported())
+				{
+					OutError = FString::Printf(TEXT("Graph variable '%s' uses Substrate, which requires Unreal Engine 5.4 or newer."), *Statement.TargetName);
+					return false;
+				}
 				OutError = FString::Printf(TEXT("Unsupported Graph variable type '%s' for '%s'."), *Statement.DeclaredType, *Statement.TargetName);
 				return false;
 			}
@@ -793,6 +798,11 @@ namespace UE::DreamShader::Editor::Private
 		bool bIsSubstrate = false;
 		if (!TryResolveCodeDeclaredType(DeclaredType, ComponentCount, bIsTexture, bIsSubstrate))
 		{
+			if (IsSubstrateMaterialType(DeclaredType) && !IsSubstrateMaterialTypeSupported())
+			{
+				OutError = MakeSubstrateRequiresUE54Error();
+				return false;
+			}
 			OutError = FString::Printf(TEXT("Unsupported Graph variable type '%s'."), *DeclaredType);
 			return false;
 		}

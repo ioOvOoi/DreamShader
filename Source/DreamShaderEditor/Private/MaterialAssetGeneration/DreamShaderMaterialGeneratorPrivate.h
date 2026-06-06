@@ -205,6 +205,7 @@ namespace UE::DreamShader::Editor::Private
 	bool TryGetComponentCountForOutputType(ECustomMaterialOutputType OutputType, int32& OutComponentCount);
 	bool IsMaterialAttributesType(const FString& InTypeName);
 	bool IsSubstrateMaterialType(const FString& InTypeName);
+	bool IsSubstrateMaterialTypeSupported();
 	bool TryResolveCodeDeclaredType(const FString& InTypeName, int32& OutComponentCount, bool& bOutIsTexture);
 	bool TryResolveCodeDeclaredType(const FString& InTypeName, int32& OutComponentCount, bool& bOutIsTexture, ETextShaderTextureType& OutTextureType);
 	bool TryResolveCodeDeclaredType(const FString& InTypeName, int32& OutComponentCount, bool& bOutIsTexture, bool& bOutIsSubstrateMaterial);

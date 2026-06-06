@@ -3,6 +3,7 @@
 #include "MaterialAssetGeneration/DreamShaderMaterialGeneratorPrivate.h"
 #include "DreamShaderModule.h"
 #include "DreamShaderSettings.h"
+#include "DreamShaderVersionCompat.h"
 
 #include "Dom/JsonObject.h"
 #include "Dom/JsonValue.h"
@@ -328,7 +329,8 @@ namespace UE::DreamShader::Editor::Private
 		template<typename EnumType>
 		TArray<TSharedPtr<FJsonValue>> BuildSettingsMappingValues(
 			const TMap<FString, TEnumAsByte<EnumType>>& Mappings,
-			const UEnum* Enum)
+			const UEnum* Enum,
+			const TSet<int64>* ExcludedEnumValues = nullptr)
 		{
 			TArray<FString> Aliases;
 			Mappings.GetKeys(Aliases);
@@ -347,6 +349,11 @@ namespace UE::DreamShader::Editor::Private
 				}
 
 				const int64 EnumValue = static_cast<int64>(Value->GetValue());
+				if (ExcludedEnumValues && ExcludedEnumValues->Contains(EnumValue))
+				{
+					continue;
+				}
+
 				TSharedRef<FJsonObject> MappingObject = MakeShared<FJsonObject>();
 				MappingObject->SetStringField(TEXT("alias"), Alias);
 				MappingObject->SetNumberField(TEXT("value"), static_cast<double>(EnumValue));
@@ -553,6 +560,7 @@ namespace UE::DreamShader::Editor::Private
 		IFileManager::Get().MakeDirectory(*FPaths::GetPath(ManifestPath), true);
 
 		TArray<TSharedPtr<FJsonValue>> BuiltinValues;
+#if DREAMSHADER_WITH_SUBSTRATE_BUILTINS
 		for (const FSubstrateBuiltinManifestEntry& Builtin : BuildSubstrateBuiltinManifestEntries())
 		{
 			TSharedRef<FJsonObject> BuiltinObject = MakeShared<FJsonObject>();
@@ -573,11 +581,18 @@ namespace UE::DreamShader::Editor::Private
 			BuiltinObject->SetArrayField(TEXT("parameters"), ParameterValues);
 			BuiltinValues.Add(MakeShared<FJsonValueObject>(BuiltinObject));
 		}
+#endif
 
 		TSharedRef<FJsonObject> RootObject = MakeShared<FJsonObject>();
 		RootObject->SetStringField(TEXT("schema"), TEXT("DreamShader.SubstrateBuiltins"));
 		RootObject->SetNumberField(TEXT("version"), 1);
 		RootObject->SetStringField(TEXT("generatedAt"), FDateTime::UtcNow().ToIso8601());
+#if DREAMSHADER_WITH_SUBSTRATE_BUILTINS
+		RootObject->SetBoolField(TEXT("supported"), true);
+#else
+		RootObject->SetBoolField(TEXT("supported"), false);
+		RootObject->SetStringField(TEXT("unsupportedReason"), TEXT("Substrate builtins require Unreal Engine 5.4 or newer."));
+#endif
 		RootObject->SetArrayField(TEXT("builtins"), BuiltinValues);
 
 		FString ManifestText;
@@ -607,9 +622,13 @@ namespace UE::DreamShader::Editor::Private
 		}
 
 		TSharedRef<FJsonObject> MappingsObject = MakeShared<FJsonObject>();
+		TSet<int64> ExcludedShadingModels;
+#if !DREAMSHADER_WITH_SUBSTRATE_BUILTINS
+		ExcludedShadingModels.Add(static_cast<int64>(MSM_Strata));
+#endif
 		MappingsObject->SetArrayField(
 			TEXT("ShadingModel"),
-			BuildSettingsMappingValues(Settings->ShadingModelMappings, StaticEnum<EMaterialShadingModel>()));
+			BuildSettingsMappingValues(Settings->ShadingModelMappings, StaticEnum<EMaterialShadingModel>(), &ExcludedShadingModels));
 		MappingsObject->SetArrayField(
 			TEXT("BlendMode"),
 			BuildSettingsMappingValues(Settings->BlendModeMappings, StaticEnum<EBlendMode>()));

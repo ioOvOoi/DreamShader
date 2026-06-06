@@ -2,6 +2,7 @@
 
 #include "DreamShaderMaterialGeneratorPrivate.h"
 #include "DreamShaderModule.h"
+#include "DreamShaderVersionCompat.h"
 
 #include "MaterialEditingLibrary.h"
 #include "Materials/Material.h"
@@ -217,6 +218,20 @@ namespace UE::DreamShader::Editor::Private
 		}
 	}
 
+	inline bool IsSubstrateMaterialValueType(const EMaterialValueType ValueType)
+	{
+#if DREAMSHADER_WITH_SUBSTRATE_BUILTINS
+		return ValueType == MCT_Substrate;
+#else
+		return ValueType == MCT_Strata;
+#endif
+	}
+
+	inline FString MakeSubstrateRequiresUE54Error()
+	{
+		return TEXT("Substrate requires Unreal Engine 5.4 or newer.");
+	}
+
 	inline int32 GetComponentCountForMaterialValueType(const EMaterialValueType ValueType)
 	{
 		switch (ValueType)
@@ -258,7 +273,7 @@ namespace UE::DreamShader::Editor::Private
 			bOutIsTextureObject = false;
 			return true;
 		}
-		if (ValueType == MCT_Substrate)
+		if (IsSubstrateMaterialValueType(ValueType))
 		{
 			OutComponentCount = 0;
 			bOutIsTextureObject = false;

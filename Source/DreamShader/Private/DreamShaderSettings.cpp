@@ -1,6 +1,7 @@
 #include "DreamShaderSettings.h"
 
 #include "DreamShaderModule.h"
+#include "DreamShaderVersionCompat.h"
 
 namespace UE::DreamShader::Private
 {
@@ -56,8 +57,10 @@ UDreamShaderSettings::UDreamShaderSettings()
 	AddDefaultShadingModelMapping(ShadingModelMappings, TEXT("Single Layer Water"), MSM_SingleLayerWater);
 	AddDefaultShadingModelMapping(ShadingModelMappings, TEXT("ThinTranslucent"), MSM_ThinTranslucent);
 	AddDefaultShadingModelMapping(ShadingModelMappings, TEXT("Thin Translucent"), MSM_ThinTranslucent);
+#if DREAMSHADER_WITH_SUBSTRATE_BUILTINS
 	AddDefaultShadingModelMapping(ShadingModelMappings, TEXT("Substrate"), MSM_Strata);
 	AddDefaultShadingModelMapping(ShadingModelMappings, TEXT("Strata"), MSM_Strata);
+#endif
 
 	AddDefaultBlendModeMapping(BlendModeMappings, TEXT("Opaque"), BLEND_Opaque);
 	AddDefaultBlendModeMapping(BlendModeMappings, TEXT("Masked"), BLEND_Masked);

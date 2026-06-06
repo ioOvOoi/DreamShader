@@ -27,7 +27,7 @@ namespace UE::DreamShader::Editor::Private
 			int32 ResolvedComponentCount = 0;
 			bool bResolvedIsTextureObject = false;
 			const EMaterialValueType OutputValueType = FunctionCall->GetOutputValueType(FunctionOutputIndex);
-			if (OutputValueType == MCT_Substrate)
+			if (IsSubstrateMaterialValueType(OutputValueType))
 			{
 				InOutComponentCount = 0;
 				bInOutIsTextureObject = false;
@@ -74,6 +74,11 @@ namespace UE::DreamShader::Editor::Private
 				Parameters.Add(ResultVariableName);
 			}
 			return FString::Join(Parameters, TEXT(", "));
+		}
+
+		bool IsSubstrateTypeUnsupportedForEngine(const FString& TypeName)
+		{
+			return IsSubstrateMaterialType(TypeName) && !IsSubstrateMaterialTypeSupported();
 		}
 	}
 
@@ -200,7 +205,14 @@ namespace UE::DreamShader::Editor::Private
 		}
 
 		ECustomMaterialOutputType ResultOutputType = CMOT_Float1;
-		if (IsSubstrateMaterialType(Function->Results[0].Type) || !TryResolveCustomOutputType(Function->Results[0].Type, ResultOutputType))
+		if (IsSubstrateMaterialType(Function->Results[0].Type))
+		{
+			OutError = IsSubstrateMaterialTypeSupported()
+				? FString::Printf(TEXT("DreamShader Function '%s' result '%s' uses Substrate, which is not supported by HLSL Custom node functions. Use GraphFunction or ShaderFunction instead."), *FunctionName, *Function->Results[0].Name)
+				: FString::Printf(TEXT("DreamShader Function '%s' result '%s' uses Substrate, which requires Unreal Engine 5.4 or newer."), *FunctionName, *Function->Results[0].Name);
+			return false;
+		}
+		if (!TryResolveCustomOutputType(Function->Results[0].Type, ResultOutputType))
 		{
 			OutError = FString::Printf(TEXT("DreamShader Function '%s' has unsupported result type '%s'."), *FunctionName, *Function->Results[0].Type);
 			return false;
@@ -227,6 +239,11 @@ namespace UE::DreamShader::Editor::Private
 			ETextShaderTextureType ExpectedTextureType = ETextShaderTextureType::Texture2D;
 			if (!TryResolveCodeDeclaredType(InputDefinition.Type, ExpectedComponentCount, bExpectedTexture, ExpectedTextureType, bExpectedSubstrate))
 			{
+				if (IsSubstrateTypeUnsupportedForEngine(InputDefinition.Type))
+				{
+					OutError = FString::Printf(TEXT("DreamShader Function '%s' input '%s' uses Substrate, which requires Unreal Engine 5.4 or newer."), *FunctionName, *InputDefinition.Name);
+					return false;
+				}
 				OutError = FString::Printf(TEXT("DreamShader Function '%s' input '%s' uses unsupported type '%s'."), *FunctionName, *InputDefinition.Name, *InputDefinition.Type);
 				return false;
 			}
@@ -426,7 +443,14 @@ namespace UE::DreamShader::Editor::Private
 		}
 
 		ECustomMaterialOutputType PrimaryOutputType = CMOT_Float1;
-		if (IsSubstrateMaterialType(Function.Results[0].Type) || !TryResolveCustomOutputType(Function.Results[0].Type, PrimaryOutputType))
+		if (IsSubstrateMaterialType(Function.Results[0].Type))
+		{
+			OutError = IsSubstrateMaterialTypeSupported()
+				? FString::Printf(TEXT("DreamShader Function '%s' result '%s' uses Substrate, which is not supported by HLSL Custom node functions. Use GraphFunction or ShaderFunction instead."), *Function.Name, *Function.Results[0].Name)
+				: FString::Printf(TEXT("DreamShader Function '%s' result '%s' uses Substrate, which requires Unreal Engine 5.4 or newer."), *Function.Name, *Function.Results[0].Name);
+			return false;
+		}
+		if (!TryResolveCustomOutputType(Function.Results[0].Type, PrimaryOutputType))
 		{
 			OutError = FString::Printf(TEXT("DreamShader Function '%s' has unsupported result type '%s'."), *Function.Name, *Function.Results[0].Type);
 			return false;
@@ -453,6 +477,11 @@ namespace UE::DreamShader::Editor::Private
 			ETextShaderTextureType ExpectedTextureType = ETextShaderTextureType::Texture2D;
 			if (!TryResolveCodeDeclaredType(InputDefinition.Type, ExpectedComponentCount, bExpectedTexture, ExpectedTextureType, bExpectedSubstrate))
 			{
+				if (IsSubstrateTypeUnsupportedForEngine(InputDefinition.Type))
+				{
+					OutError = FString::Printf(TEXT("DreamShader Function '%s' input '%s' uses Substrate, which requires Unreal Engine 5.4 or newer."), *Function.Name, *InputDefinition.Name);
+					return false;
+				}
 				OutError = FString::Printf(TEXT("DreamShader Function '%s' input '%s' uses unsupported type '%s'."), *Function.Name, *InputDefinition.Name, *InputDefinition.Type);
 				return false;
 			}
@@ -610,7 +639,14 @@ namespace UE::DreamShader::Editor::Private
 		for (int32 ResultIndex = 1; ResultIndex < Function.Results.Num(); ++ResultIndex)
 		{
 			ECustomMaterialOutputType AdditionalOutputType = CMOT_Float1;
-			if (IsSubstrateMaterialType(Function.Results[ResultIndex].Type) || !TryResolveCustomOutputType(Function.Results[ResultIndex].Type, AdditionalOutputType))
+			if (IsSubstrateMaterialType(Function.Results[ResultIndex].Type))
+			{
+				OutError = IsSubstrateMaterialTypeSupported()
+					? FString::Printf(TEXT("DreamShader Function '%s' result '%s' uses Substrate, which is not supported by HLSL Custom node functions. Use GraphFunction or ShaderFunction instead."), *Function.Name, *Function.Results[ResultIndex].Name)
+					: FString::Printf(TEXT("DreamShader Function '%s' result '%s' uses Substrate, which requires Unreal Engine 5.4 or newer."), *Function.Name, *Function.Results[ResultIndex].Name);
+				return false;
+			}
+			if (!TryResolveCustomOutputType(Function.Results[ResultIndex].Type, AdditionalOutputType))
 			{
 				OutError = FString::Printf(
 					TEXT("DreamShader Function '%s' has unsupported result type '%s'."),
@@ -630,7 +666,14 @@ namespace UE::DreamShader::Editor::Private
 		for (int32 ResultIndex = 0; ResultIndex < Function.Results.Num(); ++ResultIndex)
 		{
 			ECustomMaterialOutputType ResultOutputType = CMOT_Float1;
-			if (IsSubstrateMaterialType(Function.Results[ResultIndex].Type) || !TryResolveCustomOutputType(Function.Results[ResultIndex].Type, ResultOutputType))
+			if (IsSubstrateMaterialType(Function.Results[ResultIndex].Type))
+			{
+				OutError = IsSubstrateMaterialTypeSupported()
+					? FString::Printf(TEXT("DreamShader Function '%s' result '%s' uses Substrate, which is not supported by HLSL Custom node functions. Use GraphFunction or ShaderFunction instead."), *Function.Name, *Function.Results[ResultIndex].Name)
+					: FString::Printf(TEXT("DreamShader Function '%s' result '%s' uses Substrate, which requires Unreal Engine 5.4 or newer."), *Function.Name, *Function.Results[ResultIndex].Name);
+				return false;
+			}
+			if (!TryResolveCustomOutputType(Function.Results[ResultIndex].Type, ResultOutputType))
 			{
 				OutError = FString::Printf(
 					TEXT("DreamShader Function '%s' has unsupported result type '%s'."),
@@ -741,6 +784,11 @@ namespace UE::DreamShader::Editor::Private
 				ETextShaderTextureType ExpectedTextureType = ETextShaderTextureType::Texture2D;
 				if (!TryResolveCodeDeclaredType(InputDefinition.Type, ExpectedComponentCount, bExpectedTexture, ExpectedTextureType, bExpectedSubstrate))
 				{
+					if (IsSubstrateTypeUnsupportedForEngine(InputDefinition.Type))
+					{
+						OutError = FString::Printf(TEXT("DreamShader GraphFunction '%s' input '%s' uses Substrate, which requires Unreal Engine 5.4 or newer."), *Function.Name, *InputDefinition.Name);
+						return false;
+					}
 					OutError = FString::Printf(TEXT("DreamShader GraphFunction '%s' input '%s' uses unsupported type '%s'."), *Function.Name, *InputDefinition.Name, *InputDefinition.Type);
 					return false;
 				}
@@ -841,6 +889,11 @@ namespace UE::DreamShader::Editor::Private
 				ETextShaderTextureType ExpectedTextureType = ETextShaderTextureType::Texture2D;
 				if (!TryResolveCodeDeclaredType(ResultDefinition.Type, ExpectedComponentCount, bExpectedTexture, ExpectedTextureType, bExpectedSubstrate))
 				{
+					if (IsSubstrateTypeUnsupportedForEngine(ResultDefinition.Type))
+					{
+						OutError = FString::Printf(TEXT("DreamShader GraphFunction '%s' result '%s' uses Substrate, which requires Unreal Engine 5.4 or newer."), *Function.Name, *ResultDefinition.Name);
+						return false;
+					}
 					OutError = FString::Printf(TEXT("DreamShader GraphFunction '%s' result '%s' uses unsupported type '%s'."), *Function.Name, *ResultDefinition.Name, *ResultDefinition.Type);
 					return false;
 				}
@@ -859,7 +912,14 @@ namespace UE::DreamShader::Editor::Private
 		}
 
 		ECustomMaterialOutputType PrimaryOutputType = CMOT_Float1;
-		if (IsSubstrateMaterialType(Function.Results[0].Type) || !TryResolveCustomOutputType(Function.Results[0].Type, PrimaryOutputType))
+		if (IsSubstrateMaterialType(Function.Results[0].Type))
+		{
+			OutError = IsSubstrateMaterialTypeSupported()
+				? FString::Printf(TEXT("DreamShader GraphFunction '%s' result '%s' uses Substrate, which is only supported by GraphFunction Graph blocks."), *Function.Name, *Function.Results[0].Name)
+				: FString::Printf(TEXT("DreamShader GraphFunction '%s' result '%s' uses Substrate, which requires Unreal Engine 5.4 or newer."), *Function.Name, *Function.Results[0].Name);
+			return false;
+		}
+		if (!TryResolveCustomOutputType(Function.Results[0].Type, PrimaryOutputType))
 		{
 			OutError = FString::Printf(TEXT("DreamShader GraphFunction '%s' has unsupported result type '%s'."), *Function.Name, *Function.Results[0].Type);
 			return false;
@@ -887,6 +947,11 @@ namespace UE::DreamShader::Editor::Private
 			ETextShaderTextureType ExpectedTextureType = ETextShaderTextureType::Texture2D;
 			if (!TryResolveCodeDeclaredType(InputDefinition.Type, ExpectedComponentCount, bExpectedTexture, ExpectedTextureType, bExpectedSubstrate))
 			{
+				if (IsSubstrateTypeUnsupportedForEngine(InputDefinition.Type))
+				{
+					OutError = FString::Printf(TEXT("DreamShader GraphFunction '%s' input '%s' uses Substrate, which requires Unreal Engine 5.4 or newer."), *Function.Name, *InputDefinition.Name);
+					return false;
+				}
 				OutError = FString::Printf(TEXT("DreamShader GraphFunction '%s' input '%s' uses unsupported type '%s'."), *Function.Name, *InputDefinition.Name, *InputDefinition.Type);
 				return false;
 			}
@@ -1220,7 +1285,14 @@ namespace UE::DreamShader::Editor::Private
 		for (int32 ResultIndex = 1; ResultIndex < Function.Results.Num(); ++ResultIndex)
 		{
 			ECustomMaterialOutputType AdditionalOutputType = CMOT_Float1;
-			if (IsSubstrateMaterialType(Function.Results[ResultIndex].Type) || !TryResolveCustomOutputType(Function.Results[ResultIndex].Type, AdditionalOutputType))
+			if (IsSubstrateMaterialType(Function.Results[ResultIndex].Type))
+			{
+				OutError = IsSubstrateMaterialTypeSupported()
+					? FString::Printf(TEXT("DreamShader GraphFunction '%s' result '%s' uses Substrate, which is only supported by GraphFunction Graph blocks."), *Function.Name, *Function.Results[ResultIndex].Name)
+					: FString::Printf(TEXT("DreamShader GraphFunction '%s' result '%s' uses Substrate, which requires Unreal Engine 5.4 or newer."), *Function.Name, *Function.Results[ResultIndex].Name);
+				return false;
+			}
+			if (!TryResolveCustomOutputType(Function.Results[ResultIndex].Type, AdditionalOutputType))
 			{
 				OutError = FString::Printf(
 					TEXT("DreamShader GraphFunction '%s' has unsupported result type '%s'."),
@@ -1240,7 +1312,14 @@ namespace UE::DreamShader::Editor::Private
 		for (int32 ResultIndex = 0; ResultIndex < Function.Results.Num(); ++ResultIndex)
 		{
 			ECustomMaterialOutputType ResultOutputType = CMOT_Float1;
-			if (IsSubstrateMaterialType(Function.Results[ResultIndex].Type) || !TryResolveCustomOutputType(Function.Results[ResultIndex].Type, ResultOutputType))
+			if (IsSubstrateMaterialType(Function.Results[ResultIndex].Type))
+			{
+				OutError = IsSubstrateMaterialTypeSupported()
+					? FString::Printf(TEXT("DreamShader GraphFunction '%s' result '%s' uses Substrate, which is only supported by GraphFunction Graph blocks."), *Function.Name, *Function.Results[ResultIndex].Name)
+					: FString::Printf(TEXT("DreamShader GraphFunction '%s' result '%s' uses Substrate, which requires Unreal Engine 5.4 or newer."), *Function.Name, *Function.Results[ResultIndex].Name);
+				return false;
+			}
+			if (!TryResolveCustomOutputType(Function.Results[ResultIndex].Type, ResultOutputType))
 			{
 				OutError = FString::Printf(
 					TEXT("DreamShader GraphFunction '%s' has unsupported result type '%s'."),
@@ -1473,6 +1552,11 @@ namespace UE::DreamShader::Editor::Private
 			ETextShaderTextureType ExpectedTextureType = ETextShaderTextureType::Texture2D;
 			if (!TryResolveCodeDeclaredType(InputDefinition.Type, ExpectedComponentCount, bExpectedTexture, ExpectedTextureType, bExpectedSubstrate))
 			{
+				if (IsSubstrateTypeUnsupportedForEngine(InputDefinition.Type))
+				{
+					OutError = FString::Printf(TEXT("%s '%s' input '%s' uses Substrate, which requires Unreal Engine 5.4 or newer."), *CallKind, *FunctionName, *InputDefinition.Name);
+					return false;
+				}
 				OutError = FString::Printf(TEXT("%s '%s' input '%s' uses unsupported type '%s'."), *CallKind, *FunctionName, *InputDefinition.Name, *InputDefinition.Type);
 				return false;
 			}
@@ -1655,6 +1739,11 @@ namespace UE::DreamShader::Editor::Private
 			bool bIsSubstrateMaterial = false;
 			if (!TryResolveCodeDeclaredType(Outputs[OutputIndex].Type, OutputComponents, bIsTextureObject, TextureType, bIsSubstrateMaterial))
 			{
+				if (IsSubstrateTypeUnsupportedForEngine(Outputs[OutputIndex].Type))
+				{
+					OutError = FString::Printf(TEXT("%s '%s' output '%s' uses Substrate, which requires Unreal Engine 5.4 or newer."), *CallKind, *FunctionName, *Outputs[OutputIndex].Name);
+					return false;
+				}
 				OutError = FString::Printf(TEXT("%s '%s' output '%s' uses unsupported type '%s'."), *CallKind, *FunctionName, *Outputs[OutputIndex].Name, *Outputs[OutputIndex].Type);
 				return false;
 			}
@@ -1950,6 +2039,11 @@ namespace UE::DreamShader::Editor::Private
 		bool bIsSubstrateMaterial = false;
 		if (!TryResolveCodeDeclaredType(Outputs[OutputIndex].Type, OutputComponents, bIsTextureObject, TextureType, bIsSubstrateMaterial))
 		{
+			if (IsSubstrateTypeUnsupportedForEngine(Outputs[OutputIndex].Type))
+			{
+				OutError = FString::Printf(TEXT("%s '%s' output '%s' uses Substrate, which requires Unreal Engine 5.4 or newer."), *CallKind, *FunctionName, *Outputs[OutputIndex].Name);
+				return false;
+			}
 			OutError = FString::Printf(TEXT("%s '%s' output '%s' uses unsupported type '%s'."), *CallKind, *FunctionName, *Outputs[OutputIndex].Name, *Outputs[OutputIndex].Type);
 			return false;
 		}
