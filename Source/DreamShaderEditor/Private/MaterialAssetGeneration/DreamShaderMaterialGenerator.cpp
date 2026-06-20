@@ -2054,13 +2054,20 @@ namespace UE::DreamShader::Editor
 				OutputPositionY += 180;
 			}
 
-			FunctionSlowTask.EnterProgressFrame(1.0f, FText::FromString(FString::Printf(TEXT("Laying out '%s'..."), *FunctionDefinition.Name)));
-			Private::LayoutGeneratedExpressions(
-				nullptr,
-				MaterialFunction,
-				&FunctionDefinition.Layout,
-				GeneratedExpressionsByVariable.IsEmpty() ? nullptr : &GeneratedExpressionsByVariable,
-				RegionByVariable.IsEmpty() ? nullptr : &RegionByVariable);
+			if (bTransient)
+			{
+				FunctionSlowTask.EnterProgressFrame(1.0f);
+			}
+			else
+			{
+				FunctionSlowTask.EnterProgressFrame(1.0f, FText::FromString(FString::Printf(TEXT("Laying out '%s'..."), *FunctionDefinition.Name)));
+				Private::LayoutGeneratedExpressions(
+					nullptr,
+					MaterialFunction,
+					&FunctionDefinition.Layout,
+					GeneratedExpressionsByVariable.IsEmpty() ? nullptr : &GeneratedExpressionsByVariable,
+					RegionByVariable.IsEmpty() ? nullptr : &RegionByVariable);
+			}
 			FunctionSlowTask.EnterProgressFrame(1.0f, FText::FromString(FString::Printf(TEXT("Updating '%s'..."), *FunctionDefinition.Name)));
 			UMaterialEditingLibrary::UpdateMaterialFunction(MaterialFunction, nullptr);
 			MaterialFunction->PostEditChange();
@@ -2771,13 +2778,20 @@ namespace UE::DreamShader::Editor
 			}
 		}
 
-		MaterialSlowTask.EnterProgressFrame(1.0f, FText::FromString(FString::Printf(TEXT("Laying out material graph '%s'..."), *Material->GetName())));
-		Private::LayoutGeneratedExpressions(
-			Material,
-			nullptr,
-			&Definition.Layout,
-			GeneratedExpressionsByVariable.IsEmpty() ? nullptr : &GeneratedExpressionsByVariable,
-			RegionByVariable.IsEmpty() ? nullptr : &RegionByVariable);
+		if (bTransient)
+		{
+			MaterialSlowTask.EnterProgressFrame(1.0f);
+		}
+		else
+		{
+			MaterialSlowTask.EnterProgressFrame(1.0f, FText::FromString(FString::Printf(TEXT("Laying out material graph '%s'..."), *Material->GetName())));
+			Private::LayoutGeneratedExpressions(
+				Material,
+				nullptr,
+				&Definition.Layout,
+				GeneratedExpressionsByVariable.IsEmpty() ? nullptr : &GeneratedExpressionsByVariable,
+				RegionByVariable.IsEmpty() ? nullptr : &RegionByVariable);
+		}
 		MaterialSlowTask.EnterProgressFrame(1.0f, FText::FromString(FString::Printf(TEXT("Compiling material '%s'..."), *Material->GetName())));
 		UMaterialEditingLibrary::RecompileMaterial(Material);
 		Material->PostEditChange();

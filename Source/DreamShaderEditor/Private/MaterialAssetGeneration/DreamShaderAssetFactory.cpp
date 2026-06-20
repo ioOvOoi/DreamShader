@@ -323,7 +323,7 @@ namespace UE::DreamShader::Editor::Private
 		if (bTransient)
 		{
 			MaterialPackage->SetPackageFlags(PKG_NewlyCreated);
-			OutMaterial = NewObject<UMaterial>(MaterialPackage, FName(*AssetName), RF_Public | RF_Standalone | RF_Transient);
+			OutMaterial = NewObject<UMaterial>(MaterialPackage, FName(*AssetName), RF_Public | RF_Standalone);
 		}
 		else
 		{
@@ -343,7 +343,10 @@ namespace UE::DreamShader::Editor::Private
 			return false;
 		}
 
-		FAssetRegistryModule::AssetCreated(OutMaterial);
+		if (!bTransient)
+		{
+			FAssetRegistryModule::AssetCreated(OutMaterial);
+		}
 		return true;
 	}
 
@@ -401,9 +404,7 @@ namespace UE::DreamShader::Editor::Private
 			return false;
 		}
 
-		const EObjectFlags ObjectFlags = bTransient
-			? (RF_Public | RF_Standalone | RF_Transient)
-			: (RF_Public | RF_Standalone);
+		const EObjectFlags ObjectFlags = RF_Public | RF_Standalone;
 
 		if (bTransient)
 		{
@@ -422,7 +423,10 @@ namespace UE::DreamShader::Editor::Private
 			return false;
 		}
 
-		FAssetRegistryModule::AssetCreated(OutFunction);
+		if (!bTransient)
+		{
+			FAssetRegistryModule::AssetCreated(OutFunction);
+		}
 		return true;
 	}
 }

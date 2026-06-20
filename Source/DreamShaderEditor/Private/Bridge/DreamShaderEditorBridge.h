@@ -73,6 +73,7 @@ namespace UE::DreamShader::Editor::Private
 		FTSTicker::FDelegateHandle TickerHandle;
 		FDelegateHandle MaterialCompilationFinishedHandle;
 		FDelegateHandle ToolMenusStartupCallbackHandle;
+		FDelegateHandle PostEngineInitHandle;
 		bool bIsShuttingDown = false;
 		bool bMenusRegistered = false;
 		bool bVirtualMaterialMode = false;

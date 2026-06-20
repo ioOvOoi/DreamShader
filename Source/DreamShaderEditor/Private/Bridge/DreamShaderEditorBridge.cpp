@@ -18,6 +18,7 @@
 
 #include "Async/Async.h"
 #include "CoreGlobals.h"
+#include "Misc/CoreDelegates.h"
 #include "ContentBrowserMenuContexts.h"
 #include "DirectoryWatcherModule.h"
 #include "Dom/JsonObject.h"
@@ -158,7 +159,9 @@ namespace UE::DreamShader::Editor::Private
 
 		if (bVirtualMaterialMode)
 		{
-			GenerateAllVirtualMaterials();
+			PostEngineInitHandle = FCoreDelegates::OnPostEngineInit.AddSP(
+				AsShared(),
+				&FDreamShaderEditorBridge::GenerateAllVirtualMaterials);
 		}
 
 		QueueFullScan();
@@ -205,6 +208,12 @@ namespace UE::DreamShader::Editor::Private
 		{
 			PreviewWebSocketServer->Shutdown();
 			PreviewWebSocketServer.Reset();
+		}
+
+		if (PostEngineInitHandle.IsValid())
+		{
+			FCoreDelegates::OnPostEngineInit.Remove(PostEngineInitHandle);
+			PostEngineInitHandle.Reset();
 		}
 
 		if (MaterialCompilationFinishedHandle.IsValid())
