@@ -4,7 +4,7 @@
 
 ## 进度（2026-06-29，每刀均 compile+link+测试验证、单独提交）
 
-Support.cpp **6866 → 4806 行**（抽出 2060 行，**~30%**），新增 3 个内聚文件：
+Support.cpp **6866 → 4246 行**（抽出 2620 行，**~38%**），新增 6 个内聚文件：
 
 | 刀 | 抽出内容 | → 新文件 |
 |---|---|---|
@@ -15,10 +15,15 @@ Support.cpp **6866 → 4806 行**（抽出 2060 行，**~30%**），新增 3 个
 | 5 | `NormalizeEnumLookupKey` + `TryResolveEnumLiteral` | ↑ |
 | 6 | **类型解析簇**（`TryGetComponentCountForOutputType`/`IsMaterialAttributesType`/`IsSubstrateMaterialType(+Supported)`/`TryResolveCodeDeclaredType`×4/`TryResolveOutputVariableComponentCount`×3/`TryResolveMaterialFunctionParameterType`/`ValidateOutputs`，435 行） | `DreamShaderTypeResolution.cpp` |
 | 7 | **HLSL 函数 codegen 簇**（标识符分词/调用重写/`CollectEmbeddedFunctionClosure`/`PrepareCustomNodeCode`/`WriteGeneratedInclude` 等，**1234 行**，5 个簇内 static + 3 个 header 入口） | `DreamShaderHlslFunctionCodegen.cpp` |
+| 8 | 图拆除（`ClearMaterialExpressions`/`ClearMaterialFunctionExpressions`，126 行；暴露 2 个共享 static） | `DreamShaderMaterialGraphTeardown.cpp` |
+| 9 | 资产引用解析（`Path(...)` → object path，`TryResolveDreamShaderAssetReference` 等 6 函数，331 行；零纠缠） | `DreamShaderAssetReferenceResolution.cpp` |
+| 10 | 表达式反射（`ResolveMaterialExpressionClass`/`FindMaterialExpressionArgumentProperty`/`IsMaterialExpressionInputProperty`，102 行；零暴露） | `DreamShaderMaterialExpressionReflection.cpp` |
 
-**Phase 1（纯/叶子 + 自包含簇）实质完成**：值/字面量/枚举解析、类型查询、HLSL 函数 codegen 三大簇已抽出（Support.cpp 各文件：4806 / 408(ValueParsing) / 450(TypeResolution) / 1252(HlslCodegen)）。模式已稳：header-declared 函数零调用方改动；static 函数随簇内调用者同迁或补 Private.h 声明；提取文件需补显式 include（曾依赖 unity 传递 include，如 `MaterialExpressionFunctionInput.h`）。
+**Support.cpp 6866 → 4246 行（抽出 2620 行，~38%），11 刀，6 个新内聚文件。** Phase 1（纯叶子簇）+ Phase 2 的可干净分离簇全部抽出。
 
-**剩余（Phase 2/3，需 golden 测试先行）**：反射属性写入器、材质设置应用、表达式工厂（CreatePropertyExpression 等触碰 `UMaterialExpression` 的重逻辑）、图布局（`LayoutGeneratedExpressions`），以及其他巨石文件（GraphDecompiler 3972 / CodeExpressions / ParserSections / Workspace）。这些操作真实材质节点，按路线图须在 golden-output 测试覆盖下进行。
+**方法（Phase 2 的关键经验）**：一次 material-settings 的天真尝试因**双向纠缠**（簇既调留下的 static，又含被留下函数调用的共享 static）而编译失败、回退。此后改用**工作流先做完整依赖闭包映射**（双向核验：簇调用的 static 全在簇内或暴露；簇内函数无被簇外调用），再机械应用——graph-teardown / asset-ref / reflection 三刀均一次成功。
+
+**剩余 ~4246 行 = 深度耦合的生成核心**：节点工厂（`CreateOwnedMaterialExpression`/`CreatePropertyExpression`/`CreateUEBuiltinExpression`）、图布局（`LayoutGeneratedExpressions` + 两个匿名命名空间）、材质设置应用、表达式元数据/参数写入、反射属性写入器（`SetMaterialExpressionLiteralProperty`）。这些**相互深度依赖、共享大量 static**——依赖映射工作流已无法找到下一个可干净分离的簇。进一步拆分**不再是字节级搬移，而是内部重构（打破依赖、抽接口）**，须在 golden-output 测试覆盖下有意识进行。其他巨石文件（GraphDecompiler 3972 / CodeExpressions / ParserSections / Workspace）同理。
 
 ## 巨石文件
 
