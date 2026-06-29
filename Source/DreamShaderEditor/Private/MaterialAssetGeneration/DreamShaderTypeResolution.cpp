@@ -9,6 +9,8 @@
 #include "DreamShaderModule.h"
 #include "DreamShaderVersionCompat.h"
 
+#include "Materials/MaterialExpressionFunctionInput.h"
+
 namespace UE::DreamShader::Editor::Private
 {
 	bool TryGetComponentCountForOutputType(const ECustomMaterialOutputType OutputType, int32& OutComponentCount)
