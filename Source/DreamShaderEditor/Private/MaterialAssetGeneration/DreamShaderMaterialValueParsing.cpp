@@ -5,6 +5,7 @@
 // shared (in namespace UE::DreamShader::Editor::Private) via DreamShaderMaterialGeneratorPrivate.h.
 
 #include "DreamShaderMaterialGeneratorPrivate.h"
+#include "DreamShaderVersionCompat.h"
 
 namespace UE::DreamShader::Editor::Private
 {
@@ -77,6 +78,177 @@ namespace UE::DreamShader::Editor::Private
 			}
 
 			OutValues.Add(ParsedValue);
+		}
+
+		return true;
+	}
+
+	bool ResolveMaterialProperty(const FString& InName, FResolvedMaterialProperty& OutProperty)
+	{
+		const auto Matches = [&InName](const TCHAR* Candidate)
+		{
+			return InName.Equals(Candidate, ESearchCase::IgnoreCase);
+		};
+
+		if (Matches(TEXT("BaseColor")))
+		{
+			OutProperty = { MP_BaseColor, CMOT_Float3 };
+		}
+		else if (Matches(TEXT("MaterialAttributes")) || Matches(TEXT("Attributes")))
+		{
+			OutProperty = { MP_MaterialAttributes, CMOT_MaterialAttributes };
+		}
+#if DREAMSHADER_WITH_SUBSTRATE_BUILTINS
+		else if (Matches(TEXT("FrontMaterial")))
+		{
+			OutProperty = { MP_FrontMaterial, CMOT_Float1, true };
+		}
+#endif
+		else if (Matches(TEXT("EmissiveColor")) || Matches(TEXT("Emissive")))
+		{
+			OutProperty = { MP_EmissiveColor, CMOT_Float3 };
+		}
+		else if (Matches(TEXT("Opacity")))
+		{
+			OutProperty = { MP_Opacity, CMOT_Float1 };
+		}
+		else if (Matches(TEXT("OpacityMask")))
+		{
+			OutProperty = { MP_OpacityMask, CMOT_Float1 };
+		}
+		else if (Matches(TEXT("Metallic")))
+		{
+			OutProperty = { MP_Metallic, CMOT_Float1 };
+		}
+		else if (Matches(TEXT("Specular")))
+		{
+			OutProperty = { MP_Specular, CMOT_Float1 };
+		}
+		else if (Matches(TEXT("Roughness")))
+		{
+			OutProperty = { MP_Roughness, CMOT_Float1 };
+		}
+		else if (Matches(TEXT("Normal")))
+		{
+			OutProperty = { MP_Normal, CMOT_Float3 };
+		}
+		else if (Matches(TEXT("AmbientOcclusion")) || Matches(TEXT("AO")))
+		{
+			OutProperty = { MP_AmbientOcclusion, CMOT_Float1 };
+		}
+		else if (Matches(TEXT("Refraction")))
+		{
+			OutProperty = { MP_Refraction, CMOT_Float3 };
+		}
+		else if (Matches(TEXT("WorldPositionOffset")) || Matches(TEXT("WPO")))
+		{
+			OutProperty = { MP_WorldPositionOffset, CMOT_Float3 };
+		}
+		else if (Matches(TEXT("PixelDepthOffset")) || Matches(TEXT("PDO")))
+		{
+			OutProperty = { MP_PixelDepthOffset, CMOT_Float1 };
+		}
+		else if (Matches(TEXT("SubsurfaceColor")))
+		{
+			OutProperty = { MP_SubsurfaceColor, CMOT_Float3 };
+		}
+		else if (Matches(TEXT("ClearCoat")))
+		{
+			OutProperty = { MP_CustomData0, CMOT_Float1 };
+		}
+		else if (Matches(TEXT("ClearCoatRoughness")))
+		{
+			OutProperty = { MP_CustomData1, CMOT_Float1 };
+		}
+		else if (Matches(TEXT("CustomData0")))
+		{
+			OutProperty = { MP_CustomData0, CMOT_Float1 };
+		}
+		else if (Matches(TEXT("CustomData1")))
+		{
+			OutProperty = { MP_CustomData1, CMOT_Float1 };
+		}
+		else if (Matches(TEXT("DiffuseColor")))
+		{
+			OutProperty = { MP_DiffuseColor, CMOT_Float3 };
+		}
+		else if (Matches(TEXT("SpecularColor")))
+		{
+			OutProperty = { MP_SpecularColor, CMOT_Float3 };
+		}
+		else if (Matches(TEXT("SurfaceThickness")))
+		{
+			OutProperty = { MP_SurfaceThickness, CMOT_Float1 };
+		}
+		else if (Matches(TEXT("Displacement")))
+		{
+			OutProperty = { MP_Displacement, CMOT_Float1 };
+		}
+		else if (Matches(TEXT("CustomizedUV0")) || Matches(TEXT("CustomizedUVs0")))
+		{
+			OutProperty = { MP_CustomizedUVs0, CMOT_Float2 };
+		}
+		else if (Matches(TEXT("CustomizedUV1")) || Matches(TEXT("CustomizedUVs1")))
+		{
+			OutProperty = { MP_CustomizedUVs1, CMOT_Float2 };
+		}
+		else if (Matches(TEXT("CustomizedUV2")) || Matches(TEXT("CustomizedUVs2")))
+		{
+			OutProperty = { MP_CustomizedUVs2, CMOT_Float2 };
+		}
+		else if (Matches(TEXT("CustomizedUV3")) || Matches(TEXT("CustomizedUVs3")))
+		{
+			OutProperty = { MP_CustomizedUVs3, CMOT_Float2 };
+		}
+		else if (Matches(TEXT("CustomizedUV4")) || Matches(TEXT("CustomizedUVs4")))
+		{
+			OutProperty = { MP_CustomizedUVs4, CMOT_Float2 };
+		}
+		else if (Matches(TEXT("CustomizedUV5")) || Matches(TEXT("CustomizedUVs5")))
+		{
+			OutProperty = { MP_CustomizedUVs5, CMOT_Float2 };
+		}
+		else if (Matches(TEXT("CustomizedUV6")) || Matches(TEXT("CustomizedUVs6")))
+		{
+			OutProperty = { MP_CustomizedUVs6, CMOT_Float2 };
+		}
+		else if (Matches(TEXT("CustomizedUV7")) || Matches(TEXT("CustomizedUVs7")))
+		{
+			OutProperty = { MP_CustomizedUVs7, CMOT_Float2 };
+		}
+#ifdef MOON_ENGINE
+		else if (Matches(TEXT("MooaEncodedAttribute0")))
+		{
+			OutProperty = { MP_MooaEncodedAttribute0, CMOT_Float4 };
+		}
+		else if (Matches(TEXT("MooaEncodedAttribute1")))
+		{
+			OutProperty = { MP_MooaEncodedAttribute1, CMOT_Float4 };
+		}
+		else if (Matches(TEXT("MooaEncodedAttribute2")))
+		{
+			OutProperty = { MP_MooaEncodedAttribute2, CMOT_Float4 };
+		}
+		else if (Matches(TEXT("MooaEncodedAttribute3")))
+		{
+			OutProperty = { MP_MooaEncodedAttribute3, CMOT_Float4 };
+		}
+		else if (Matches(TEXT("MooaEncodedAttribute4")))
+		{
+			OutProperty = { MP_MooaEncodedAttribute4, CMOT_Float4 };
+		}
+#endif
+		else if (Matches(TEXT("Anisotropy")))
+		{
+			OutProperty = { MP_Anisotropy, CMOT_Float1 };
+		}
+		else if (Matches(TEXT("Tangent")))
+		{
+			OutProperty = { MP_Tangent, CMOT_Float3 };
+		}
+		else
+		{
+			return false;
 		}
 
 		return true;
