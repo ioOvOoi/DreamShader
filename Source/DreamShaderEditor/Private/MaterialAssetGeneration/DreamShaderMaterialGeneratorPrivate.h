@@ -150,6 +150,8 @@ namespace UE::DreamShader::Editor::Private
 	bool ParseScalarLiteral(const FString& InText, double& OutValue);
 	bool ParseBooleanLiteral(const FString& InText, bool& OutValue);
 	bool ParseIntegerLiteral(const FString& InText, int32& OutValue);
+	bool ParseUnsignedInteger32Literal(const FString& InText, uint32& OutValue);
+	bool ParseVectorLiteral(const FString& InText, TArray<double>& OutValues);
 	bool ResolveDreamShaderAssetDestination(
 		const FString& AssetName,
 		const FString& Root,
