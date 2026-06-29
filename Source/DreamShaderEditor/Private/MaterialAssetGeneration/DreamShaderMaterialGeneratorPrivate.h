@@ -128,6 +128,7 @@ namespace UE::DreamShader::Editor::Private
 		bool bIsMaterialAttributes = false;
 		bool bIsSubstrateMaterial = false;
 		bool bHasAuthoritativeComponentCount = false;
+		bool bIsIntegerType = false;
 	};
 
 	bool ParseCodeExpression(const FString& InExpression, TSharedPtr<FCodeExpression>& OutExpression, FString& OutError);
@@ -371,6 +372,7 @@ namespace UE::DreamShader::Editor::Private
 			FString& OutError);
 		bool EvaluateCall(const TSharedPtr<FCodeExpression>& Expression, FCodeValue& OutValue, FString& OutError);
 		static bool IsVectorConstructorName(const FString& InName);
+		static bool IsIntegerConstructorName(const FString& InName);
 		static int32 GetConstructorComponentCount(const FString& InName);
 		bool EvaluateVectorConstructor(
 			const FString& ConstructorName,

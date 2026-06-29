@@ -348,6 +348,18 @@ namespace UE::DreamShader::Editor::Private
 		return LexTryParseString(OutValue, *Candidate);
 	}
 
+	bool ParseUnsignedInteger32Literal(const FString& InText, uint32& OutValue)
+	{
+		const FString Candidate = InText.TrimStartAndEnd();
+		int64 Tmp = 0;
+		if (!LexTryParseString(Tmp, *Candidate) || Tmp < 0 || Tmp > static_cast<int64>(MAX_uint32))
+		{
+			return false;
+		}
+		OutValue = static_cast<uint32>(Tmp);
+		return true;
+	}
+
 	static bool ParseVectorLiteral(const FString& InText, TArray<double>& OutValues)
 	{
 		OutValues.Reset();
@@ -1266,13 +1278,13 @@ namespace UE::DreamShader::Editor::Private
 
 		if (FUInt32Property* UIntProperty = CastField<FUInt32Property>(Property))
 		{
-			int32 ParsedValue = 0;
-			if (!ParseIntegerLiteral(TrimmedValue, ParsedValue) || ParsedValue < 0)
+			uint32 ParsedValue = 0;
+			if (!ParseUnsignedInteger32Literal(TrimmedValue, ParsedValue))
 			{
 				OutError = FString::Printf(TEXT("'%s' is not a valid unsigned integer value for '%s'."), *TrimmedValue, *Property->GetName());
 				return false;
 			}
-			UIntProperty->SetPropertyValue(ValuePtr, static_cast<uint32>(ParsedValue));
+			UIntProperty->SetPropertyValue(ValuePtr, ParsedValue);
 			return true;
 		}
 
@@ -1742,7 +1754,129 @@ namespace UE::DreamShader::Editor::Private
 	FString EnsureTopLevelReturn(const FString& InHLSL)
 	{
 		const FString Sanitized = InHLSL.Replace(TEXT("\r\n"), TEXT("\n"));
-		if (Sanitized.Contains(TEXT("return")))
+
+		// Token-aware scan: detect a real top-level `return` statement while ignoring
+		// occurrences inside // line comments, /* */ block comments, string/char literals,
+		// or identifiers (e.g. returnValue). Only suppress injection for a genuine
+		// brace-depth-0 `return` keyword bounded by non-identifier characters.
+		auto IsReturnIdentifierPart = [](const TCHAR Character)
+		{
+			return FChar::IsAlnum(Character) || Character == TCHAR('_');
+		};
+
+		bool bHasTopLevelReturn = false;
+		int32 BraceDepth = 0;
+		bool bInString = false;
+		bool bInChar = false;
+		bool bInLineComment = false;
+		bool bInBlockComment = false;
+
+		for (int32 Index = 0; Index < Sanitized.Len() && !bHasTopLevelReturn;)
+		{
+			const TCHAR Char = Sanitized[Index];
+			const TCHAR Next = Sanitized.IsValidIndex(Index + 1) ? Sanitized[Index + 1] : TCHAR('\0');
+
+			if (bInLineComment)
+			{
+				if (Char == TCHAR('\n'))
+				{
+					bInLineComment = false;
+				}
+				++Index;
+				continue;
+			}
+
+			if (bInBlockComment)
+			{
+				if (Char == TCHAR('*') && Next == TCHAR('/'))
+				{
+					bInBlockComment = false;
+					Index += 2;
+				}
+				else
+				{
+					++Index;
+				}
+				continue;
+			}
+
+			if (bInString || bInChar)
+			{
+				if (Char == TCHAR('\\') && Sanitized.IsValidIndex(Index + 1))
+				{
+					Index += 2;
+					continue;
+				}
+				if (bInString && Char == TCHAR('"'))
+				{
+					bInString = false;
+				}
+				else if (bInChar && Char == TCHAR('\''))
+				{
+					bInChar = false;
+				}
+				++Index;
+				continue;
+			}
+
+			if (Char == TCHAR('/') && Next == TCHAR('/'))
+			{
+				bInLineComment = true;
+				Index += 2;
+				continue;
+			}
+			if (Char == TCHAR('/') && Next == TCHAR('*'))
+			{
+				bInBlockComment = true;
+				Index += 2;
+				continue;
+			}
+			if (Char == TCHAR('"'))
+			{
+				bInString = true;
+				++Index;
+				continue;
+			}
+			if (Char == TCHAR('\''))
+			{
+				bInChar = true;
+				++Index;
+				continue;
+			}
+
+			if (Char == TCHAR('{'))
+			{
+				++BraceDepth;
+				++Index;
+				continue;
+			}
+			if (Char == TCHAR('}'))
+			{
+				if (BraceDepth > 0)
+				{
+					--BraceDepth;
+				}
+				++Index;
+				continue;
+			}
+
+			if (BraceDepth == 0 && Char == TCHAR('r')
+				&& Sanitized.Mid(Index, 6) == TEXT("return"))
+			{
+				const bool bLeftBoundary = (Index == 0) || !IsReturnIdentifierPart(Sanitized[Index - 1]);
+				const TCHAR After = Sanitized.IsValidIndex(Index + 6) ? Sanitized[Index + 6] : TCHAR('\0');
+				const bool bRightBoundary = !IsReturnIdentifierPart(After);
+				if (bLeftBoundary && bRightBoundary)
+				{
+					bHasTopLevelReturn = true;
+					break;
+				}
+			}
+
+			++Index;
+		}
+
+		if (bHasTopLevelReturn)
 		{
 			return Sanitized;
 		}
@@ -4806,6 +4940,19 @@ namespace UE::DreamShader::Editor::Private
 		constexpr int32 BlockSpacing = 420;
 		TArray<FLayoutBounds> BlockBounds;
 		BlockBounds.Reserve(LayoutBlocks.Num());
+
+		// The positioning loop below calls EnterProgressFrame(1.0f) once per node in every
+		// LayoutBlock. Inserted cross-block reroute nodes mean that count can exceed the
+		// original Expressions.Num() the slow task was constructed with, so reconcile the
+		// total here to the actual node count to avoid overrunning the slow task budget.
+		int32 NodesToPosition = 0;
+		for (const FGeneratedLayoutBlock& Block : LayoutBlocks)
+		{
+			NodesToPosition += Block.ExpressionSet.Num();
+		}
+		LayoutSlowTask.TotalAmountOfWork = FMath::Max(1.0f, static_cast<float>(NodesToPosition));
+		LayoutSlowTask.CompletedWork = 0.0f;
+
 		for (const FGeneratedLayoutBlock& Block : LayoutBlocks)
 		{
 			TArray<UMaterialExpression*> BlockExpressions;
@@ -5219,22 +5366,22 @@ namespace UE::DreamShader::Editor::Private
 		}
 
 		const FString LinearColorText = FString::Printf(
-			TEXT("(R=%f,G=%f,B=%f,A=%f)"),
-			Property.VectorDefaultValue.R,
-			Property.VectorDefaultValue.G,
-			Property.VectorDefaultValue.B,
-			Property.VectorDefaultValue.A);
+			TEXT("(R=%s,G=%s,B=%s,A=%s)"),
+			*FString::SanitizeFloat(Property.VectorDefaultValue.R),
+			*FString::SanitizeFloat(Property.VectorDefaultValue.G),
+			*FString::SanitizeFloat(Property.VectorDefaultValue.B),
+			*FString::SanitizeFloat(Property.VectorDefaultValue.A));
 		if (SetMaterialExpressionLiteralProperty(Expression, DefaultValueProperty, LinearColorText, OutError))
 		{
 			return true;
 		}
 
 		const FString VectorText = FString::Printf(
-			TEXT("(X=%f,Y=%f,Z=%f,W=%f)"),
-			Property.VectorDefaultValue.R,
-			Property.VectorDefaultValue.G,
-			Property.VectorDefaultValue.B,
-			Property.VectorDefaultValue.A);
+			TEXT("(X=%s,Y=%s,Z=%s,W=%s)"),
+			*FString::SanitizeFloat(Property.VectorDefaultValue.R),
+			*FString::SanitizeFloat(Property.VectorDefaultValue.G),
+			*FString::SanitizeFloat(Property.VectorDefaultValue.B),
+			*FString::SanitizeFloat(Property.VectorDefaultValue.A));
 		return SetMaterialExpressionLiteralProperty(Expression, DefaultValueProperty, VectorText, OutError);
 	}
 

@@ -808,7 +808,29 @@ namespace UE::DreamShader::Editor::Private
 						break;
 					}
 
-					Tokens.Add({ ECodeTokenType::Number, Source.Mid(Start, Index - Start) });
+					// Optionally consume a single trailing HLSL numeric type suffix (f/F/h/H/u/U/l/L)
+					// so literals like 0.55f or 3u parse as plain numbers; the suffix is excluded from
+					// the token text. Only consumed when followed by a non-identifier boundary.
+					const int32 NumberEnd = Index;
+					if (Index < Source.Len())
+					{
+						const TCHAR Suffix = Source[Index];
+						if (Suffix == TCHAR('f') || Suffix == TCHAR('F')
+							|| Suffix == TCHAR('h') || Suffix == TCHAR('H')
+							|| Suffix == TCHAR('u') || Suffix == TCHAR('U')
+							|| Suffix == TCHAR('l') || Suffix == TCHAR('L'))
+						{
+							const int32 AfterSuffix = Index + 1;
+							const bool bAtBoundary = (AfterSuffix >= Source.Len())
+								|| !(FChar::IsAlnum(Source[AfterSuffix]) || Source[AfterSuffix] == TCHAR('_'));
+							if (bAtBoundary)
+							{
+								++Index;
+							}
+						}
+					}
+
+					Tokens.Add({ ECodeTokenType::Number, Source.Mid(Start, NumberEnd - Start) });
 					continue;
 				}
 

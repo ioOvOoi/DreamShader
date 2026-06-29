@@ -1482,12 +1482,23 @@ namespace UE::DreamShader::Editor::Private
 		}
 
 		TArray<const FCodeCallArgument*> PositionalArguments;
+		bool bHasNamedArgument = false;
 		for (const FCodeCallArgument& Argument : InputArguments)
 		{
-			if (!Argument.bIsNamed)
+			if (Argument.bIsNamed)
+			{
+				bHasNamedArgument = true;
+			}
+			else
 			{
 				PositionalArguments.Add(&Argument);
 			}
+		}
+
+		if (bHasNamedArgument && PositionalArguments.Num() > 0)
+		{
+			OutError = FString::Printf(TEXT("%s '%s' input arguments cannot mix positional and named forms."), *CallKind, *FunctionName);
+			return false;
 		}
 
 		int32 PositionalArgumentIndex = 0;
@@ -1875,11 +1886,28 @@ namespace UE::DreamShader::Editor::Private
 				}
 				else
 				{
+					// Map the requested output to a swizzle channel by its semantic NAME (R/G/B/A or
+					// X/Y/Z/W), not by its position in the declared Outputs list. A list-position
+					// mapping disagrees with the real-asset path (which resolves by name) whenever the
+					// outputs are declared in a non-canonical order, e.g. [B,G,R]. If the matched output
+					// name is not a recognized channel letter, leave OutputChannelIndex == INDEX_NONE so
+					// the bounds check below returns false and we fall back to the name-resolved path.
 					for (int32 CandidateIndex = 0; CandidateIndex < Outputs.Num(); ++CandidateIndex)
 					{
-						if (Outputs[CandidateIndex].Name.Equals(OutputText, ESearchCase::IgnoreCase))
+						const FString& CandidateName = Outputs[CandidateIndex].Name;
+						if (CandidateName.Equals(OutputText, ESearchCase::IgnoreCase))
 						{
-							OutputChannelIndex = CandidateIndex;
+							if (CandidateName.Len() == 1)
+							{
+								switch (FChar::ToLower(CandidateName[0]))
+								{
+								case TCHAR('x'): case TCHAR('r'): OutputChannelIndex = 0; break;
+								case TCHAR('y'): case TCHAR('g'): OutputChannelIndex = 1; break;
+								case TCHAR('z'): case TCHAR('b'): OutputChannelIndex = 2; break;
+								case TCHAR('w'): case TCHAR('a'): OutputChannelIndex = 3; break;
+								default: break;
+								}
+							}
 							break;
 						}
 					}

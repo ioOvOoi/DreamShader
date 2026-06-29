@@ -421,7 +421,7 @@ namespace UE::DreamShader::Editor::Private
 	static FString MakeCodeValueReuseToken(const FCodeValue& Value)
 	{
 		return FString::Printf(
-			TEXT("Expr=%s|Out=%d|Comp=%d|Mask=%d%d%d%d%d|Tex=%d|TexType=%d|MA=%d|Sub=%d|Auth=%d"),
+			TEXT("Expr=%s|Out=%d|Comp=%d|Mask=%d%d%d%d%d|Tex=%d|TexType=%d|MA=%d|Sub=%d|Auth=%d|Int=%d"),
 			Value.Expression ? *Value.Expression->GetPathName() : TEXT("<null>"),
 			Value.OutputIndex,
 			Value.ComponentCount,
@@ -434,7 +434,8 @@ namespace UE::DreamShader::Editor::Private
 			static_cast<int32>(Value.TextureType),
 			Value.bIsMaterialAttributes ? 1 : 0,
 			Value.bIsSubstrateMaterial ? 1 : 0,
-			Value.bHasAuthoritativeComponentCount ? 1 : 0);
+			Value.bHasAuthoritativeComponentCount ? 1 : 0,
+			Value.bIsIntegerType ? 1 : 0);
 	}
 
 	static void CollectChangedValueNames(
@@ -526,6 +527,15 @@ namespace UE::DreamShader::Editor::Private
 					bExpectedTexture = bOutputIsTexture;
 					bExpectedSubstrate = bOutputIsSubstrate;
 					ExpectedTextureType = OutputTextureType;
+				}
+				else if (ThenValue->ComponentCount != ElseValue->ComponentCount
+					|| ThenValue->bIsTextureObject != ElseValue->bIsTextureObject
+					|| ThenValue->bIsSubstrateMaterial != ElseValue->bIsSubstrateMaterial
+					|| ThenValue->bIsMaterialAttributes != ElseValue->bIsMaterialAttributes
+					|| ThenValue->TextureType != ElseValue->TextureType)
+				{
+					OutError = FString::Printf(TEXT("Graph if branches assign variable '%s' with inconsistent types"), *Name);
+					return false;
 				}
 			}
 
@@ -642,7 +652,7 @@ namespace UE::DreamShader::Editor::Private
 			ConnectCodeValueToInput(IfExpression->ALessThanB, LessValue);
 		};
 
-		if (Condition.Operator == TEXT("truthy") || Condition.Operator == TEXT(">"))
+		if (Condition.Operator == TEXT(">"))
 		{
 			ConnectBranches(TrueValue, FalseValue, FalseValue);
 		}
@@ -662,8 +672,10 @@ namespace UE::DreamShader::Editor::Private
 		{
 			ConnectBranches(FalseValue, TrueValue, FalseValue);
 		}
-		else if (Condition.Operator == TEXT("!="))
+		else if (Condition.Operator == TEXT("!=") || Condition.Operator == TEXT("truthy"))
 		{
+			// `if (x)` is truthy == (x != 0): pick the then-branch for any non-zero x (x > 0 and
+			// x < 0), matching HLSL/C semantics and the decompiler's `!= 0` convention.
 			ConnectBranches(TrueValue, FalseValue, TrueValue);
 		}
 		else
@@ -1606,8 +1618,12 @@ namespace UE::DreamShader::Editor::Private
 			{
 				if (!AuthoritativeValue.bHasAuthoritativeComponentCount
 					|| OtherValue.bHasAuthoritativeComponentCount
-					|| AuthoritativeValue.ComponentCount <= 0)
+					|| AuthoritativeValue.ComponentCount <= 0
+					|| OtherValue.ComponentCount > AuthoritativeValue.ComponentCount)
 				{
+					// Only widen/splat the non-authoritative operand up to the authoritative size.
+					// Never narrow it (that would silently drop channels) — let the size-mismatch
+					// error below fire instead.
 					return false;
 				}
 
@@ -1684,6 +1700,11 @@ namespace UE::DreamShader::Editor::Private
 		}
 		else if (Operator == TEXT("/"))
 		{
+			if (LeftOperand.bIsIntegerType && RightOperand.bIsIntegerType)
+			{
+				OutError = TEXT("Integer division is not supported by the material graph; use float() or floor(a/b).");
+				return false;
+			}
 			auto* DivideExpression = Cast<UMaterialExpressionDivide>(
 				CreateExpression(UMaterialExpressionDivide::StaticClass(), 160, PositionY));
 			if (DivideExpression)
@@ -2250,11 +2271,31 @@ namespace UE::DreamShader::Editor::Private
 
 			ConnectCodeValueToInput(BreakAttributes->MaterialAttributes, BaseValue);
 			int32 OutputIndex = INDEX_NONE;
-			if (!TryResolveMaterialAttributesBreakOutputIndex(ResolvedProperty.Property, OutputIndex)
-				|| !BreakAttributes->Outputs.IsValidIndex(OutputIndex))
+
+			// Prefer resolving the Break output by display name (mirrors the write side in
+			// DreamShaderMaterialGeneratorCodeShared.h). Keeps the read path in sync with the actual
+			// node output layout across engine/Substrate builds and covers first-class attributes
+			// (e.g. SurfaceThickness) that the legacy literal-index switch can miss.
+			const FGuid BreakAttributeId = FMaterialAttributeDefinitionMap::GetID(ResolvedProperty.Property);
+			const FString BreakAttributeDisplayName =
+				FMaterialAttributeDefinitionMap::GetDisplayNameForMaterial(BreakAttributeId, BreakAttributes->Material).ToString();
+			for (int32 CandidateIndex = 0; CandidateIndex < BreakAttributes->Outputs.Num(); ++CandidateIndex)
 			{
-				OutError = FString::Printf(TEXT("BreakMaterialAttributes does not expose member '%s'."), *Expression->Text);
-				return false;
+				if (BreakAttributes->Outputs[CandidateIndex].OutputName.ToString().Equals(BreakAttributeDisplayName, ESearchCase::IgnoreCase))
+				{
+					OutputIndex = CandidateIndex;
+					break;
+				}
+			}
+			if (!BreakAttributes->Outputs.IsValidIndex(OutputIndex))
+			{
+				// Fall back to the legacy literal-index table for outputs without a matching name.
+				if (!TryResolveMaterialAttributesBreakOutputIndex(ResolvedProperty.Property, OutputIndex)
+					|| !BreakAttributes->Outputs.IsValidIndex(OutputIndex))
+				{
+					OutError = FString::Printf(TEXT("BreakMaterialAttributes does not expose member '%s'."), *Expression->Text);
+					return false;
+				}
 			}
 
 			OutValue.Expression = BreakAttributes;
@@ -2427,15 +2468,11 @@ namespace UE::DreamShader::Editor::Private
 		{
 			for (int32 Index = 0; Index < Swizzle.Len(); ++Index)
 			{
-				const TCHAR ChannelChar = FChar::ToLower(Swizzle[Index]);
-				if (ChannelChar != TCHAR('x')
-					&& ChannelChar != TCHAR('r')
-					&& ChannelChar != TCHAR('y')
-					&& ChannelChar != TCHAR('g')
-					&& ChannelChar != TCHAR('z')
-					&& ChannelChar != TCHAR('b')
-					&& ChannelChar != TCHAR('w')
-					&& ChannelChar != TCHAR('a'))
+				// A scalar only exposes channel 0 (x/r); .y/.z/.w/.g/.b/.a are out of range and
+				// must error (mirrors the multi-component branch) instead of silently splatting.
+				int32 ChannelIndex = INDEX_NONE;
+				if (!TryResolveSwizzleChannelIndex(Swizzle[Index], ChannelIndex)
+					|| ChannelIndex >= BaseValue.ComponentCount)
 				{
 					OutError = FString::Printf(TEXT("Swizzle '%s' is invalid for a value with %d components."), *Swizzle, BaseValue.ComponentCount);
 					return false;
@@ -2501,7 +2538,12 @@ namespace UE::DreamShader::Editor::Private
 
 		if (IsVectorConstructorName(CalleeName))
 		{
-			return EvaluateVectorConstructor(CalleeName, Expression->Arguments, OutValue, OutError);
+			if (!EvaluateVectorConstructor(CalleeName, Expression->Arguments, OutValue, OutError))
+			{
+				return false;
+			}
+			OutValue.bIsIntegerType = IsIntegerConstructorName(CalleeName);
+			return true;
 		}
 
 		if (CalleeName.StartsWith(TEXT("UE."), ESearchCase::IgnoreCase))
@@ -2578,6 +2620,24 @@ namespace UE::DreamShader::Editor::Private
 		}
 
 		return EvaluateCustomFunctionCall(CalleeName, Expression->Arguments, OutValue, OutError);
+	}
+
+	bool FCodeGraphBuilder::IsIntegerConstructorName(const FString& InName)
+	{
+		return InName.Equals(TEXT("int"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("int2"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("int3"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("int4"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("ivec2"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("ivec3"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("ivec4"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("uint"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("uint2"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("uint3"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("uint4"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("uvec2"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("uvec3"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("uvec4"), ESearchCase::IgnoreCase);
 	}
 
 	bool FCodeGraphBuilder::IsVectorConstructorName(const FString& InName)
