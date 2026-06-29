@@ -125,40 +125,6 @@ namespace UE::DreamShader::Editor::Private
 		return true;
 	}
 
-	static bool TryResolveWorldPositionShaderOffset(const FString& InValue, EWorldPositionIncludedOffsets& OutValue)
-	{
-		FString Value = InValue;
-		Value.TrimStartAndEndInline();
-		Value.ToLowerInline();
-		Value.ReplaceInline(TEXT(" "), TEXT(""));
-
-		if (Value == TEXT("default") || Value == TEXT("includingshaderoffsets") || Value == TEXT("absolute"))
-		{
-			OutValue = WPT_Default;
-			return true;
-		}
-
-		if (Value == TEXT("excludeallshaderoffsets") || Value == TEXT("excludingallshaderoffsets") || Value == TEXT("nooffsets"))
-		{
-			OutValue = WPT_ExcludeAllShaderOffsets;
-			return true;
-		}
-
-		if (Value == TEXT("camerarelative"))
-		{
-			OutValue = WPT_CameraRelative;
-			return true;
-		}
-
-		if (Value == TEXT("camerarelativenooffsets") || Value == TEXT("camerarelativeexcludeoffsets"))
-		{
-			OutValue = WPT_CameraRelativeNoOffsets;
-			return true;
-		}
-
-		return false;
-	}
-
 	static bool TryResolvePositionOrigin(const FString& InValue, EPositionOrigin& OutValue)
 	{
 		FString Value = InValue;

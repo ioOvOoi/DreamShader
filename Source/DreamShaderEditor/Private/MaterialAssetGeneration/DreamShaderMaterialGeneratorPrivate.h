@@ -152,6 +152,7 @@ namespace UE::DreamShader::Editor::Private
 	bool ParseIntegerLiteral(const FString& InText, int32& OutValue);
 	bool ParseUnsignedInteger32Literal(const FString& InText, uint32& OutValue);
 	bool ParseVectorLiteral(const FString& InText, TArray<double>& OutValues);
+	bool TryResolveWorldPositionShaderOffset(const FString& InValue, EWorldPositionIncludedOffsets& OutValue);
 	bool ResolveDreamShaderAssetDestination(
 		const FString& AssetName,
 		const FString& Root,
