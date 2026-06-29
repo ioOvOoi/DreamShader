@@ -1,0 +1,17 @@
+Shader(Name="DreamShaderTests/Corpus/M_Arithmetic")
+{
+    Properties = {
+        vec3 A = vec3(1.0, 0.5, 0.2);
+        vec3 B = vec3(0.1, 0.2, 0.3);
+        float K = 2.0;
+    }
+    Settings = { Domain = "UI"; ShadingModel = "Unlit"; }
+    Outputs = { vec3 Color; Base.EmissiveColor = Color; }
+    Graph = {
+        vec3 Sum = A + B;
+        vec3 Diff = A - B;
+        vec3 Scaled = A * K;
+        vec3 Ratio = A / K;
+        Color = Sum + Diff - Scaled + Ratio;
+    }
+}

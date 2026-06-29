@@ -1,0 +1,12 @@
+Shader(Name="DreamShaderTests/Corpus/M_SwizzleReorder")
+{
+    Properties = { vec4 Src = vec4(0.1, 0.2, 0.3, 0.4); }
+    Settings = { Domain = "UI"; ShadingModel = "Unlit"; }
+    Outputs = { vec3 Color; Base.EmissiveColor = Color; }
+    Graph = {
+        vec3 Forward = Src.rgb;
+        vec3 Reordered = Src.bgr;
+        float One = Src.a;
+        Color = Forward + Reordered * One;
+    }
+}

@@ -9,6 +9,9 @@
 #include "Materials/Material.h"
 #include "Materials/MaterialFunction.h"
 #include "Materials/MaterialExpressionIf.h"
+#include "Materials/MaterialExpressionAdd.h"
+#include "Materials/MaterialExpressionMultiply.h"
+#include "Materials/MaterialExpressionSine.h"
 #include "Decompiler/DreamShaderGraphDecompiler.h"
 #include "Decompiler/DreamShaderDecompileService.h"
 #include "Misc/AutomationTest.h"
@@ -644,6 +647,146 @@ Shader(Name="DreamShaderTests/Automation/%s")
 		FString::Printf(TEXT("Decompiled source re-parses: %s"), *ReparseError),
 		FTextShaderParser::Parse(DecompiledSource, ReparsedDefinition, ReparseError));
 	TestTrue(TEXT("Decompiled source declares a parameter"), DecompiledSource.Contains(TEXT("Parameter")));
+	return true;
+}
+
+namespace UE::DreamShader::Editor::Private::Tests
+{
+	template <typename TExpressionClass>
+	int32 CountMaterialExpressionsOfClass(UMaterial* Material)
+	{
+		int32 Count = 0;
+		if (Material)
+		{
+			for (auto&& ExpressionPtr : Material->GetExpressions())
+			{
+				if (Cast<TExpressionClass>(ExpressionPtr))
+				{
+					++Count;
+				}
+			}
+		}
+		return Count;
+	}
+
+	bool GenerateAndLoadMaterial(
+		FAutomationTestBase& Test,
+		FScopedDreamShaderAutomationArtifacts& Artifacts,
+		const FString& AssetName,
+		const FString& Source,
+		UMaterial*& OutMaterial)
+	{
+		const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+		Artifacts.AddObjectPath(ObjectPath);
+		AddExpectedNewAssetProbeWarnings(Test, ObjectPath);
+		AddExpectedAutomationCleanupWarnings(Test);
+
+		FString SourceFilePath;
+		if (!WriteAutomationSourceFile(Test, AssetName + TEXT(".dsm"), Source, SourceFilePath))
+		{
+			return false;
+		}
+		Artifacts.AddSourceFile(SourceFilePath);
+
+		FString Message;
+		if (!Test.TestTrue(
+			FString::Printf(TEXT("Material generation succeeds: %s"), *Message),
+			UE::DreamShader::Editor::FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, true)))
+		{
+			return false;
+		}
+
+		OutMaterial = LoadObject<UMaterial>(nullptr, *ObjectPath);
+		return Test.TestNotNull(TEXT("Generated material loads"), OutMaterial);
+	}
+}
+
+IMPLEMENT_CUSTOM_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderArithmeticNodeTest,
+	FDreamShaderQuietAutomationTestBase,
+	"DreamShader.Gen.Graph.ArithmeticNodes",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FDreamShaderArithmeticNodeTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_Arith"));
+	const FString Source = FString::Printf(TEXT(R"(
+Shader(Name="DreamShaderTests/Automation/%s")
+{
+    Properties = {
+        vec3 Tint = vec3(0.8, 0.4, 0.2);
+        float A = 0.5;
+        float B = 0.25;
+    }
+
+    Settings = { Domain = "UI"; ShadingModel = "Unlit"; }
+
+    Outputs = {
+        vec3 Color;
+        Base.EmissiveColor = Color;
+    }
+
+    Graph = {
+        float Sum = A + B;
+        Color = Tint * Sum;
+    }
+}
+)"), *AssetName);
+
+	UMaterial* Material = nullptr;
+	if (!GenerateAndLoadMaterial(*this, Artifacts, AssetName, Source, Material))
+	{
+		return false;
+	}
+
+	TestTrue(TEXT("'+' generates an Add node"), CountMaterialExpressionsOfClass<UMaterialExpressionAdd>(Material) >= 1);
+	TestTrue(TEXT("'*' generates a Multiply node"), CountMaterialExpressionsOfClass<UMaterialExpressionMultiply>(Material) >= 1);
+	return true;
+}
+
+IMPLEMENT_CUSTOM_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderMathBuiltinNodeTest,
+	FDreamShaderQuietAutomationTestBase,
+	"DreamShader.Gen.Graph.MathBuiltinNodes",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FDreamShaderMathBuiltinNodeTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_Math"));
+	const FString Source = FString::Printf(TEXT(R"(
+Shader(Name="DreamShaderTests/Automation/%s")
+{
+    Properties = {
+        float Phase = 0.5;
+    }
+
+    Settings = { Domain = "UI"; ShadingModel = "Unlit"; }
+
+    Outputs = {
+        vec3 Color;
+        Base.EmissiveColor = Color;
+    }
+
+    Graph = {
+        float Wave = sin(Phase);
+        Color = vec3(Wave, Wave, Wave);
+    }
+}
+)"), *AssetName);
+
+	UMaterial* Material = nullptr;
+	if (!GenerateAndLoadMaterial(*this, Artifacts, AssetName, Source, Material))
+	{
+		return false;
+	}
+
+	TestTrue(TEXT("'sin' generates a Sine node"), CountMaterialExpressionsOfClass<UMaterialExpressionSine>(Material) >= 1);
 	return true;
 }
 

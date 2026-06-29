@@ -1,0 +1,13 @@
+Shader(Name="DreamShaderTests/Corpus/M_BraceInit")
+{
+    Settings = { Domain = "UI"; ShadingModel = "Unlit"; }
+    Outputs = { vec3 Color; Base.EmissiveColor = Color; }
+    Graph = {
+        float r = 1.0;
+        float g = 0.5;
+        float b = 0.2;
+        vec3 rgb = {r, g, b};
+        vec4 rgba = {rgb, 1.0};
+        Color = rgba.rgb;
+    }
+}

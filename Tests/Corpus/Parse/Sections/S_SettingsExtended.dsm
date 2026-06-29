@@ -1,0 +1,13 @@
+Shader(Name="DreamShaderTests/Corpus/M_SettingsExtended")
+{
+    Properties = { vec3 Tint = vec3(1.0, 1.0, 1.0); }
+    Settings = {
+        Domain = "Surface";
+        ShadingModel = "DefaultLit";
+        BlendMode = "Translucent";
+        TwoSided = true;
+        Wireframe = false;
+    }
+    Outputs = { vec3 Color; float Alpha; Base.BaseColor = Color; Base.Opacity = Alpha; }
+    Graph = { Color = Tint; Alpha = 0.5; }
+}
