@@ -15,6 +15,7 @@ class UMaterialFunction;
 class UMaterialExpression;
 class UMaterialExpressionMaterialFunctionCall;
 class UClass;
+class UEnum;
 class FProperty;
 struct FScopedSlowTask;
 
@@ -153,6 +154,8 @@ namespace UE::DreamShader::Editor::Private
 	bool ParseUnsignedInteger32Literal(const FString& InText, uint32& OutValue);
 	bool ParseVectorLiteral(const FString& InText, TArray<double>& OutValues);
 	bool TryResolveWorldPositionShaderOffset(const FString& InValue, EWorldPositionIncludedOffsets& OutValue);
+	FString NormalizeEnumLookupKey(const FString& InKey);
+	bool TryResolveEnumLiteral(UEnum* Enum, const FString& InValue, int64& OutEnumValue);
 	bool ResolveDreamShaderAssetDestination(
 		const FString& AssetName,
 		const FString& Root,

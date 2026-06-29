@@ -6,6 +6,7 @@
 
 #include "DreamShaderMaterialGeneratorPrivate.h"
 #include "DreamShaderVersionCompat.h"
+#include "DreamShaderModule.h"
 
 namespace UE::DreamShader::Editor::Private
 {
@@ -349,6 +350,57 @@ namespace UE::DreamShader::Editor::Private
 		{
 			OutValue = WPT_CameraRelativeNoOffsets;
 			return true;
+		}
+
+		return false;
+	}
+
+	FString NormalizeEnumLookupKey(const FString& InKey)
+	{
+		FString Normalized = UE::DreamShader::NormalizeSettingKey(InKey);
+		Normalized.ReplaceInline(TEXT(" "), TEXT(""));
+		Normalized.ReplaceInline(TEXT("_"), TEXT(""));
+		Normalized.ReplaceInline(TEXT("-"), TEXT(""));
+		Normalized.ReplaceInline(TEXT(":"), TEXT(""));
+		Normalized.ReplaceInline(TEXT("."), TEXT(""));
+		Normalized.ReplaceInline(TEXT("/"), TEXT(""));
+		return Normalized;
+	}
+
+	bool TryResolveEnumLiteral(UEnum* Enum, const FString& InValue, int64& OutEnumValue)
+	{
+		if (!Enum)
+		{
+			return false;
+		}
+
+		const FString Candidate = NormalizeEnumLookupKey(InValue);
+		for (int32 Index = 0; Index < Enum->NumEnums(); ++Index)
+		{
+			if (Enum->HasMetaData(TEXT("Hidden"), Index))
+			{
+				continue;
+			}
+
+			const FString ShortName = Enum->GetNameStringByIndex(Index);
+			const FString FullName = Enum->GetNameByIndex(Index).ToString();
+			const FString DisplayName = Enum->GetDisplayNameTextByIndex(Index).ToString();
+			const int32 PrefixSeparatorIndex = ShortName.Find(TEXT("_"));
+			const FString PrefixlessShortName = PrefixSeparatorIndex != INDEX_NONE ? ShortName.Mid(PrefixSeparatorIndex + 1) : FString();
+
+			const auto MatchesValue = [&Candidate](const FString& Name)
+			{
+				return !Name.IsEmpty() && NormalizeEnumLookupKey(Name) == Candidate;
+			};
+
+			if (MatchesValue(ShortName)
+				|| MatchesValue(FullName)
+				|| MatchesValue(DisplayName)
+				|| MatchesValue(PrefixlessShortName))
+			{
+				OutEnumValue = Enum->GetValueByIndex(Index);
+				return true;
+			}
 		}
 
 		return false;
