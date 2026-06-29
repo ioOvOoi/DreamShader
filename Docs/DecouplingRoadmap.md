@@ -2,6 +2,21 @@
 
 > 覆盖 10 个超大文件（合计约 2 万行），最紧迫的是 `DreamShaderMaterialGeneratorSupport.cpp`（**6719 行**）。所有目标都具备干净的「接缝」：要么是单一 namespace 下的 static 自由函数集合，要么是已跨多个 `.cpp` 分布的部分类（`FCodeGraphBuilder` 已分布在 `Code{Calls,Expressions,Parsing,UE}.cpp`）。
 
+## 进度（2026-06-29，每刀均 compile+link+测试验证、单独提交）
+
+Support.cpp **6866 → 6040 行**（抽出 826 行，~12%），新增 2 个内聚文件：
+
+| 刀 | 抽出内容 | → 新文件 |
+|---|---|---|
+| 1 | 5 个字面量解析器 `Parse{Scalar,Boolean,Integer,UnsignedInteger32,Vector}Literal` | `DreamShaderMaterialValueParsing.cpp` |
+| 2 | `ResolveMaterialProperty`（材质属性名→枚举，含 Substrate/Moon 守卫） | ↑ |
+| 3 | `TryResolveCustomOutputType` | ↑ |
+| 4 | `TryResolveWorldPositionShaderOffset` | ↑ |
+| 5 | `NormalizeEnumLookupKey` + `TryResolveEnumLiteral` | ↑ |
+| 6 | **类型解析簇**（`TryGetComponentCountForOutputType`/`IsMaterialAttributesType`/`IsSubstrateMaterialType(+Supported)`/`TryResolveCodeDeclaredType`×4/`TryResolveOutputVariableComponentCount`×3/`TryResolveMaterialFunctionParameterType`/`ValidateOutputs`，435 行） | `DreamShaderTypeResolution.cpp` |
+
+完成了 Step 1 的"值/字面量/枚举解析"叶子簇 + Step 4 的"类型查询"簇。**剩余**：Path 解析、HLSL 函数 codegen（~1110 行，最大单笔）、反射写入器、表达式工厂、图布局，以及其他巨石文件（GraphDecompiler/CodeExpressions/ParserSections/Workspace）。模式已稳：header-declared 函数零调用方改动；static 函数补 Private.h 声明。
+
 ## 巨石文件
 
 | 文件 | 行数 |
