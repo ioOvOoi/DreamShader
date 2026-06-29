@@ -877,6 +877,17 @@ namespace UE::DreamShader::Editor::Private
 				}
 			}
 
+			if (PreviousValues)
+			{
+				for (const TPair<FString, FCodeValue>& Pair : LocalValues)
+				{
+					if (!PreviousValues->Contains(Pair.Key) && FindPropertyDefinition(Pair.Key))
+					{
+						PreviousValues->Add(Pair.Key, Pair.Value);
+					}
+				}
+			}
+
 			for (int32 ResultIndex = 0; ResultIndex < Function.Results.Num(); ++ResultIndex)
 			{
 				const FTextShaderFunctionParameter& ResultDefinition = Function.Results[ResultIndex];
@@ -1240,6 +1251,17 @@ namespace UE::DreamShader::Editor::Private
 		if (!RewriteUEInputs(Function.HLSL, RewrittenHLSL))
 		{
 			return false;
+		}
+
+		if (PreviousValues)
+		{
+			for (const TPair<FString, FCodeValue>& Pair : LocalValues)
+			{
+				if (!PreviousValues->Contains(Pair.Key) && FindPropertyDefinition(Pair.Key))
+				{
+					PreviousValues->Add(Pair.Key, Pair.Value);
+				}
+			}
 		}
 
 		FString CustomCode;

@@ -4691,16 +4691,21 @@ namespace UE::DreamShader::Editor::Private
 		Material->DitherOpacityMask = false;
 		Material->bAllowNegativeEmissiveColor = false;
 		Material->bCastDynamicShadowAsMasked = false;
+		Material->bCastRayTracedShadows = true;
 		Material->bEnableResponsiveAA = false;
 		Material->bScreenSpaceReflections = false;
 		Material->bContactShadows = false;
 		Material->bDisableDepthTest = false;
 		Material->bOutputTranslucentVelocity = false;
+		Material->bWriteOnlyAlpha = false;
+		Material->BlendableOutputAlpha = false;
 		Material->TranslucencyLightingMode = TLM_VolumetricNonDirectional;
 		Material->bTangentSpaceNormal = true;
+		Material->bAlwaysEvaluateWorldPositionOffset = false;
 		Material->bFullyRough = false;
 		Material->bIsSky = false;
 		Material->bIsThinSurface = false;
+		Material->MaterialDecalResponse = MDR_ColorNormalRoughness;
 #if DREAMSHADER_UE_VERSION_AT_LEAST(5, 4)
 		Material->bHasPixelAnimation = false;
 #endif
