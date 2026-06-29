@@ -9,6 +9,8 @@
 #include "Materials/Material.h"
 #include "Materials/MaterialFunction.h"
 #include "Materials/MaterialExpressionIf.h"
+#include "Decompiler/DreamShaderGraphDecompiler.h"
+#include "Decompiler/DreamShaderDecompileService.h"
 #include "Misc/AutomationTest.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Guid.h"
@@ -548,6 +550,100 @@ Shader(Name="DreamShaderTests/Automation/%s")
 	TestTrue(
 		TEXT("truthy: A<B selects the same then-value as A>B (non-zero -> then-branch)"),
 		IfExpression->ALessThanB.Expression == IfExpression->AGreaterThanB.Expression);
+	return true;
+}
+
+IMPLEMENT_CUSTOM_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderRoundTripMaterialTest,
+	FDreamShaderQuietAutomationTestBase,
+	"DreamShader.Roundtrip.MaterialDecompiles",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FDreamShaderRoundTripMaterialTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader;
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_RoundTrip"));
+	const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+	Artifacts.AddObjectPath(ObjectPath);
+	AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
+	AddExpectedAutomationCleanupWarnings(*this);
+
+	const FString Source = FString::Printf(TEXT(R"(
+Shader(Name="DreamShaderTests/Automation/%s")
+{
+    Properties = {
+        VectorParameter BaseColor = float4(0.8, 0.4, 0.2, 1.0) [
+            Group="Surface";
+        ];
+        ScalarParameter Roughness = 0.55;
+    }
+
+    Settings = {
+        Domain = "Surface";
+        ShadingModel = "DefaultLit";
+        BlendMode = "Opaque";
+    }
+
+    Outputs = {
+        float3 Color;
+        float Rough;
+        Base.BaseColor = Color;
+        Base.Roughness = Rough;
+    }
+
+    Graph = {
+        Color = BaseColor.rgb;
+        Rough = Roughness;
+    }
+}
+)"), *AssetName);
+
+	FString SourceFilePath;
+	if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), Source, SourceFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(SourceFilePath);
+
+	FString Message;
+	if (!TestTrue(
+		FString::Printf(TEXT("Material generation succeeds: %s"), *Message),
+		FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, true)))
+	{
+		return false;
+	}
+
+	UMaterial* Material = LoadObject<UMaterial>(nullptr, *ObjectPath);
+	if (!TestNotNull(TEXT("Generated material loads"), Material))
+	{
+		return false;
+	}
+
+	// Decompile the generated material back to DreamShaderLang source.
+	FString DecompiledSource;
+	FString DecompileError;
+	const bool bDecompiled = GetGraphDecompiler().DecompileMaterial(
+		Material, TEXT("Decompiled/M_RoundTrip"), DecompiledSource, DecompileError);
+	if (!TestTrue(FString::Printf(TEXT("Decompile succeeds: %s"), *DecompileError), bDecompiled))
+	{
+		return false;
+	}
+	TestFalse(TEXT("Decompiled source is non-empty"), DecompiledSource.IsEmpty());
+
+	// The round-trip property: the decompiled output must be valid DreamShaderLang that re-parses.
+	// This is the only automated coverage of the decompiler's parameter-reuse and material-setting
+	// emission paths, so a malformed export (e.g. duplicate parameter declarations) is caught here.
+	FTextShaderDefinition ReparsedDefinition;
+	FString ReparseError;
+	TestTrue(
+		FString::Printf(TEXT("Decompiled source re-parses: %s"), *ReparseError),
+		FTextShaderParser::Parse(DecompiledSource, ReparsedDefinition, ReparseError));
+	TestTrue(TEXT("Decompiled source declares a parameter"), DecompiledSource.Contains(TEXT("Parameter")));
 	return true;
 }
 
