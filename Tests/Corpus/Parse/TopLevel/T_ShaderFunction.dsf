@@ -1,0 +1,20 @@
+ShaderFunction(Name="Functions/F_Tint")
+{
+    Inputs = {
+        vec3 InColor;
+        vec3 InTint;
+    }
+
+    Outputs = {
+        vec3 OutColor;
+    }
+
+    Settings = {
+        Description = "Tint helper";
+        ExposeToLibrary = true;
+    }
+
+    Graph = {
+        OutColor = InColor * InTint;
+    }
+}

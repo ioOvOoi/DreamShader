@@ -1,0 +1,14 @@
+{
+	"entryPoint": "parse",
+	"outcome": "ok",
+	"definition": {
+		"name": "DreamShaderTests/Corpus/M_Minimal",
+		"settings": {
+			"Domain": "UI",
+			"ShadingModel": "Unlit"
+		},
+		"outputDeclarations": 1,
+		"outputs": 1,
+		"codeNotEmpty": true
+	}
+}

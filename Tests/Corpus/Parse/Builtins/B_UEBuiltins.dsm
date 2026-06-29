@@ -1,0 +1,19 @@
+Shader(Name="DreamShaderTests/Corpus/M_UEBuiltins")
+{
+    Settings = {
+        Domain = "UI";
+        ShadingModel = "Unlit";
+    }
+
+    Outputs = {
+        vec3 Color;
+        Base.EmissiveColor = Color;
+    }
+
+    Graph = {
+        float2 uv = UE.TexCoord(Index=0);
+        float t = UE.Time();
+        float pulse = UE.Expression(Class="Sine", OutputType="float1", Input=t);
+        Color = vec3(uv.x, uv.y, pulse);
+    }
+}

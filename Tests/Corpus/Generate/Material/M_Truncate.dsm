@@ -1,0 +1,25 @@
+// Bug #1 repro: an authoritative float3 (UE builtin) times a non-authoritative float4 (parameter)
+// must error on size mismatch, NOT silently truncate the float4 to .rgb (dropping the 4th channel).
+// Currently SUCCEEDS (silent truncation); expected to FAIL with a size-mismatch error.
+Shader(Name="DreamShaderTests/Generate/M_Truncate", Root="Game")
+{
+    Properties = {
+        VectorParameter Tint = float4(1.0, 2.0, 3.0, 999.0);
+    }
+
+    Settings = {
+        Domain = "Surface";
+        ShadingModel = "DefaultLit";
+        BlendMode = "Opaque";
+    }
+
+    Outputs = {
+        float3 Color;
+        Base.EmissiveColor = Color;
+    }
+
+    Graph = {
+        float3 dir = UE.CameraVectorWS();
+        Color = dir * Tint;
+    }
+}

@@ -1,0 +1,16 @@
+VirtualFunction(Name="BufferWriter")
+{
+    Options = {
+        Asset = Path(Game, "MaterialFunctions/F_BufferWriter");
+        Description = "Existing material function declared for Graph calls.";
+    }
+
+    Inputs = {
+        float3 Color;
+        float Alpha;
+    }
+
+    Outputs = {
+        float3 Result;
+    }
+}

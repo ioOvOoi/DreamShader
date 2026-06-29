@@ -1,0 +1,3 @@
+Function NoOutputs(in vec3 color) {
+    color = color * 2.0;
+}

@@ -1,0 +1,31 @@
+Shader(Name="DreamShaderTests/Corpus/M_ExplicitParams")
+{
+    Properties = {
+        VectorParameter BaseColor = float4(0.8, 0.8, 0.8, 1.0) [
+            Group="Surface";
+            SortPriority=10;
+        ];
+        ScalarParameter Roughness = 0.55 [
+            Group="Surface";
+            SortPriority=20;
+        ];
+    }
+
+    Settings = {
+        Domain = "Surface";
+        ShadingModel = "DefaultLit";
+        BlendMode = "Opaque";
+    }
+
+    Outputs = {
+        float3 Color;
+        float Rough;
+        Base.BaseColor = Color;
+        Base.Roughness = Rough;
+    }
+
+    Graph = {
+        Color = BaseColor.rgb;
+        Rough = Roughness;
+    }
+}

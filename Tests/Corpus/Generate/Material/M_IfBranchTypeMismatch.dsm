@@ -1,0 +1,32 @@
+// Bug #11 repro: both if/else branches newly declare the same local 'Blend' with different
+// component sizes (then=float3, else=float). The merge previously took the type from the then
+// branch and silently broadcast the scalar else to float3. Expected: FAIL with inconsistent types.
+Shader(Name="DreamShaderTests/Generate/M_IfBranchTypeMismatch", Root="Game")
+{
+    Properties = {
+        ScalarParameter Mask = 0.6 [
+            Group="Surface";
+        ];
+    }
+
+    Settings = {
+        Domain = "Surface";
+        ShadingModel = "DefaultLit";
+        BlendMode = "Opaque";
+    }
+
+    Outputs = {
+        float3 Color;
+        Base.BaseColor = Color;
+    }
+
+    Graph = {
+        if (Mask > 0.5) {
+            float3 Blend = float3(1.0, 0.0, 0.0);
+            Color = Blend;
+        } else {
+            float Blend = 0.25;
+            Color = float3(Blend, Blend, Blend);
+        }
+    }
+}

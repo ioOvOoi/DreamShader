@@ -1,0 +1,19 @@
+// Bug #7 repro: numeric literal suffix 'f' must be accepted (0.55f -> 0.55).
+// Currently FAILS generation with "Unexpected token 'f' in Graph expression."; expected to SUCCEED.
+Shader(Name="DreamShaderTests/Generate/M_Suffix", Root="Game")
+{
+    Settings = {
+        Domain = "Surface";
+        ShadingModel = "DefaultLit";
+        BlendMode = "Opaque";
+    }
+
+    Outputs = {
+        float Rough;
+        Base.Roughness = Rough;
+    }
+
+    Graph = {
+        Rough = 0.55f;
+    }
+}

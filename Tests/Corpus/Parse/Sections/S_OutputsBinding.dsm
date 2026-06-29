@@ -1,0 +1,25 @@
+Shader(Name="DreamShaderTests/Corpus/M_Outputs")
+{
+    Properties = {
+        vec3 Tint = vec3(0.4, 0.8, 1.0);
+        float A = 0.75;
+    }
+
+    Settings = {
+        Domain = "Surface";
+        ShadingModel = "Unlit";
+    }
+
+    Outputs = {
+        vec3 Color;
+        float Alpha;
+
+        Base.EmissiveColor = Color;
+        Base.Opacity = Alpha;
+    }
+
+    Graph = {
+        Color = Tint;
+        Alpha = A;
+    }
+}

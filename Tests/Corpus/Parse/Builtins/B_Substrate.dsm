@@ -1,0 +1,15 @@
+Shader(Name="DreamShaderTests/Corpus/M_Substrate")
+{
+    Properties = {
+        vec3 Color = vec3(0.1, 0.6, 1.0);
+    }
+
+    Outputs = {
+        Substrate Surface;
+        Base.FrontMaterial = Surface;
+    }
+
+    Graph = {
+        Surface = Substrate.Unlit(EmissiveColor=Color);
+    }
+}

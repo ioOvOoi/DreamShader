@@ -1,0 +1,20 @@
+ShaderLayerBlend(Name="Layers/LB_Overlay")
+{
+    Properties = {
+        float Alpha = 0.5;
+    }
+
+    Inputs = {
+        MaterialAttributes Bottom;
+        MaterialAttributes Top;
+    }
+
+    Outputs = {
+        MaterialAttributes Attrs;
+    }
+
+    Graph = {
+        Attrs.BaseColor = lerp(Bottom.BaseColor, Top.BaseColor, Alpha);
+        Attrs.Roughness = lerp(Bottom.Roughness, Top.Roughness, Alpha);
+    }
+}

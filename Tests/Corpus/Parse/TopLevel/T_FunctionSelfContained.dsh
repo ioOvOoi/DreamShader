@@ -1,0 +1,3 @@
+Function SelfContained Remap01(in float value, out float result) {
+    result = saturate(value * 0.5 + 0.5);
+}

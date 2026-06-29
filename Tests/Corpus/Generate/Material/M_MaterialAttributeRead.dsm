@@ -1,0 +1,30 @@
+// Bug #9 regression smoke: reading a MaterialAttributes member back out must generate via the new
+// name-driven BreakMaterialAttributes output resolution. Roughness is a standard, always-exposed
+// attribute, so this verifies the rewritten read path resolves a standard member by display name
+// without regressing. (SurfaceThickness — the original repro — is a Substrate attribute that this
+// engine build does not expose as a Break output, so it cannot be exercised here.)
+Shader(Name="DreamShaderTests/Generate/M_MaterialAttributeRead", Root="Game")
+{
+    Properties = {
+        ScalarParameter R = 0.35 [
+            Group="Surface";
+        ];
+    }
+
+    Settings = {
+        Domain = "Surface";
+        ShadingModel = "DefaultLit";
+        BlendMode = "Opaque";
+    }
+
+    Outputs = {
+        float Rough;
+        Base.Roughness = Rough;
+    }
+
+    Graph = {
+        MaterialAttributes Attrs;
+        Attrs.Roughness = R;
+        Rough = Attrs.Roughness;
+    }
+}

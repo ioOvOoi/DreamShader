@@ -1,0 +1,11 @@
+ShaderLayer(Name="Layers/L_SimpleSurface")
+{
+    Outputs = {
+        MaterialAttributes Attrs;
+    }
+
+    Graph = {
+        Attrs.BaseColor = vec3(0.8, 0.2, 0.1);
+        Attrs.Roughness = 0.5;
+    }
+}

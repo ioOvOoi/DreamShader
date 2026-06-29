@@ -1,0 +1,26 @@
+// Bug #3 repro: swizzling out-of-range channels on a scalar must error, not silently splat.
+// Currently SUCCEEDS (Roughness.yz -> float2(s,s)); expected to FAIL with a swizzle error.
+Shader(Name="DreamShaderTests/Generate/M_ScalarSwizzle", Root="Game")
+{
+    Properties = {
+        ScalarParameter Roughness = 0.55 [
+            Group="Surface";
+        ];
+    }
+
+    Settings = {
+        Domain = "Surface";
+        ShadingModel = "DefaultLit";
+        BlendMode = "Opaque";
+    }
+
+    Outputs = {
+        float3 Color;
+        Base.BaseColor = Color;
+    }
+
+    Graph = {
+        float2 Bogus = Roughness.yz;
+        Color = float3(Bogus, 0.0);
+    }
+}

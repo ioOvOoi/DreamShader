@@ -1,0 +1,17 @@
+ShaderFunction(Name="Functions/F_Opt")
+{
+    Inputs = {
+        vec3 InColor;
+        opt float Strength = 1.0 [
+            Description="Preview strength";
+        ];
+    }
+
+    Outputs = {
+        vec3 OutColor;
+    }
+
+    Graph = {
+        OutColor = InColor * Strength;
+    }
+}

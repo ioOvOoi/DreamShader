@@ -1,0 +1,22 @@
+Shader(Name="DreamShaderTests/Corpus/M_MatAttrs")
+{
+    Properties = {
+        vec3 BaseTint = vec3(0.6, 0.8, 1.0);
+        float R = 0.35;
+    }
+
+    Settings = {
+        Domain = "Surface";
+        ShadingModel = "DefaultLit";
+    }
+
+    Outputs = {
+        MaterialAttributes Attrs;
+        Base.MaterialAttributes = Attrs;
+    }
+
+    Graph = {
+        Attrs.BaseColor = BaseTint;
+        Attrs.Roughness = R;
+    }
+}

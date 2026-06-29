@@ -1,0 +1,9 @@
+Shader(Name="DreamShaderTests/Corpus/M_BadBlock")
+{
+    Settings = {
+        Domain = "UI";
+        ShadingModel = "Unlit";
+    }
+
+    Graph = {
+        Color = vec3(0.0, 0.0, 0.0);
