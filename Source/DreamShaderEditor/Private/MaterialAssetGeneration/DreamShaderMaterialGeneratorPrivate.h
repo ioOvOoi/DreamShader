@@ -180,6 +180,8 @@ namespace UE::DreamShader::Editor::Private
 	bool WriteGeneratedInclude(const FString& SourceFilePath, const FTextShaderDefinition& Definition, FString& OutError);
 	void ClearMaterialExpressions(UMaterial* Material);
 	void ClearMaterialFunctionExpressions(UMaterialFunction* MaterialFunction);
+	void EnsureExpressionCanBeDeleted(UMaterialExpression* Expression);
+	void ClearDreamShaderGeneratedComments(UMaterial* Material, UMaterialFunction* MaterialFunction);
 	FCodeValue CreateOutputRerouteValue(
 		UMaterial* Material,
 		UMaterialFunction* MaterialFunction,
