@@ -27,13 +27,13 @@ Support.cpp **6866 → 4246 行**（抽出 2620 行，**~38%**），新增 6 个
 
 ## 进度（2026-06-30，扩展到 Support.cpp 之外的巨石文件，每刀 compile+link+51 测试验证）
 
-把 Phase-1 的可干净分离簇推进到**全部六个巨石文件**（含 GraphDecompiler 的自由 helper 块）；新增 18 个内聚文件（15 cpp + 3 h），共抽出 **7046 行**（17 刀，全程 51/51 green，含 round-trip）。**Support.cpp 6866→926（-86.5%）、CodeExpressions 3041→1807、CodeCalls 2162→1312、MaterialGenerator 2820→2547、CodeUE 1403→1277**——五个可搬移巨石全部下降，三个最大者已降为普通文件。**仅剩 GraphDecompiler 4134** 为结构性硬骨头（文件局部 inline 类，须先把类声明 hoist 进头 + 把 3000+ 行 inline 成员改 out-of-line 再拆——内部重构、非字节搬移，须 round-trip golden 覆盖下专门做）；MaterialGenerator/CodeUE 余下少量在大匿名 ns 或单个巨型函数内，收益渐小。**Support.cpp 6866→4246→2435→1123→926（累计 -86.5%）**——此前判为"不可字节级搬移的深度耦合生成核心"的论断，被图布局(#15)与表达式工厂(#16)两刀证伪：两者都是 needs-expose（暴露少量共享 static + 链接器迭代揪漏）即可干净分离。Support.cpp 已从 #1 万行巨石降到 926 行普通文件。
+**六个巨石文件全部解耦完成**：Support.cpp 6866→926、CodeExpressions 3041→1807、CodeCalls 2162→1312、MaterialGenerator 2820→2547、CodeUE 1403→1277、**GraphDecompiler 4134→126**（自由 helper 抽出 + 文件局部 inline 类经程序化 hoist 改 out-of-line）。新增 20 个内聚文件（16 cpp + 4 h），共抽出 **~9500 行**（18 刀，全程 51/51 green 含 round-trip）。其中 GraphDecompiler 的 Impl.cpp(~2500) 仍可按关注点再拆，但类已不再是不可分的 inline 体。**Support.cpp 6866→926（-86.5%）、CodeExpressions 3041→1807、CodeCalls 2162→1312、MaterialGenerator 2820→2547、CodeUE 1403→1277**——五个可搬移巨石全部下降，三个最大者已降为普通文件。**仅剩 GraphDecompiler 4134** 为结构性硬骨头（文件局部 inline 类，须先把类声明 hoist 进头 + 把 3000+ 行 inline 成员改 out-of-line 再拆——内部重构、非字节搬移，须 round-trip golden 覆盖下专门做）；MaterialGenerator/CodeUE 余下少量在大匿名 ns 或单个巨型函数内，收益渐小。**Support.cpp 6866→4246→2435→1123→926（累计 -86.5%）**——此前判为"不可字节级搬移的深度耦合生成核心"的论断，被图布局(#15)与表达式工厂(#16)两刀证伪：两者都是 needs-expose（暴露少量共享 static + 链接器迭代揪漏）即可干净分离。Support.cpp 已从 #1 万行巨石降到 926 行普通文件。
 
 **本轮映射工作流已核实但未做的候选**（详见各自 verify）：
 - **CodeExpressions swizzle 簇**（`TryResolveSwizzleChannelIndex`/`TryBuildOrderedSwizzleMask` 两 static + `CreateSingleChannelMask`/`CreateSwizzleExpression` 两成员，~220L）= **leaf-clean 但非连续**（散在 333-419 与 2335-2540，中间夹着不搬的成员），须 4 段分别剪切，留作下一刀。
 - **GraphDecompiler metadata static 簇**（1796-1942，11 个格式化 static）= **entangled**：`BuildLiteralEnumArgument`/`AddParameterMetadata`/`AddTextureParameterMetadata`/`AddTextureSampleMetadata` 被簇外成员函数调用（1994-3110），搬出会留下未定义 static。
 - **GraphDecompiler 自由 helper 块已抽（#26，4134→2875）**：类**之前**的 ~43 个匿名 ns 自由函数（格式化/类型名/swizzle/材质设置 helper，90-1348，**1259L**）整体提升到 Private 作用域 + 自动生成的头声明（程序化解析签名，仅一处默认参数 `=nullptr` 需从定义移除），搬到 `DreamShaderGraphDecompilerHelpers.cpp`/`.h`。类（留守）经头调用。round-trip 测试覆盖、51/51 green。
-- **GraphDecompiler 剩余 = 文件局部 inline 类（须 hoist 重构）**：`class FDreamShaderGraphDecompiler`（:1377）定义在 .cpp 匿名 ns 内、~80 个成员全 inline，公开接口是薄包装 `FBridgeGraphDecompiler`（持有一个该类成员）。**类体无法跨 TU 拆分**——须先把类声明（含成员变量/嵌套类型）hoist 进头、把 inline 成员改 out-of-line `Class::method`，再按子关注点拆到多 TU。这是**内部重构（非字节搬移）**，是 GraphDecompiler 仅剩的解耦工作，须 round-trip golden 覆盖下分步进行。其余四个 `FCodeGraphBuilder`/`FMaterialGenerator` 文件是正常头文件类，成员可自由跨 TU 安放。
+- **GraphDecompiler 类 hoist 已完成（#27，2875→126）**：`class FDreamShaderGraphDecompiler`（文件局部 inline 类，84 成员/21 成员变量/2 嵌套类型）经**程序化转换**——类声明 hoist 进 `DreamShaderGraphDecompilerImpl.h`，84 个 inline 成员改为 out-of-line `Class::method` 定义搬到 `DreamShaderGraphDecompilerImpl.cpp`。GraphDecompiler.cpp 仅剩 126 行（includes + `FBridgeGraphDecompiler` 包装 + Editor 作用域转发函数）。**关键技术**：(1) C++ 规则——out-of-line 成员定义里 `Class::Method` 之后的参数类型在类作用域查找，故嵌套类型 `FExpressionCallArgument` 等做参数无需限定；(2) 解析器须 **string/comment-aware**——反编译器体内大量 `TEXT("{")` 字面量含花括号，朴素括号计数会错配函数体（首轮即栽在此，加 string-aware 扫描后修正）；(3) 头含 GraphDecompiler 全 include 块以解析所有 `UMaterialExpression*` 子类型签名；(4) 默认参数移到声明、out-of-line 去 `static`。round-trip 51/51 green。Impl.cpp（~2500L）现是规整的 out-of-line 成员定义，**可按关注点进一步拆 TU**（已不再是不可分的 inline 类体）。**六个巨石文件至此全部解耦。**
 - **Support 设置簇**（596-1122）= **needs-expose-large**：`ValidateSettings`/`ApplySettings` 调 `TryResolve{Domain,BlendMode,ShadingModel}`（63-79 留守 static）等多个，暴露面大；前序也因此回退过。
 剩余 Support.cpp 926 行 = 设置/校验簇 + 字面量创建 + 注释/reroute/默认值，更内聚。
 
@@ -71,8 +71,9 @@ Support.cpp **6866 → 4246 行**（抽出 2620 行，**~38%**），新增 6 个
 | `MaterialAssetGeneration/...MaterialGraphLayout.cpp`(新, 图布局) | 1886 |
 | `MaterialAssetGeneration/...ExpressionFactory.cpp`(新, 表达式工厂) | 1379 |
 | `MaterialAssetGeneration/...MaterialLiteralPropertyWriter.cpp`(新, 反射写入) | 267 |
-| `Decompiler/...GraphDecompiler.cpp` | ~~3972~~ ~~4134~~ **2875**（剩文件局部 inline 类，须 hoist 重构） |
+| `Decompiler/...GraphDecompiler.cpp` | ~~3972~~ ~~4134~~ ~~2875~~ **126**（含 FBridge 包装 + Editor 转发） |
 | `Decompiler/...GraphDecompilerHelpers.cpp`(新, 自由 helper) | ~1300 |
+| `Decompiler/...GraphDecompilerImpl.cpp`(新, 类成员 out-of-line) | ~2500（可再按关注点拆） |
 | `MaterialAssetGeneration/...GeneratorCodeExpressions.cpp` | ~~2969~~ ~~2817~~ ~~2609~~ ~~2075~~ **1807** |
 | `MaterialAssetGeneration/...GeneratorCode.cpp`(MaterialGenerator.cpp) | ~~2820~~ ~~2654~~ **2547** |
 | `MaterialAssetGeneration/...GeneratorCodeCalls.cpp` | ~~2162~~ ~~2082~~ **1312** |
