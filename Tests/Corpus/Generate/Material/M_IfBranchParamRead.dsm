@@ -1,0 +1,40 @@
+// Regression (bug #14): reading a parameter inside an if/else branch must SUCCEED.
+// Each branch references a VectorParameter (Lit / Dark). Those are lazily materialized into the
+// branch's value map the first time they are read, which the if-merge previously mistook for a
+// one-sided conditional assignment and rejected with "could not resolve both branch values for
+// '<param>'". Parameters can never be assignment targets, so only 'Color' is a real branch output.
+Shader(Name="DreamShaderTests/Generate/M_IfBranchParamRead", Root="Game")
+{
+    Properties = {
+        ScalarParameter Threshold = 0.5 [
+            Group="Surface";
+        ];
+        VectorParameter Lit = float4(1.0, 0.85, 0.2, 1.0) [
+            Group="Surface";
+        ];
+        VectorParameter Dark = float4(0.05, 0.05, 0.1, 1.0) [
+            Group="Surface";
+        ];
+    }
+
+    Settings = {
+        Domain = "Surface";
+        ShadingModel = "Unlit";
+        BlendMode = "Opaque";
+    }
+
+    Outputs = {
+        vec3 Color;
+        Base.EmissiveColor = Color;
+    }
+
+    Graph = {
+        float2 uv = UE.TexCoord(Index=0);
+        float mask = uv.x;
+        if (mask > Threshold) {
+            Color = Lit.rgb;
+        } else {
+            Color = Dark.rgb;
+        }
+    }
+}

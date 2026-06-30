@@ -103,6 +103,14 @@ Shader(Name="Materials/M_Suffix", Root="Game") {
 - **#11** if 合并两分支全新声明同名局部时按 ThenValue 分量数强制，`then=float3/else=float` 被静默广播。修复：合并前加分支类型一致性检查。
 - **#12** `FUInt32Property` 用 `ParseIntegerLiteral(int32)`，`3000000000` 溢出为负被拒。修复：用 `int64` lex + 范围检查，或 `LexTryParseString(uint32&)`。
 
+### #14 if 分支内读取参数导致生成失败（已修，2026-06-30）
+
+`if`/`else` 任一分支首次**读取**某 Property/Parameter 时，`TryCreatePropertyValue` 会把它惰性写入该分支的值表（`DreamShaderMaterialGeneratorCodeExpressions.cpp:2906` 的 `Values->Add`）。而 if 合并（`ExecuteIfStatement`）把"分支值表相对 base 的任何新增/变更"一律当作需在两分支间用 If 节点选择的输出，于是只在单边读到的参数（如 `Color = Lit.rgb;` 中的 `Lit`）被误判为"单边条件赋值"，在 `:503` 报 `Graph if statement could not resolve both branch values for '<param>'` —— **任何在 if 分支内读取参数的材质都无法生成**。参数永不可作为赋值目标，真正需在分支间选择的只有被赋值的局部/输出变量。
+
+**复现：** `Graph { float2 uv = UE.TexCoord(Index=0); float mask = uv.x; if (mask > Threshold) { Color = Lit.rgb; } else { Color = Dark.rgb; } }`（`Lit`/`Dark` 为 VectorParameter）。对照：现有 `M_IfBranchTypeMismatch` 之所以能跑到类型检查，是因为它分支体只用字面量、参数只在 condition（分支前）读，所以未触发。
+
+**修复：** 合并循环开头跳过 `FindPropertyDefinition(Name)` 命中的名字（声明的属性是读副作用噪声，非分支输出）；附带消除了原先为每个变更名重复构造条件/比较节点的浪费。回归夹具 `Tests/Corpus/Generate/Material/M_IfBranchParamRead.dsm`（`outcome=ok`），套件 51/51 green。根因模式同 #9：惰性物化 + 写入/读取侧语义不对称。**经由"多写样例材质 + 看生成 .ush"练习发现。**
+
 ## 建议落地顺序
 
 1. 先建 **Generate 层测试网**（`bTransient=true`，断言生成成功/失败 + 错误串 + 节点形态）。

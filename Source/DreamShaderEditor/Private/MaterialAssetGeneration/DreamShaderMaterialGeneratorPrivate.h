@@ -132,6 +132,22 @@ namespace UE::DreamShader::Editor::Private
 		bool bIsIntegerType = false;
 	};
 
+	// Stable identity token for an FCodeValue, used to dedupe/reuse generated expression nodes.
+	// Exposed (was a file-local static in CodeExpressions.cpp) so EvaluateMathBuiltinCall could move
+	// to its own TU while other FCodeGraphBuilder members keep calling it.
+	FString MakeCodeValueReuseToken(const FCodeValue& Value);
+
+	// CodeCalls function-call helpers, exposed (were a file-local anonymous namespace in
+	// CodeCalls.cpp) so the material/virtual-function-call cluster could move to its own TU.
+	bool ApplyFunctionCallOutputType(
+		UMaterialExpressionMaterialFunctionCall* FunctionCall,
+		int32 FunctionOutputIndex,
+		int32& InOutComponentCount,
+		bool& bInOutIsTextureObject,
+		bool& bInOutIsSubstrateMaterial);
+	FString BuildFunctionSourceArgumentList(const FTextShaderFunctionDefinition& Function, const TArray<FString>& ResultVariableNames);
+	bool IsSubstrateTypeUnsupportedForEngine(const FString& TypeName);
+
 	bool ParseCodeExpression(const FString& InExpression, TSharedPtr<FCodeExpression>& OutExpression, FString& OutError);
 	bool ParseCodeStatements(
 		const FString& InCode,
@@ -165,6 +181,48 @@ namespace UE::DreamShader::Editor::Private
 		FString& OutError);
 	bool TryResolveDreamShaderAssetReference(const FString& InText, FString& OutObjectPath, FString& OutError);
 	UMaterialExpression* CreateScalarLiteralExpression(UMaterial* Material, double Value, int32 PositionY);
+	// Thin wrapper over UMaterialEditingLibrary::CreateMaterialExpressionEx, shared by literal
+	// creation, the expression factory, and graph layout (reroute/comment nodes). Exposed (was a
+	// file-local static in Support.cpp) so the graph-layout cluster could move to its own TU.
+	UMaterialExpression* CreateOwnedMaterialExpression(
+		UMaterial* Material,
+		UMaterialFunction* MaterialFunction,
+		UClass* ExpressionClass,
+		int32 PositionX,
+		int32 PositionY);
+	// Literal / input-value helpers shared by the expression factory (own TU) and staying code.
+	// Exposed (were file-local statics in Support.cpp) so the factory cluster could move out.
+	bool TryResolvePropertyReference(
+		const FString& InReferenceName,
+		const TMap<FString, UMaterialExpression*>& AvailableExpressions,
+		UMaterialExpression*& OutExpression);
+	UMaterialExpression* CreateScalarLiteralExpressionEx(
+		UMaterial* Material,
+		UMaterialFunction* MaterialFunction,
+		double Value,
+		int32 PositionY);
+	UMaterialExpression* CreateVectorLiteralExpression(
+		UMaterial* Material,
+		UMaterialFunction* MaterialFunction,
+		const TArray<double>& Components,
+		int32 ExpectedComponentCount,
+		int32 PositionY);
+	bool ResolveExpressionInputValue(
+		UMaterial* Material,
+		UMaterialFunction* MaterialFunction,
+		const FString& InValueText,
+		const TMap<FString, UMaterialExpression*>& AvailableExpressions,
+		int32 ExpectedComponentCount,
+		int32 PositionY,
+		UMaterialExpression*& OutExpression,
+		FString& OutError);
+	// UE builtin argument parsing, shared by the expression factory (own TU) and staying code.
+	bool TryGetUEBuiltinArgument(const FTextShaderPropertyDefinition& Property, const TCHAR* Key, FString& OutValue);
+	bool ValidateUEBuiltinArgumentNames(
+		const FTextShaderPropertyDefinition& Property,
+		TConstArrayView<const TCHAR*> AllowedArgumentNames,
+		FString& OutError);
+	bool TryResolvePositionOrigin(const FString& InValue, EPositionOrigin& OutValue);
 	FString EnsureTopLevelReturn(const FString& InHLSL);
 	bool PrepareCustomNodeCode(
 		const FTextShaderDefinition& Definition,
@@ -261,6 +319,7 @@ namespace UE::DreamShader::Editor::Private
 	FProperty* FindMaterialExpressionArgumentProperty(UClass* ExpressionClass, const FString& ArgumentName);
 	bool IsMaterialExpressionInputProperty(const FProperty* Property);
 	bool SetMaterialExpressionLiteralProperty(UObject* Target, FProperty* Property, const FString& ValueText, FString& OutError);
+	bool SetMaterialExpressionLiteralProperty(UObject* Target, FProperty* Property, void* ValuePtr, const FString& ValueText, FString& OutError);
 	bool ApplyExpressionMetadata(UMaterialExpression* Expression, const FTextShaderMetadata& Metadata, FString& OutError);
 
 	class FCodeGraphBuilder

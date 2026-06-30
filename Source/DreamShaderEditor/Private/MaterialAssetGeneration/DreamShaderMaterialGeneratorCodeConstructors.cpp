@@ -1,0 +1,182 @@
+// Copyright (c) 2026 TypeDreamMoon. All rights reserved.
+//
+// FCodeGraphBuilder vector/integer constructor handling: classify constructor names
+// (int/int2.., float2/vec3..), resolve their component counts, and build the AppendVector graph for
+// a constructor call. Extracted byte-for-byte from DreamShaderMaterialGeneratorCodeExpressions.cpp;
+// the member declarations stay in the FCodeGraphBuilder class header, so call sites are unchanged.
+
+#include "DreamShaderMaterialGeneratorCodeShared.h"
+
+#include "Misc/ScopedSlowTask.h"
+
+namespace UE::DreamShader::Editor::Private
+{
+	bool FCodeGraphBuilder::IsIntegerConstructorName(const FString& InName)
+	{
+		return InName.Equals(TEXT("int"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("int2"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("int3"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("int4"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("ivec2"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("ivec3"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("ivec4"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("uint"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("uint2"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("uint3"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("uint4"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("uvec2"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("uvec3"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("uvec4"), ESearchCase::IgnoreCase);
+	}
+
+	bool FCodeGraphBuilder::IsVectorConstructorName(const FString& InName)
+	{
+		return InName.Equals(TEXT("float"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("float1"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("float2"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("float3"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("float4"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("vec2"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("vec3"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("vec4"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("half"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("half1"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("half2"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("half3"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("half4"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("int"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("int2"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("int3"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("int4"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("ivec2"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("ivec3"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("ivec4"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("uint"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("uint2"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("uint3"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("uint4"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("uvec2"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("uvec3"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("uvec4"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("bool"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("bool2"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("bool3"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("bool4"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("bvec2"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("bvec3"), ESearchCase::IgnoreCase)
+			|| InName.Equals(TEXT("bvec4"), ESearchCase::IgnoreCase);
+	}
+
+	int32 FCodeGraphBuilder::GetConstructorComponentCount(const FString& InName)
+	{
+		if (InName.EndsWith(TEXT("2")))
+		{
+			return 2;
+		}
+		if (InName.EndsWith(TEXT("3")))
+		{
+			return 3;
+		}
+		if (InName.EndsWith(TEXT("4")))
+		{
+			return 4;
+		}
+		return 1;
+	}
+
+	bool FCodeGraphBuilder::EvaluateVectorConstructor(
+		const FString& ConstructorName,
+		const TArray<FCodeCallArgument>& Arguments,
+		FCodeValue& OutValue,
+		FString& OutError)
+	{
+		const int32 ExpectedComponents = GetConstructorComponentCount(ConstructorName);
+		TArray<FCodeValue> Parts;
+
+		for (const FCodeCallArgument& Argument : Arguments)
+		{
+			if (Argument.bIsNamed)
+			{
+				OutError = FString::Printf(TEXT("Constructor '%s' does not accept named arguments."), *ConstructorName);
+				return false;
+			}
+
+			FCodeValue EvaluatedArgument;
+			if (!EvaluateExpression(Argument.Expression, EvaluatedArgument, OutError))
+			{
+				return false;
+			}
+
+			if (EvaluatedArgument.bIsTextureObject)
+			{
+				OutError = FString::Printf(TEXT("Constructor '%s' cannot use Texture2D arguments."), *ConstructorName);
+				return false;
+			}
+			if (EvaluatedArgument.bIsMaterialAttributes)
+			{
+				OutError = FString::Printf(TEXT("Constructor '%s' cannot use MaterialAttributes arguments."), *ConstructorName);
+				return false;
+			}
+			if (EvaluatedArgument.bIsSubstrateMaterial)
+			{
+				OutError = FString::Printf(TEXT("Constructor '%s' cannot use Substrate arguments."), *ConstructorName);
+				return false;
+			}
+
+			Parts.Add(EvaluatedArgument);
+		}
+
+		if (ExpectedComponents == 1)
+		{
+			if (Parts.Num() != 1 || Parts[0].ComponentCount != 1)
+			{
+				OutError = FString::Printf(TEXT("Constructor '%s' expects a single scalar input."), *ConstructorName);
+				return false;
+			}
+
+			OutValue = Parts[0];
+			return true;
+		}
+
+		if (Parts.Num() == 1 && Parts[0].ComponentCount == 1)
+		{
+			TArray<FCodeValue> ReplicatedParts;
+			for (int32 Index = 0; Index < ExpectedComponents; ++Index)
+			{
+				ReplicatedParts.Add(Parts[0]);
+			}
+			if (!AppendValues(ReplicatedParts, OutValue, OutError))
+			{
+				return false;
+			}
+			OutValue.ComponentCount = ExpectedComponents;
+			return true;
+		}
+
+		if (Parts.Num() == 1 && Parts[0].ComponentCount == ExpectedComponents)
+		{
+			OutValue = Parts[0];
+			return true;
+		}
+
+		int32 TotalComponents = 0;
+		for (const FCodeValue& Part : Parts)
+		{
+			TotalComponents += Part.ComponentCount;
+		}
+
+		if (TotalComponents != ExpectedComponents)
+		{
+			OutError = FString::Printf(TEXT("Constructor '%s' expects %d total components but got %d."), *ConstructorName, ExpectedComponents, TotalComponents);
+			return false;
+		}
+
+		if (!AppendValues(Parts, OutValue, OutError))
+		{
+			return false;
+		}
+
+		OutValue.ComponentCount = ExpectedComponents;
+		return true;
+	}
+}
