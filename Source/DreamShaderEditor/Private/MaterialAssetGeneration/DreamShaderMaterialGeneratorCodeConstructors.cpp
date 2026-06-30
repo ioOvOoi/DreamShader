@@ -91,6 +91,64 @@ namespace UE::DreamShader::Editor::Private
 		FString& OutError)
 	{
 		const int32 ExpectedComponents = GetConstructorComponentCount(ConstructorName);
+
+		// Constant-fold: when every component is a numeric literal, emit a single ConstantNVector node
+		// instead of N scalar Constant nodes + (N-1) AppendVector nodes. This keeps generated graphs
+		// compact for the very common cases (vec3(0,0,0), vec4(0.8,0.3,0.1,1), clamp bounds, etc.).
+		// Integer constructors are excluded so their integer semantics are not collapsed into floats.
+		if (ExpectedComponents >= 2 && !IsIntegerConstructorName(ConstructorName))
+		{
+			TArray<double> ConstantComponents;
+			bool bAllConstantScalars = true;
+			for (const FCodeCallArgument& Argument : Arguments)
+			{
+				double Scalar = 0.0;
+				if (Argument.bIsNamed || !TryExtractScalarLiteral(Argument.Expression, Scalar))
+				{
+					bAllConstantScalars = false;
+					break;
+				}
+				ConstantComponents.Add(Scalar);
+			}
+
+			// Replicate a single literal across all channels: vec3(0.5) -> (0.5, 0.5, 0.5).
+			if (bAllConstantScalars && ConstantComponents.Num() == 1 && ExpectedComponents > 1)
+			{
+				ConstantComponents.Init(ConstantComponents[0], ExpectedComponents);
+			}
+
+			if (bAllConstantScalars && ConstantComponents.Num() == ExpectedComponents)
+			{
+				TArray<FString> ReuseKeyParts;
+				ReuseKeyParts.Reserve(ConstantComponents.Num());
+				for (const double Component : ConstantComponents)
+				{
+					ReuseKeyParts.Add(FString::SanitizeFloat(Component));
+				}
+				const FString ReuseKey = FString::Printf(TEXT("constvec%d|%s"), ExpectedComponents, *FString::Join(ReuseKeyParts, TEXT("|")));
+				if (TryFindReusableExpressionValue(ReuseKey, OutValue))
+				{
+					return true;
+				}
+
+				UMaterialExpression* VectorExpression = CreateVectorLiteralExpression(
+					Material, MaterialFunction, ConstantComponents, ExpectedComponents, ConsumeNodeY());
+				if (!VectorExpression)
+				{
+					OutError = FString::Printf(TEXT("Failed to create a constant float%d node for constructor '%s'."), ExpectedComponents, *ConstructorName);
+					return false;
+				}
+
+				OutValue = FCodeValue{};
+				OutValue.Expression = VectorExpression;
+				OutValue.OutputIndex = 0;
+				OutValue.ComponentCount = ExpectedComponents;
+				OutValue.bHasAuthoritativeComponentCount = true;
+				AddReusableExpressionValue(ReuseKey, OutValue);
+				return true;
+			}
+		}
+
 		TArray<FCodeValue> Parts;
 
 		for (const FCodeCallArgument& Argument : Arguments)
