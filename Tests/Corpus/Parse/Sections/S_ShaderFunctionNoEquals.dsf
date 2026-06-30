@@ -1,0 +1,13 @@
+// F3: ShaderFunction section bodies also accept the optional-'=' form.
+ShaderFunction(Name="Functions/F_NoEquals")
+{
+    Inputs {
+        vec3 InColor;
+    }
+    Outputs {
+        vec3 OutColor;
+    }
+    Graph {
+        OutColor = InColor * 0.5;
+    }
+}

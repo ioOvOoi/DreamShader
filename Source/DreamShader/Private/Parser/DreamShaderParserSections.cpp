@@ -342,6 +342,35 @@ namespace UE::DreamShader::Private
 
 		for (const FString& Entry : SplitMetadataEntries(MetadataBlock))
 		{
+			// Slider(min, max) shorthand -> SliderMin / SliderMax reflected properties. It has no '='
+			// so it must be handled before the Key=Value split below.
+			const FString TrimmedEntry = Entry.TrimStartAndEnd();
+			if (TrimmedEntry.StartsWith(TEXT("Slider("), ESearchCase::IgnoreCase) && TrimmedEntry.EndsWith(TEXT(")")))
+			{
+				const FString Inner = TrimmedEntry.Mid(7, TrimmedEntry.Len() - 8);
+				const TArray<FString> Bounds = SplitTopLevelDelimited(Inner, TCHAR(','));
+				double SliderMinValue = 0.0;
+				double SliderMaxValue = 0.0;
+				if (Bounds.Num() != 2
+					|| !ParseScalarLiteral(Bounds[0].TrimStartAndEnd(), SliderMinValue)
+					|| !ParseScalarLiteral(Bounds[1].TrimStartAndEnd(), SliderMaxValue))
+				{
+					OutError = FString::Printf(TEXT("Metadata 'Slider(min, max)' requires exactly two numeric bounds: '%s'."), *TrimmedEntry);
+					return false;
+				}
+
+				const FString SliderMinKey = NormalizeSettingKey(TEXT("SliderMin"));
+				const FString SliderMaxKey = NormalizeSettingKey(TEXT("SliderMax"));
+				if (OutMetadata.ReflectedProperties.Contains(SliderMinKey) || OutMetadata.ReflectedProperties.Contains(SliderMaxKey))
+				{
+					OutError = FString::Printf(TEXT("Metadata SliderMin/SliderMax is declared more than once (entry '%s')."), *TrimmedEntry);
+					return false;
+				}
+				OutMetadata.ReflectedProperties.Add(SliderMinKey, FString::SanitizeFloat(SliderMinValue));
+				OutMetadata.ReflectedProperties.Add(SliderMaxKey, FString::SanitizeFloat(SliderMaxValue));
+				continue;
+			}
+
 			FString Key;
 			FString Value;
 			if (!SplitTopLevelAssignment(Entry, Key, Value))
@@ -1407,10 +1436,9 @@ namespace UE::DreamShader::Private
 				return false;
 			}
 
-			if (!Scanner.Expect(TCHAR('='), OutError))
-			{
-				return false;
-			}
+			// The '=' between a section name and its { } block is optional sugar:
+			// `Properties { ... }` and `Properties = { ... }` parse identically.
+			Scanner.TryConsume(TCHAR('='));
 
 			FString SectionBody;
 			int32 SectionBodyStartIndex = INDEX_NONE;
@@ -1496,10 +1524,9 @@ namespace UE::DreamShader::Private
 				return false;
 			}
 
-			if (!Scanner.Expect(TCHAR('='), OutError))
-			{
-				return false;
-			}
+			// The '=' between a section name and its { } block is optional sugar:
+			// `Properties { ... }` and `Properties = { ... }` parse identically.
+			Scanner.TryConsume(TCHAR('='));
 
 			FString SectionBody;
 			if (!Scanner.ExtractBalancedBlock(SectionBody, OutError))
@@ -1522,8 +1549,10 @@ namespace UE::DreamShader::Private
 					return false;
 				}
 			}
-			else if (SectionName.Equals(TEXT("Code"), ESearchCase::IgnoreCase))
+			else if (SectionName.Equals(TEXT("Code"), ESearchCase::IgnoreCase)
+				|| SectionName.Equals(TEXT("Graph"), ESearchCase::IgnoreCase))
 			{
+				// `Graph` is the unified body keyword; `Code` stays accepted as a legacy alias.
 				OutFunction.HLSL = SectionBody.TrimStartAndEnd();
 			}
 			else
@@ -1553,10 +1582,9 @@ namespace UE::DreamShader::Private
 				return false;
 			}
 
-			if (!Scanner.Expect(TCHAR('='), OutError))
-			{
-				return false;
-			}
+			// The '=' between a section name and its { } block is optional sugar:
+			// `Properties { ... }` and `Properties = { ... }` parse identically.
+			Scanner.TryConsume(TCHAR('='));
 
 			FString SectionBody;
 			int32 SectionBodyStartIndex = INDEX_NONE;
@@ -1650,10 +1678,9 @@ namespace UE::DreamShader::Private
 				return false;
 			}
 
-			if (!Scanner.Expect(TCHAR('='), OutError))
-			{
-				return false;
-			}
+			// The '=' between a section name and its { } block is optional sugar:
+			// `Properties { ... }` and `Properties = { ... }` parse identically.
+			Scanner.TryConsume(TCHAR('='));
 
 			FString SectionBody;
 			if (!Scanner.ExtractBalancedBlock(SectionBody, OutError))

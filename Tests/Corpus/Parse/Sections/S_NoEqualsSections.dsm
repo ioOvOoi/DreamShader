@@ -1,0 +1,20 @@
+// F3: the '=' between a section name and its { } block is optional.
+// F1: [Slider(min, max)] metadata shorthand expands to SliderMin/SliderMax.
+Shader(Name="DreamShaderTests/Corpus/M_NoEqualsSections")
+{
+    Properties {
+        ScalarParameter Rough = 0.5 [Group="Surface"; Slider(0, 1)];
+    }
+    Settings {
+        Domain = "Surface";
+        ShadingModel = "Unlit";
+        BlendMode = "Opaque";
+    }
+    Outputs {
+        vec3 Color;
+        Base.EmissiveColor = Color;
+    }
+    Graph {
+        Color = vec3(Rough, Rough, Rough);
+    }
+}
