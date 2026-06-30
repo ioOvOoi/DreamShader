@@ -690,6 +690,36 @@ namespace UE::DreamShader::Editor::Private::Tests
 		return Count;
 	}
 
+	// True when the named input pin of the first node of ClassName is connected to another expression.
+	bool IsNamedInputConnected(UMaterial* Material, const TCHAR* ClassName, const TCHAR* InputName)
+	{
+		if (!Material || !ClassName || !InputName)
+		{
+			return false;
+		}
+		for (auto&& ExpressionPtr : Material->GetExpressions())
+		{
+			UMaterialExpression* Expression = ExpressionPtr;
+			if (!Expression || Expression->GetClass()->GetName() != ClassName)
+			{
+				continue;
+			}
+			for (int32 InputIndex = 0; InputIndex < 32; ++InputIndex)
+			{
+				FExpressionInput* Input = Expression->GetInput(InputIndex);
+				if (!Input)
+				{
+					break;
+				}
+				if (Expression->GetInputName(InputIndex).ToString().Equals(InputName, ESearchCase::IgnoreCase))
+				{
+					return Input->Expression != nullptr;
+				}
+			}
+		}
+		return false;
+	}
+
 	bool GenerateAndLoadMaterial(
 		FAutomationTestBase& Test,
 		FScopedDreamShaderAutomationArtifacts& Artifacts,
@@ -929,6 +959,52 @@ Shader(Name="DreamShaderTests/Automation/%s")
 			1);
 	}
 
+	return true;
+}
+
+// Parameter input-wiring call form: a parameter that owns input pins can be configured from the Graph
+// with Param(InputPin = expr). Generation only succeeds if each named argument resolves to a real
+// input pin and is wired, so this both exercises and pins that path (ChannelMask Input + texture
+// sample Coordinates), asserting the pins end up connected.
+IMPLEMENT_CUSTOM_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderParameterInputWiringTest,
+	FDreamShaderQuietAutomationTestBase,
+	"DreamShader.Gen.Parameters.InputWiring",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FDreamShaderParameterInputWiringTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_ParamInputs"));
+	const FString Source = FString::Printf(TEXT(R"(
+Shader(Name="DreamShaderTests/Automation/%s")
+{
+    Properties = {
+        VectorParameter Col = float4(0.8, 0.4, 0.2, 1.0) [Group="T";];
+        ChannelMaskParameter Msk [Group="T";];
+        TextureSampleParameterCube TexCube [Group="T";];
+    }
+    Settings = { Domain = "Surface"; ShadingModel = "Unlit"; BlendMode = "Opaque"; }
+    Outputs = { vec3 Color; Base.EmissiveColor = Color; }
+    Graph = {
+        float3 dir = float3(0.0, 0.0, 1.0);
+        Color = vec3(Msk(Input = Col)) + TexCube(Coordinates = dir).rgb;
+    }
+}
+)"), *AssetName);
+
+	UMaterial* Material = nullptr;
+	if (!GenerateAndLoadMaterial(*this, Artifacts, AssetName, Source, Material))
+	{
+		return false;
+	}
+
+	TestTrue(TEXT("ChannelMaskParameter Input pin is wired by Msk(Input=...)"),
+		IsNamedInputConnected(Material, TEXT("MaterialExpressionChannelMaskParameter"), TEXT("Input")));
+	TestTrue(TEXT("TextureSampleParameterCube Coordinates pin is wired by TexCube(Coordinates=...)"),
+		IsNamedInputConnected(Material, TEXT("MaterialExpressionTextureSampleParameterCube"), TEXT("Coordinates")));
 	return true;
 }
 
