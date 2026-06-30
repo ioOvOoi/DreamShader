@@ -131,6 +131,29 @@ M_SinCos_2031e9e7.ush(7,7): error: redefinition of 'Luminance'
 
 **测试网盲区结论：** asset-gen 绿 ≠ shader-compile 绿。深度正确性须 `UnrealBridgeMaterialLibrary.get_material_compile_errors(path,"SM6","Default")`（或编辑器内打开材质看统计面板），应纳入回归。
 
+### #16 DynamicParameter 无法生成（已修，2026-06-30）
+
+**由新增的参数生成测试 `DreamShader.Gen.Parameters.NodeCreation` 发现。** `DynamicParameter` 能正常解析（`ParameterExpressions.ParseAll` 早已覆盖），但生成时整材质中止：
+
+```
+M_ParamGen.dsm(12,9): Failed to evaluate Graph assignment for 'Color'. Property 'Dyn':
+  'MaterialExpressionDynamicParameter' does not expose a ParameterName property.
+（修第一层后）Metadata property 'group' is not a reflected property on 'MaterialExpressionDynamicParameter'.
+```
+
+**根因：** `UMaterialExpressionDynamicParameter` 是调色板里**唯一不继承** `UMaterialExpressionParameter` 的参数节点。它既没有单一 `ParameterName`（改用 `ParamNames[]`，每个输出一个名），也没有 `Group`/`SortPriority` 组织字段。生成器对所有参数节点统一反射设这两组属性，两处都 hard-fail。
+
+**修复（`DreamShaderExpressionFactory.cpp`）：**
+1. `SetExpressionParameterName` 特判 `Cast<UMaterialExpressionDynamicParameter>`：把声明标识符写进 `ParamNames[0]`（主输出名），其余输出保留引擎默认。
+2. `ApplyExpressionMetadata`：`Group`/`SortPriority`/`Desc` 是咨询性的参数面板组织字段；目标节点不暴露时**告警跳过**而非中止生成。作者手写的其他反射属性仍 hard-fail（保留 typo 检测）。
+3. `DefaultValue`（FLinearColor）走既有 vector 默认路径，无需改动。
+
+**端到端验证：** ParamNames[0]=="Dyn"、DefaultValue 透传 `(0.15,0.2,0.3,1.0)`、M_ParamGen 着色器 CLEAN(SM6)。
+
+**附带核实 3 个存疑参数类型：** SpriteTextureSampler 生成+编译均 OK；**FontSampleParameter 生成 OK 但 shader 报 `(Node FontSampleParameter) Missing input Font`** —— 字体采样节点固有需绑定 Font 资产，非编译器缺陷（DSL 暂无 Font 默认注入路径，记为已知局限）。
+
+**再次印证 #15 教训：** 节点数对 + `get_material_compile_errors` CLEAN **双绿仍可能掩盖生成期 error**——失败的 Graph 赋值回退到可编译默认值，首轮 live 探针因此误判 DynamicParameter 无恙。深度验证须额外 grep 生成日志 `LogDreamShader: Error`。
+
 ## 建议落地顺序
 
 1. 先建 **Generate 层测试网**（`bTransient=true`，断言生成成功/失败 + 错误串 + 节点形态）。
