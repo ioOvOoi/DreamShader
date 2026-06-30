@@ -672,6 +672,24 @@ namespace UE::DreamShader::Editor::Private::Tests
 		return Count;
 	}
 
+	// Count by exact class name -- lets a data-driven test assert across many parameter node types
+	// without pulling in a header per UMaterialExpression* subclass.
+	int32 CountMaterialExpressionsOfClassName(UMaterial* Material, const TCHAR* ClassName)
+	{
+		int32 Count = 0;
+		if (Material && ClassName)
+		{
+			for (auto&& ExpressionPtr : Material->GetExpressions())
+			{
+				if (ExpressionPtr && ExpressionPtr->GetClass()->GetName() == ClassName)
+				{
+					++Count;
+				}
+			}
+		}
+		return Count;
+	}
+
 	bool GenerateAndLoadMaterial(
 		FAutomationTestBase& Test,
 		FScopedDreamShaderAutomationArtifacts& Artifacts,
@@ -845,6 +863,72 @@ Shader(Name="DreamShaderTests/Automation/%s")
 		CountMaterialExpressionsOfClass<UMaterialExpressionVectorParameter>(Material), 1);
 	TestEqual(TEXT("DynamicParameter generates exactly one node"),
 		CountMaterialExpressionsOfClass<UMaterialExpressionDynamicParameter>(Material), 1);
+	return true;
+}
+
+// Generation coverage for the "miscellaneous" parameter node types beyond Scalar/Vector/Dynamic.
+// Each type is declared (with or without an inline default) and referenced so lazy materialization
+// creates its node; the test asserts the matching UMaterialExpression*Parameter class is generated.
+// This pins the parameter-cluster fixes (CurveAtlasRow scalar-default no longer aborts; the
+// TextureSample family seeds a default texture) and guards the rest from regression.
+// Texture-OBJECT and asset-required types (TextureObject/Collection/SparseVolume*, RVT) are out of
+// scope here: they output a texture object or need a bound asset to be usable, which the
+// node-creation axis cannot exercise cleanly -- they are tracked as follow-ups in the findings doc.
+IMPLEMENT_CUSTOM_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderOtherParameterNodeGenerationTest,
+	FDreamShaderQuietAutomationTestBase,
+	"DreamShader.Gen.Parameters.OtherNodeCreation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FDreamShaderOtherParameterNodeGenerationTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	struct FOtherParameterCase
+	{
+		const TCHAR* NodeType;        // DSL keyword
+		const TCHAR* Default;         // inline default literal, or nullptr to declare without one
+		const TCHAR* RefExpr;         // graph expression that references the parameter and yields a vec3
+		const TCHAR* ExpectedClass;   // expected UMaterialExpression subclass name
+	};
+
+	static const FOtherParameterCase Cases[] = {
+		{ TEXT("DoubleVectorParameter"),        TEXT("float4(1, 2, 3, 4)"),    TEXT("P.rgb"),   TEXT("MaterialExpressionDoubleVectorParameter") },
+		{ TEXT("CurveAtlasRowParameter"),       TEXT("float3(0.5, 0.5, 0.5)"), TEXT("P"),       TEXT("MaterialExpressionCurveAtlasRowParameter") },
+		{ TEXT("ChannelMaskParameter"),         nullptr,                       TEXT("vec3(P)"), TEXT("MaterialExpressionChannelMaskParameter") },
+		{ TEXT("StaticComponentMaskParameter"), TEXT("float4(1, 1, 0, 0)"),    TEXT("P.rgb"),   TEXT("MaterialExpressionStaticComponentMaskParameter") },
+		{ TEXT("TextureSampleParameter2D"),     nullptr,                       TEXT("P.rgb"),   TEXT("MaterialExpressionTextureSampleParameter2D") },
+		{ TEXT("FontSampleParameter"),          nullptr,                       TEXT("P.rgb"),   TEXT("MaterialExpressionFontSampleParameter") },
+	};
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	for (const FOtherParameterCase& Case : Cases)
+	{
+		const FString AssetName = MakeUniqueTestAssetName(TEXT("M_OtherParam"));
+		const FString DefaultClause = Case.Default ? FString::Printf(TEXT(" = %s"), Case.Default) : FString();
+		const FString Source = FString::Printf(TEXT(R"(
+Shader(Name="DreamShaderTests/Automation/%s")
+{
+    Properties = { %s P%s [Group="Gen";]; }
+    Settings = { Domain = "Surface"; ShadingModel = "Unlit"; BlendMode = "Opaque"; }
+    Outputs = { vec3 Color; Base.EmissiveColor = Color; }
+    Graph = { Color = %s; }
+}
+)"), *AssetName, Case.NodeType, *DefaultClause, Case.RefExpr);
+
+		UMaterial* Material = nullptr;
+		if (!GenerateAndLoadMaterial(*this, Artifacts, AssetName, Source, Material))
+		{
+			// GenerateAndLoadMaterial already recorded the failure; keep going so every type is covered.
+			continue;
+		}
+
+		TestEqual(
+			*FString::Printf(TEXT("%s generates exactly one %s node"), Case.NodeType, Case.ExpectedClass),
+			CountMaterialExpressionsOfClassName(Material, Case.ExpectedClass),
+			1);
+	}
+
 	return true;
 }
 
