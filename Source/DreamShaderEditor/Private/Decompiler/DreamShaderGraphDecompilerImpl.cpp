@@ -1117,7 +1117,19 @@ namespace UE::DreamShader::Editor::Private
 		TArray<FString> ArgumentTexts;
 		ArgumentTexts.Add(FString::Printf(TEXT("Class=\"%s\""), *GetMaterialExpressionShortName(Expression ? Expression->GetClass() : nullptr)));
 		ArgumentTexts.Add(FString::Printf(TEXT("OutputType=\"%s\""), *OutputType));
-		if (OutputIndex > 0)
+		// A name-based output selector (Output="...") and OutputIndex are mutually exclusive on a
+		// UE.Expression -- the generator rejects emitting both ("cannot use OutputName/Output together
+		// with OutputIndex"). Custom nodes select their secondary outputs by name, so when an
+		// Output/OutputName argument is already present, suppress the redundant OutputIndex so the
+		// decompiled call round-trips. OutputType is unaffected: it was resolved from the real
+		// OutputIndex by the caller, so the named output still carries its correct type.
+		const bool bHasNamedOutputSelector = Arguments.ContainsByPredicate(
+			[](const FExpressionCallArgument& Argument)
+			{
+				return Argument.Name.Equals(TEXT("Output"), ESearchCase::IgnoreCase)
+					|| Argument.Name.Equals(TEXT("OutputName"), ESearchCase::IgnoreCase);
+			});
+		if (OutputIndex > 0 && !bHasNamedOutputSelector)
 		{
 			ArgumentTexts.Add(FString::Printf(TEXT("OutputIndex=%d"), OutputIndex));
 		}

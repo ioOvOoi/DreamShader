@@ -834,7 +834,10 @@ namespace UE::DreamShader::Private
 		{
 			FString Key;
 			FString Value;
-			if (!Statement.Split(TEXT("="), &Key, &Value, ESearchCase::CaseSensitive))
+			// Use the quote/paren-aware top-level split (as the 6 other Key=Value sites do) so a setting
+			// whose value is a struct/quoted literal containing '=' (e.g. (R=1,G=0,B=0)) splits on the
+			// assignment, not the first inner '='.
+			if (!SplitTopLevelAssignment(Statement, Key, Value))
 			{
 				OutError = FString::Printf(TEXT("Invalid setting declaration '%s'."), *Statement);
 				return false;

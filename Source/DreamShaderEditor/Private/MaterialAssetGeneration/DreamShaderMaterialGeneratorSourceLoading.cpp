@@ -80,6 +80,11 @@ namespace UE::DreamShader::Editor
 				{
 					return false;
 				}
+				// Emit a blank placeholder line where the import directive was. The diagnostics mapper
+				// counts emitted lines within each file's Begin/End block to recover physical line
+				// numbers; dropping the import line outright would shift every subsequent line up by the
+				// number of imports above it, so errors in this file would report the wrong line.
+				SanitizedSourceText += TEXT("\n");
 				continue;
 			}
 

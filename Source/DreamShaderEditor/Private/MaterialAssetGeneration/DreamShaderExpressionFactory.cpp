@@ -334,6 +334,22 @@ namespace UE::DreamShader::Editor::Private
 			return true;
 		}
 
+		// A few parameter nodes are classified as Vector by output component count yet expose a scalar
+		// DefaultValue -- e.g. CurveAtlasRowParameter derives from UMaterialExpressionScalarParameter and
+		// its DefaultValue is a single float (the row position). Writing a (R=,G=,B=,A=) literal to a
+		// float property fails outright and aborts generation, so when the reflected DefaultValue is a
+		// scalar, write a single channel instead.
+		if (Property.Type != ETextShaderPropertyType::Scalar
+			&& (CastField<FFloatProperty>(DefaultValueProperty) != nullptr
+				|| CastField<FDoubleProperty>(DefaultValueProperty) != nullptr))
+		{
+			return SetMaterialExpressionLiteralProperty(
+				Expression,
+				DefaultValueProperty,
+				FString::SanitizeFloat(Property.VectorDefaultValue.R),
+				OutError);
+		}
+
 		if (Property.Type == ETextShaderPropertyType::Scalar)
 		{
 			if (Property.ParameterNodeType.Equals(TEXT("StaticBoolParameter"), ESearchCase::IgnoreCase)
@@ -404,6 +420,17 @@ namespace UE::DreamShader::Editor::Private
 
 		if (UMaterialExpressionTextureBase* TextureExpression = Cast<UMaterialExpressionTextureBase>(Expression))
 		{
+			// A TextureSample parameter declared without an inline default would otherwise carry a null
+			// Texture and fail to shader-compile ("Missing input Texture"). Seed the engine's
+			// type-correct default texture first so a default-less sampler parameter still produces a
+			// compilable material; AutoSetSampleType then derives the sampler type from it.
+			if (!TextureExpression->Texture)
+			{
+				if (UMaterialExpressionTextureSampleParameter* SampleParameter = Cast<UMaterialExpressionTextureSampleParameter>(TextureExpression))
+				{
+					SampleParameter->SetDefaultTexture();
+				}
+			}
 			TextureExpression->AutoSetSampleType();
 		}
 
