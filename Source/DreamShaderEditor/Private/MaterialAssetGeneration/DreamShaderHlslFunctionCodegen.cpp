@@ -167,7 +167,14 @@ namespace UE::DreamShader::Editor::Private
 
 	FString BuildGeneratedFunctionSymbolName(const FTextShaderFunctionDefinition& Function)
 	{
-		return UE::DreamShader::SanitizeIdentifier(Function.Name);
+		// Prefix every generated HLSL function so a DreamShaderLang function name can never collide
+		// with one of Unreal's global shader intrinsics. Without this, a user function named e.g.
+		// "Luminance" emits `float Luminance(float3)` into the material's Custom-node include, which
+		// redefines /Engine/Private/Common.ush's built-in Luminance and fails shader compilation with
+		// "redefinition of 'Luminance'". This name is the single source of truth for the function's
+		// definition, its inter-function call rewriting, and the Custom-node call site, so prefixing
+		// here keeps all three consistent.
+		return TEXT("DreamShaderFn_") + UE::DreamShader::SanitizeIdentifier(Function.Name);
 	}
 
 	static uint32 GetSourcePathHash(const FString& SourceFilePath)

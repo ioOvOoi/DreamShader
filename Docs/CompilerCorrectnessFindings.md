@@ -111,6 +111,26 @@ Shader(Name="Materials/M_Suffix", Root="Game") {
 
 **修复：** 合并循环开头跳过 `FindPropertyDefinition(Name)` 命中的名字（声明的属性是读副作用噪声，非分支输出）；附带消除了原先为每个变更名重复构造条件/比较节点的浪费。回归夹具 `Tests/Corpus/Generate/Material/M_IfBranchParamRead.dsm`（`outcome=ok`），套件 51/51 green。根因模式同 #9：惰性物化 + 写入/读取侧语义不对称。**经由"多写样例材质 + 看生成 .ush"练习发现。**
 
+### #15 生成的 HLSL 函数名与引擎内建着色器函数全局命名冲突（已修，2026-06-30）
+
+**只在着色器编译期暴露，资产生成期不报错** —— 这是此前测试网的盲区（corpus Generate 测试只验证 `GenerateMaterialFromFile` 成功，不编译材质着色器）。
+
+`BuildGeneratedFunctionSymbolName`（`DreamShaderHlslFunctionCodegen.cpp`）直接用 `SanitizeIdentifier(Function.Name)` 作为 HLSL 函数名，**裸名进入材质 Custom 节点的全局 HLSL 命名空间**。用户把 `.dsh` 函数命名为 `Luminance` → `.ush` 里 emit `float Luminance(float3)` → 与 `/Engine/Private/Common.ush:743` 的内建 `float Luminance(float3)` **重定义**：
+```
+M_SinCos_2031e9e7.ush(7,7): error: redefinition of 'Luminance'
+```
+`Square`/`Pow2`/`Desaturate` 等同理（`Square` 也在 Common.ush）。**叠加 bug B（whole-closure inlining）放大**：`WriteGeneratedInclude` 把 header 内**全部**函数写进 .ush（M_SinCos 只调 SinCos，却也 emit Luminance/Remap），于是 M_SinCos 因一个它根本没用到的 Luminance 而编译失败。
+
+**修复：** `BuildGeneratedFunctionSymbolName` 统一加前缀 `DreamShaderFn_`。该名是函数定义、body 内函数间调用重写（`ReplacementBySpelling`）、与 Custom 节点调用点（CodeCalls.cpp:590/598）的**唯一真源**，一处改全链一致 → `DreamShaderFn_Luminance`，永不撞引擎内建。
+
+**端到端验证（/unreal-bridge + Live Coding + 看 .ush + `get_material_compile_errors`）：** 7 个样例材质（M_Grayscale/Desaturate/Contrast/Posterize/Luma/SinCos + 新增 M_Square）着色器**全部 0 error**。`M_Square` 专测：函数名 `Square`（引擎冲突）经**嵌套 DreamShader 调用** `Brighten→Square` 到达，.ush 正确产出 `DreamShaderFn_Brighten` 调 `DreamShaderFn_Square(k)`（嵌套 out-param→return 降级也对）。
+
+**坑（验证副产物，非 bug）：** 文件监视器 `ProcessSourceFile` 用 `CompileAssets(force=false)`；用相同字节 re-save `.dsm` → 材质资产判为 up-to-date 跳过重生（Custom 节点旧裸名调用），但 .ush 仍重写（新前缀）→ 临时不一致 `undeclared identifier 'Grayscale'`。**真实内容变更**强制全量重生后即一致。
+
+**遗留（bug B，现已无害）：** whole-closure inlining 仍把整个 header 写进每个 .ush（dead code）。加前缀后不再冲突、被 HLSL 编译器 strip，仅属冗余，可后续让 `WriteGeneratedInclude` 只 emit 材质实际调用的传递闭包。
+
+**测试网盲区结论：** asset-gen 绿 ≠ shader-compile 绿。深度正确性须 `UnrealBridgeMaterialLibrary.get_material_compile_errors(path,"SM6","Default")`（或编辑器内打开材质看统计面板），应纳入回归。
+
 ## 建议落地顺序
 
 1. 先建 **Generate 层测试网**（`bTransient=true`，断言生成成功/失败 + 错误串 + 节点形态）。
