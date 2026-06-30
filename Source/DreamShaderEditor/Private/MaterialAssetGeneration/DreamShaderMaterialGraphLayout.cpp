@@ -871,6 +871,56 @@ namespace UE::DreamShader::Editor::Private
 			}
 		}
 
+		// Pull the named-reroute usages that feed the material output into a tidy column just left of
+		// the root, and wrap them together with the root in a single "Material Output" comment box, so
+		// the output side reads as one labelled block instead of reroute nodes floating in open space.
+		static void GroupOutputBridgeUsages(UMaterial* Material, UMaterialFunction* MaterialFunction)
+		{
+			if (!Material)
+			{
+				return;
+			}
+		
+			TArray<UMaterialExpressionNamedRerouteUsage*> OutputUsages;
+			for (int32 PropertyIndex = 0; PropertyIndex < MP_MAX; ++PropertyIndex)
+			{
+				FExpressionInput* MaterialInput = Material->GetExpressionInputForProperty(static_cast<EMaterialProperty>(PropertyIndex));
+				if (!MaterialInput || !MaterialInput->Expression)
+				{
+					continue;
+				}
+				if (UMaterialExpressionNamedRerouteUsage* Usage = Cast<UMaterialExpressionNamedRerouteUsage>(MaterialInput->Expression))
+				{
+					OutputUsages.AddUnique(Usage);
+				}
+			}
+		
+			if (OutputUsages.IsEmpty())
+			{
+				return;
+			}
+		
+			const int32 RootX = Material->EditorX;
+			const int32 RootY = Material->EditorY;
+			constexpr int32 UsageColumnGapX = 360;
+			constexpr int32 UsageSpacingY = 130;
+			const int32 UsageX = RootX - UsageColumnGapX;
+			const int32 ColumnTopY = RootY - ((OutputUsages.Num() - 1) * UsageSpacingY) / 2;
+		
+			FLayoutBounds GroupBounds;
+			GroupBounds.IncludeNode(RootX, RootY);
+			GroupBounds.IncludeNode(RootX + 280, RootY + 220);
+			for (int32 Index = 0; Index < OutputUsages.Num(); ++Index)
+			{
+				const int32 PositionY = ColumnTopY + Index * UsageSpacingY;
+				OutputUsages[Index]->MaterialExpressionEditorX = UsageX;
+				OutputUsages[Index]->MaterialExpressionEditorY = PositionY;
+				GroupBounds.IncludeNode(UsageX, PositionY);
+			}
+		
+			CreateDreamShaderLayoutComment(Material, MaterialFunction, TEXT("Material Output"), GroupBounds);
+		}
+		
 		static void CreateDreamShaderCommentAt(
 			UMaterial* Material,
 			UMaterialFunction* MaterialFunction,
@@ -1586,6 +1636,7 @@ namespace UE::DreamShader::Editor::Private
 				Dependencies,
 				Consumers);
 			PositionMaterialRootNearConnectedOutputs(Material);
+			GroupOutputBridgeUsages(Material, MaterialFunction);
 			return;
 		}
 
@@ -1882,5 +1933,6 @@ namespace UE::DreamShader::Editor::Private
 		}
 
 		PositionMaterialRootNearOutputs(Material, BlockBounds);
+		GroupOutputBridgeUsages(Material, MaterialFunction);
 	}
 }
