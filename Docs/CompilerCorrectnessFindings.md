@@ -189,3 +189,10 @@ M_ParamGen.dsm(12,9): Failed to evaluate Graph assignment for 'Color'. Property 
 11. **打包/cook 正确性未验证**；**native function 的 opt/默认参数被静默忽略**（解析了 bOptional/DefaultValueText，CodeCalls 执行器强制精确实参从不读）；**MaterialGraphLayout.cpp(1993) 等 6 文件 >1500 行**（卫生债）；**Roundtrip 测试仅重解析不重生成/比结构**；**多个已修 bug(#4/5/6/8/12) 及大量关键字/builtin 无回归夹具**。详见会话审计产物。
 
 **落地建议**：先 #1 止血（已做）→ 建 compile 闸门（解锁一打回归）→ golden-image 闸门 → 参数簇 + 诊断清理。
+
+### 参数输入/资源配置语法（2026-07-01，接审计 #4/#3 参数簇）
+
+审计指出 Scalar/Vector 以外的参数无法从 DSL 配置其输入引脚/资源槽。现两条机制覆盖：
+- **输入引脚** → Graph 调用形式 `Param(PinName = expr)`。`EvaluateConfigurableParameterCall`（CodeProperties.cpp）按名找输入引脚 + `ConnectCodeValueToInput` 接线；dispatch（CodeExpressions.cpp:1517）经 `ParameterTypeAcceptsInputArguments` 网关只对有输入引脚的参数类型（ChannelMask/StaticComponentMask/各 TextureSample）放行，value 参数与函数名查找不受影响（仿 StaticSwitch 调用路径）。例：`Msk(Input = Vec)`、`TexCube(Coordinates = dir)`、`TexVolume(Coordinates = uvw)`。
+- **资源槽** → `[Prop = Path(...)]` 元数据（既有能力）。字面量写入器（MaterialLiteralPropertyWriter.cpp:165）已解析 `Path(...)` 到 FObjectProperty，`ApplyExpressionMetadata` 把 `[...]` 反射属性应用到节点。例：`FontSampleParameter F [Font = Path(...)]`、`TextureSampleParameter2DArray T [Texture = Path(...)]`、`CurveAtlasRowParameter C [Curve=Path(...); Atlas=Path(...)]`。
+- **验证**：`M_ParamInputs`（cube/volume 坐标 + mask 输入接线）shader CLEAN（headless RHI + recompile_material + get_material_compile_errors 直读，0 error）。`M_AllParameters` 全 23 类型 demo 经接线后错误 12→8，残留 8 个纯属缺绑定资产（曲线图集/字体/数组贴图/RVT/SVT/纹理集），用上述元数据绑定真实资产即编译。回归测试 `DreamShader.Gen.Parameters.InputWiring`（断言引脚已连）+ `OtherNodeCreation`。套件 55 green。
