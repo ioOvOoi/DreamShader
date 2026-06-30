@@ -871,45 +871,72 @@ namespace UE::DreamShader::Editor::Private
 			}
 		}
 
-		// Pull the named-reroute usages that feed the material output into a tidy column just left of
-		// the root, and wrap them together with the root in a single "Material Output" comment box, so
-		// the output side reads as one labelled block instead of reroute nodes floating in open space.
-		static void GroupOutputBridgeUsages(UMaterial* Material, UMaterialFunction* MaterialFunction)
+		static void CollectOutputBridgeUsages(UMaterial* Material, TArray<UMaterialExpressionNamedRerouteUsage*>& OutUsages)
 		{
 			if (!Material)
 			{
 				return;
 			}
-		
-			TArray<UMaterialExpressionNamedRerouteUsage*> OutputUsages;
+
 			for (int32 PropertyIndex = 0; PropertyIndex < MP_MAX; ++PropertyIndex)
 			{
 				FExpressionInput* MaterialInput = Material->GetExpressionInputForProperty(static_cast<EMaterialProperty>(PropertyIndex));
-				if (!MaterialInput || !MaterialInput->Expression)
+				if (MaterialInput && MaterialInput->Expression)
 				{
-					continue;
-				}
-				if (UMaterialExpressionNamedRerouteUsage* Usage = Cast<UMaterialExpressionNamedRerouteUsage>(MaterialInput->Expression))
-				{
-					OutputUsages.AddUnique(Usage);
+					if (UMaterialExpressionNamedRerouteUsage* Usage = Cast<UMaterialExpressionNamedRerouteUsage>(MaterialInput->Expression))
+					{
+						OutUsages.AddUnique(Usage);
+					}
 				}
 			}
-		
+		}
+
+		// Regroup the named-reroute usages that feed the material output: move them into a column to the
+		// right of the graph body, place the material root just past them, and wrap usages + root in one
+		// "Material Output" comment box. The usages are removed from their layout blocks beforehand, so
+		// the per-property computation boxes stay tight and never overlap this one.
+		static void GroupOutputBridgeUsages(UMaterial* Material, UMaterialFunction* MaterialFunction, const TArray<UMaterialExpression*>& Expressions)
+		{
+			if (!Material)
+			{
+				return;
+			}
+
+			TArray<UMaterialExpressionNamedRerouteUsage*> OutputUsages;
+			CollectOutputBridgeUsages(Material, OutputUsages);
 			if (OutputUsages.IsEmpty())
 			{
 				return;
 			}
-		
-			const int32 RootX = Material->EditorX;
-			const int32 RootY = Material->EditorY;
-			constexpr int32 UsageColumnGapX = 360;
+
+			TSet<UMaterialExpression*> OutputUsageSet;
+			for (UMaterialExpressionNamedRerouteUsage* Usage : OutputUsages)
+			{
+				OutputUsageSet.Add(Usage);
+			}
+
+			FLayoutBounds BodyBounds;
+			for (UMaterialExpression* Expression : Expressions)
+			{
+				if (!Expression || OutputUsageSet.Contains(Expression))
+				{
+					continue;
+				}
+				BodyBounds.IncludeNode(Expression->MaterialExpressionEditorX, Expression->MaterialExpressionEditorY);
+			}
+			if (!BodyBounds.IsValid())
+			{
+				return;
+			}
+
+			constexpr int32 GapBodyToUsages = 420;
+			constexpr int32 GapUsagesToRoot = 360;
 			constexpr int32 UsageSpacingY = 130;
-			const int32 UsageX = RootX - UsageColumnGapX;
-			const int32 ColumnTopY = RootY - ((OutputUsages.Num() - 1) * UsageSpacingY) / 2;
-		
+			const int32 UsageX = BodyBounds.MaxX + GapBodyToUsages;
+			const int32 CentreY = (BodyBounds.MinY + BodyBounds.MaxY) / 2;
+			const int32 ColumnTopY = CentreY - ((OutputUsages.Num() - 1) * UsageSpacingY) / 2;
+
 			FLayoutBounds GroupBounds;
-			GroupBounds.IncludeNode(RootX, RootY);
-			GroupBounds.IncludeNode(RootX + 280, RootY + 220);
 			for (int32 Index = 0; Index < OutputUsages.Num(); ++Index)
 			{
 				const int32 PositionY = ColumnTopY + Index * UsageSpacingY;
@@ -917,10 +944,22 @@ namespace UE::DreamShader::Editor::Private
 				OutputUsages[Index]->MaterialExpressionEditorY = PositionY;
 				GroupBounds.IncludeNode(UsageX, PositionY);
 			}
-		
+
+			const int32 RootX = UsageX + GapUsagesToRoot;
+			const int32 RootY = CentreY - 240;
+			Material->EditorX = RootX;
+			Material->EditorY = RootY;
+			if (Material->MaterialGraph && Material->MaterialGraph->RootNode)
+			{
+				Material->MaterialGraph->RootNode->NodePosX = RootX;
+				Material->MaterialGraph->RootNode->NodePosY = RootY;
+			}
+			GroupBounds.IncludeNode(RootX, RootY);
+			GroupBounds.IncludeNode(RootX + 320, RootY + 320);
+
 			CreateDreamShaderLayoutComment(Material, MaterialFunction, TEXT("Material Output"), GroupBounds);
 		}
-		
+
 		static void CreateDreamShaderCommentAt(
 			UMaterial* Material,
 			UMaterialFunction* MaterialFunction,
@@ -1636,7 +1675,7 @@ namespace UE::DreamShader::Editor::Private
 				Dependencies,
 				Consumers);
 			PositionMaterialRootNearConnectedOutputs(Material);
-			GroupOutputBridgeUsages(Material, MaterialFunction);
+			GroupOutputBridgeUsages(Material, MaterialFunction, Expressions);
 			return;
 		}
 
@@ -1873,6 +1912,22 @@ namespace UE::DreamShader::Editor::Private
 			Consumers,
 			false);
 
+		// Output-bridge usages are regrouped beside the root by GroupOutputBridgeUsages; drop them from
+		// their layout blocks now so the per-block comment boxes stay tight around the computation.
+		if (Material)
+		{
+			TArray<UMaterialExpressionNamedRerouteUsage*> RegroupedOutputUsages;
+			CollectOutputBridgeUsages(Material, RegroupedOutputUsages);
+			for (UMaterialExpressionNamedRerouteUsage* Usage : RegroupedOutputUsages)
+			{
+				for (FGeneratedLayoutBlock& Block : LayoutBlocks)
+				{
+					Block.ExpressionSet.Remove(Usage);
+				}
+				OwnerBlockByExpression.Remove(Usage);
+			}
+		}
+
 		OriginalOrder.Reserve(Expressions.Num());
 		for (int32 Index = 0; Index < Expressions.Num(); ++Index)
 		{
@@ -1933,6 +1988,6 @@ namespace UE::DreamShader::Editor::Private
 		}
 
 		PositionMaterialRootNearOutputs(Material, BlockBounds);
-		GroupOutputBridgeUsages(Material, MaterialFunction);
+		GroupOutputBridgeUsages(Material, MaterialFunction, Expressions);
 	}
 }
