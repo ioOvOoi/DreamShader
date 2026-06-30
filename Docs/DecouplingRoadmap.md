@@ -27,12 +27,13 @@ Support.cpp **6866 → 4246 行**（抽出 2620 行，**~38%**），新增 6 个
 
 ## 进度（2026-06-30，扩展到 Support.cpp 之外的巨石文件，每刀 compile+link+51 测试验证）
 
-把 Phase-1 的可干净分离簇推进到**全部五个可字节搬移的巨石文件**；新增 16 个内聚文件（14 cpp + 2 h），共抽出 **5787 行**（16 刀，全程 51/51 green）。**Support.cpp 6866→926（-86.5%）、CodeExpressions 3041→1807、CodeCalls 2162→1312、MaterialGenerator 2820→2547、CodeUE 1403→1277**——五个可搬移巨石全部下降，三个最大者已降为普通文件。**仅剩 GraphDecompiler 4134** 为结构性硬骨头（文件局部 inline 类，须先把类声明 hoist 进头 + 把 3000+ 行 inline 成员改 out-of-line 再拆——内部重构、非字节搬移，须 round-trip golden 覆盖下专门做）；MaterialGenerator/CodeUE 余下少量在大匿名 ns 或单个巨型函数内，收益渐小。**Support.cpp 6866→4246→2435→1123→926（累计 -86.5%）**——此前判为"不可字节级搬移的深度耦合生成核心"的论断，被图布局(#15)与表达式工厂(#16)两刀证伪：两者都是 needs-expose（暴露少量共享 static + 链接器迭代揪漏）即可干净分离。Support.cpp 已从 #1 万行巨石降到 926 行普通文件。
+把 Phase-1 的可干净分离簇推进到**全部六个巨石文件**（含 GraphDecompiler 的自由 helper 块）；新增 18 个内聚文件（15 cpp + 3 h），共抽出 **7046 行**（17 刀，全程 51/51 green，含 round-trip）。**Support.cpp 6866→926（-86.5%）、CodeExpressions 3041→1807、CodeCalls 2162→1312、MaterialGenerator 2820→2547、CodeUE 1403→1277**——五个可搬移巨石全部下降，三个最大者已降为普通文件。**仅剩 GraphDecompiler 4134** 为结构性硬骨头（文件局部 inline 类，须先把类声明 hoist 进头 + 把 3000+ 行 inline 成员改 out-of-line 再拆——内部重构、非字节搬移，须 round-trip golden 覆盖下专门做）；MaterialGenerator/CodeUE 余下少量在大匿名 ns 或单个巨型函数内，收益渐小。**Support.cpp 6866→4246→2435→1123→926（累计 -86.5%）**——此前判为"不可字节级搬移的深度耦合生成核心"的论断，被图布局(#15)与表达式工厂(#16)两刀证伪：两者都是 needs-expose（暴露少量共享 static + 链接器迭代揪漏）即可干净分离。Support.cpp 已从 #1 万行巨石降到 926 行普通文件。
 
 **本轮映射工作流已核实但未做的候选**（详见各自 verify）：
 - **CodeExpressions swizzle 簇**（`TryResolveSwizzleChannelIndex`/`TryBuildOrderedSwizzleMask` 两 static + `CreateSingleChannelMask`/`CreateSwizzleExpression` 两成员，~220L）= **leaf-clean 但非连续**（散在 333-419 与 2335-2540，中间夹着不搬的成员），须 4 段分别剪切，留作下一刀。
 - **GraphDecompiler metadata static 簇**（1796-1942，11 个格式化 static）= **entangled**：`BuildLiteralEnumArgument`/`AddParameterMetadata`/`AddTextureParameterMetadata`/`AddTextureSampleMetadata` 被簇外成员函数调用（1994-3110），搬出会留下未定义 static。
-- **GraphDecompiler 整体 = 字节级搬移不可行（结构性）**：`class FDreamShaderGraphDecompiler`（:1377）是定义在 .cpp 匿名命名空间内的**文件局部类，所有成员 inline 写在类体里**（公开接口是薄包装 `FBridgeGraphDecompiler` :4101，持有一个 `FDreamShaderGraphDecompiler` 成员）。**类体无法跨 TU 拆分**——所谓"LayoutMetadata 成员簇"(2262-2497) 只是类体内一段 inline 成员/静态定义，搬不走。映射工作流 verify 把它误判为可搬的 member-clean（根本没识别出文件局部 inline 类）；人工 grep `class FDreamShaderGraphDecompiler` 揪出。**前置条件**：要解耦 GraphDecompiler，须先把类声明 hoist 进头文件、把 3000+ 行 inline 成员改成 out-of-line `Class::method` 定义，再拆——这是**内部重构（非字节搬移）**，须在 round-trip golden 测试覆盖下专门进行，不属本路线的低风险搬迁阶段。CodeExpressions/CodeCalls/CodeUE/MaterialGenerator 的 `FCodeGraphBuilder`/`FMaterialGenerator` 则是头文件声明的正常类，成员可自由跨 TU 安放（本轮已多次验证）。
+- **GraphDecompiler 自由 helper 块已抽（#26，4134→2875）**：类**之前**的 ~43 个匿名 ns 自由函数（格式化/类型名/swizzle/材质设置 helper，90-1348，**1259L**）整体提升到 Private 作用域 + 自动生成的头声明（程序化解析签名，仅一处默认参数 `=nullptr` 需从定义移除），搬到 `DreamShaderGraphDecompilerHelpers.cpp`/`.h`。类（留守）经头调用。round-trip 测试覆盖、51/51 green。
+- **GraphDecompiler 剩余 = 文件局部 inline 类（须 hoist 重构）**：`class FDreamShaderGraphDecompiler`（:1377）定义在 .cpp 匿名 ns 内、~80 个成员全 inline，公开接口是薄包装 `FBridgeGraphDecompiler`（持有一个该类成员）。**类体无法跨 TU 拆分**——须先把类声明（含成员变量/嵌套类型）hoist 进头、把 inline 成员改 out-of-line `Class::method`，再按子关注点拆到多 TU。这是**内部重构（非字节搬移）**，是 GraphDecompiler 仅剩的解耦工作，须 round-trip golden 覆盖下分步进行。其余四个 `FCodeGraphBuilder`/`FMaterialGenerator` 文件是正常头文件类，成员可自由跨 TU 安放。
 - **Support 设置簇**（596-1122）= **needs-expose-large**：`ValidateSettings`/`ApplySettings` 调 `TryResolve{Domain,BlendMode,ShadingModel}`（63-79 留守 static）等多个，暴露面大；前序也因此回退过。
 剩余 Support.cpp 926 行 = 设置/校验簇 + 字面量创建 + 注释/reroute/默认值，更内聚。
 
@@ -70,7 +71,8 @@ Support.cpp **6866 → 4246 行**（抽出 2620 行，**~38%**），新增 6 个
 | `MaterialAssetGeneration/...MaterialGraphLayout.cpp`(新, 图布局) | 1886 |
 | `MaterialAssetGeneration/...ExpressionFactory.cpp`(新, 表达式工厂) | 1379 |
 | `MaterialAssetGeneration/...MaterialLiteralPropertyWriter.cpp`(新, 反射写入) | 267 |
-| `Decompiler/...GraphDecompiler.cpp` | 3972 |
+| `Decompiler/...GraphDecompiler.cpp` | ~~3972~~ ~~4134~~ **2875**（剩文件局部 inline 类，须 hoist 重构） |
+| `Decompiler/...GraphDecompilerHelpers.cpp`(新, 自由 helper) | ~1300 |
 | `MaterialAssetGeneration/...GeneratorCodeExpressions.cpp` | ~~2969~~ ~~2817~~ ~~2609~~ ~~2075~~ **1807** |
 | `MaterialAssetGeneration/...GeneratorCode.cpp`(MaterialGenerator.cpp) | ~~2820~~ ~~2654~~ **2547** |
 | `MaterialAssetGeneration/...GeneratorCodeCalls.cpp` | ~~2162~~ ~~2082~~ **1312** |
