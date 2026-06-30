@@ -361,8 +361,10 @@ namespace UE::DreamShader::Editor::Private
 		{
 			return EvaluateUnary(UMaterialExpressionCeil::StaticClass(), TEXT("Input"), 0);
 		}
-		if (FunctionName.Equals(TEXT("frac"), ESearchCase::IgnoreCase))
+		if (FunctionName.Equals(TEXT("frac"), ESearchCase::IgnoreCase)
+			|| FunctionName.Equals(TEXT("fract"), ESearchCase::IgnoreCase))
 		{
+			// `fract` is the GLSL spelling of `frac`; accept both in Graph like the HLSL/Function path.
 			return EvaluateUnary(UMaterialExpressionFrac::StaticClass(), TEXT("Input"), 0);
 		}
 		if (FunctionName.Equals(TEXT("sqrt"), ESearchCase::IgnoreCase))
@@ -372,6 +374,50 @@ namespace UE::DreamShader::Editor::Private
 		if (FunctionName.Equals(TEXT("normalize"), ESearchCase::IgnoreCase))
 		{
 			return EvaluateUnary(UMaterialExpressionNormalize::StaticClass(), TEXT("VectorInput"), 0);
+		}
+
+		// `fmod`/`mod` -> UMaterialExpressionFmod, matching the HLSL/Function path (NormalizeShaderLanguageText
+		// aliases GLSL `mod` to `fmod`). Brings the Graph builtin set in line with the function-body set.
+		if (FunctionName.Equals(TEXT("fmod"), ESearchCase::IgnoreCase)
+			|| FunctionName.Equals(TEXT("mod"), ESearchCase::IgnoreCase))
+		{
+			if (Arguments.Num() != 2 || !ValidatePositionalArguments())
+			{
+				OutError = FString::Printf(TEXT("Math function '%s' expects exactly 2 arguments."), *FunctionName);
+				return false;
+			}
+
+			FCodeValue Dividend;
+			FCodeValue Divisor;
+			if (!EvaluateArgument(0, Dividend) || !EvaluateArgument(1, Divisor))
+			{
+				return false;
+			}
+
+			FString ReuseKey = FString::Printf(
+				TEXT("math-fmod|%s|%s"),
+				*MakeCodeValueReuseToken(Dividend),
+				*MakeCodeValueReuseToken(Divisor));
+			if (TryFindReusableExpressionValue(ReuseKey, OutValue))
+			{
+				return true;
+			}
+
+			auto* Expression = Cast<UMaterialExpressionFmod>(
+				CreateExpression(UMaterialExpressionFmod::StaticClass(), 360, ConsumeNodeY()));
+			if (!Expression)
+			{
+				OutError = FString::Printf(TEXT("Failed to create math function '%s'."), *FunctionName);
+				return false;
+			}
+
+			ConnectCodeValueToInput(Expression->A, Dividend);
+			ConnectCodeValueToInput(Expression->B, Divisor);
+			OutValue.Expression = Expression;
+			OutValue.ComponentCount = Dividend.ComponentCount;
+			OutValue.bHasAuthoritativeComponentCount = Dividend.bHasAuthoritativeComponentCount;
+			AddReusableExpressionValue(ReuseKey, OutValue);
+			return true;
 		}
 
 		return false;
