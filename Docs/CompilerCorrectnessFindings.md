@@ -160,3 +160,32 @@ M_ParamGen.dsm(12,9): Failed to evaluate Graph assignment for 'Color'. Property 
 2. 把上述复现编成 Generate 夹具——现在它们应为 **RED**（复现 bug），形成回归基线。
 3. 逐个修复 → RED 转 green。优先 **#2 / #7 / #6 / #1 / #3**（高频、高置信、修复局部）。
 4. 修复在测试保护下进行，避免越改越乱。
+
+## 全面开放问题审计（2026-06-30，34 条确认为真，多 agent 对抗式 + 人工 live 复核）
+
+7 维度并行审计（参数生成 / 反编译器 / HLSL codegen / 测试覆盖 / 构建结构 / 写法健壮性 / 样例端到端），每条对当前代码核验 + 部分 live 复现。**核心结论**：happy path（Scalar/Vector 参数、核心 codegen、parse 层）健康，但测试网止步于"生成器返回 true"——**无 shader-compile 闸门、无渲染/像素闸门**，故 ~80% 问题为 latent（编译/渲染才暴露）。
+
+### 本轮已修并验证（提交 e708bc5 + dedup 提交）
+
+- **#1（blocker，每会话复现）反编译器多输出 Custom**：`BuildCustomExpressionCall` 对 OutputIndex>0 同时发 `Output="name"` + `OutputIndex=N`，生成器拒绝（互斥），`MF_MooaEncodeAttributes` 每次加载生成失败。修复：`BuildUEExpressionCallWithOutputType` 检测到 Arguments 已含 Output/OutputName 选择器时抑制自动 OutputIndex（OutputType 仍按真实 index 解析，不受影响）。验证：重反编译 .dsf 的 OutputIndex 5→0、Output 保持 5、重生成 exit 0 零错误。
+- **#4-a CurveAtlasRowParameter 默认值中止**：它按输出分量数被归为 Vector，但派生自 ScalarParameter（DefaultValue 是 float），写 `(R=,G=,B=,A=)` 失败→整材质中止。修复：`SetExpressionDefaultValue` 检测反射 DefaultValue 为 FFloatProperty/FDoubleProperty 时写单通道。
+- **#4-b TextureSample 族空贴图**：无默认值声明的采样参数 Texture==null → shader `Missing input Texture`。修复：`CreateGenericParameterNodeExpression` 在 AutoSetSampleType 前对 null-texture 的 TextureSampleParameter 调引擎 `SetDefaultTexture()`。验证：M_ParamFix 的 TextureSampleParameter2D 编译 CLEAN。
+- **#9 import 行号偏移**：被剥离的 import 行无占位 → 诊断 mapper 按文件块计行，报错行号偏移 = 上方 import 数。修复：每个被剥离 import 补一空占位行。验证：顶层 parse error 现已 import-count 无关（修前 2 import 偏 2 行）。
+- **#23 Settings 解析**：用朴素 `Split("=")` 而非其余 6 处的 quote/paren-aware `SplitTopLevelAssignment`；换用以保持一致。
+- **#15 unity-build 重名隐患**：`SerializeJsonObject`/`BindAndExecute` 在 DiagnosticsStore.cpp 与 WorkspaceService.cpp 各有字节相同的匿名 ns 定义，同 blob 即重定义。修复：抽到共享 `DreamShaderEditorPersistenceUtils.h`（inline，单一真源）。
+
+### 剩余高优先（按 reproducing > latent 正确性 > 覆盖/健壮 > 卫生）
+
+1. **无 shader-compile 闸门（最高杠杆）**：`Tests/` 全树零 `GetCompileErrors`/`GetMaterialResource`/`ShaderMap`；`RecompileMaterial` 结果被吞（MaterialGenerator.cpp ~2523）。这是 #15/#16 及下列一打 latent 全部不可见的根因。建议：generate 层 helper 强制编译 + 迭代 `GetMaterialResource(SP_PCD3D_SM6,High)->GetCompileErrors()`，复用 bridge 已有回路（DreamShaderEditorBridge.cpp:586-615），挂 nightly `DreamShader.Gen.ShaderCompile.*`。修它一举解锁 ~10 条回归保护。
+2. **无渲染/像素闸门**：`int(2.7)` 整数构造器是恒等空操作（CodeConstructors.cpp:187-197，无 Floor/Trunc，应走 `UMaterialExpressionTruncate`）；GLSL `mod(x,y)` 被词法替换为 HLSL `fmod`（DreamShaderParser.cpp:162 + MaterialGenerator.cpp:635 两份副本），负操作数符号不同（`mod(-0.3,1)` 给 -0.3 而非 0.7，应用 `x-y*floor(x/y)` 或注入 dreamMod helper）。二者均编译通过，只有 golden-image 像素比对能抓。
+3. **参数簇剩余项**（接 #4，本轮只修了中止类的 2 个）：ChannelMaskParameter 必需 Input 悬空（`Missing mask input`，live 复现）；CurveAtlasRow/RVT/SVT/TextureCollection 缺必需资产 → 静默不可编译；TextureCollection/SVT 内联默认值中止并报误导信息；StaticComponentMask 静默丢弃 float4 默认值。建议：per-type 处理（缺资产时清晰报错而非静默；ChannelMask 拒绝为叶或自动接 Constant4Vector）。CurveAtlasRow/FontSampleParameter 须绑曲线/字体资产才能 shader-compile，属节点固有需求。
+4. **参数 GUID 稳定性（推测、高影响）**：重生成是 clear-and-rebuild（MaterialGenerator.cpp:2063-2085），仅验证过 MaterialFunction Input/Output id 恢复，**未验证参数 ExpressionGUID**。若变 → Material Instance 覆盖静默断链（数据丢失）。建议回归测试：import → 记 GUID → 重 import → 断言不变 + MIC 覆盖仍绑定。
+5. **stale-import 缓存（推测）**：跳过重生只哈希顶层 .dsm（GeneratedAssetMetadata.cpp:40-45），改 imported .dsh 而 .dsm 没动 → 旧材质被报 current。建议哈希传递闭包。
+6. **诊断行号其余项**：本轮修了 import 偏移；残留 (a) mapper 常量 off-by-1（`TryMapPreparedSourceIndexToLocation` 边界 `SourceIndex <= LineEnd+1` 使 token 落行首时匹配上一行）；(b) 嵌套 body 'near index' 为 body-local 却按全局映射；(c) ~60 条 statement-level 错误无 'near index' 回退到 .dsm 路径无行列。
+7. **EnsureTopLevelReturn 忽略 OutputType**（HlslFunctionCodegen.cpp:149）：无 top-level return 时注 `return 0.0;`，对 MaterialAttributes 类型 Custom 节点 HLSL 无法把标量 0 转 FMaterialAttributes → 硬编译错。应按 OutputType 注类型正确默认或抛清晰诊断。
+8. **多 out Custom/Graph 函数调用**：次级 out-target 名可与 input 名冲突 → HLSL 重复形参（CodeCalls.cpp:444-450 仅查 out-target 间唯一）；应对照 Function.Inputs 名拒绝。
+9. **WriteGeneratedInclude 全闭包转储**（HlslFunctionCodegen.cpp:1195，reproducing）：把整个 .dsh 所有函数写进每个材质 .ush（M_Luma 只用 Luminance 却 emit Remap/SinCos）。靠前缀+DCE 现无害，但故障耦合。应只发实际调用的传递闭包（复用 CollectDreamShaderFunctionCalls + CollectEmbeddedFunctionClosure）。
+10. **off-thread 编辑器服务层未审计**：bridge(TCP)/websocket/file-watcher/SQLite 的 game-thread 亲和性与重入；生成走 Modify/PostEditChange/RecompileMaterial（仅 game-thread）；file-watcher 自触发循环；分别需聚焦审查。
+11. **打包/cook 正确性未验证**；**native function 的 opt/默认参数被静默忽略**（解析了 bOptional/DefaultValueText，CodeCalls 执行器强制精确实参从不读）；**MaterialGraphLayout.cpp(1993) 等 6 文件 >1500 行**（卫生债）；**Roundtrip 测试仅重解析不重生成/比结构**；**多个已修 bug(#4/5/6/8/12) 及大量关键字/builtin 无回归夹具**。详见会话审计产物。
+
+**落地建议**：先 #1 止血（已做）→ 建 compile 闸门（解锁一打回归）→ golden-image 闸门 → 参数簇 + 诊断清理。

@@ -1,6 +1,7 @@
 #include "DreamShaderWorkspaceService.h"
 
 #include "MaterialAssetGeneration/DreamShaderMaterialGeneratorPrivate.h"
+#include "DreamShaderEditorPersistenceUtils.h"
 #include "DreamShaderModule.h"
 #include "DreamShaderSettings.h"
 #include "DreamShaderVersionCompat.h"
@@ -430,20 +431,6 @@ namespace UE::DreamShader::Editor::Private
 				MappingValues.Add(MakeShared<FJsonValueObject>(MappingObject));
 			}
 			return MappingValues;
-		}
-
-		bool SerializeJsonObject(const TSharedRef<FJsonObject>& Object, FString& OutText)
-		{
-			const TSharedRef<TJsonWriter<>> Writer = TJsonWriterFactory<>::Create(&OutText);
-			return FJsonSerializer::Serialize(Object, Writer);
-		}
-
-		bool BindAndExecute(FSQLitePreparedStatement& Statement)
-		{
-			const bool bResult = Statement.Execute();
-			Statement.Reset();
-			Statement.ClearBindings();
-			return bResult;
 		}
 
 		bool OpenBridgeDatabase(FSQLiteDatabase& Database)
