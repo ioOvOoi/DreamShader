@@ -573,19 +573,13 @@ namespace UE::DreamShader::Private
 		return false;
 	}
 
-	bool ParsePropertyStatements(const FString& BlockContent, TArray<FTextShaderPropertyDefinition>& OutProperties, FString& OutError)
+	// Parse a single property declaration statement (no trailing ';') into Property. Hoisted out of
+	// ParsePropertyStatements so the flat path and the Group(...) scope walker share identical parsing.
+	bool ParseSinglePropertyStatement(const FString& Statement, FTextShaderPropertyDefinition& Property, FString& OutError)
 	{
-		const TArray<FString> Statements = SplitStatements(RemoveComments(BlockContent));
-
-		for (const FString& Statement : Statements)
 		{
 			FString Trimmed = Statement.TrimStartAndEnd();
-			if (Trimmed.IsEmpty())
-			{
-				continue;
-			}
 
-			FTextShaderPropertyDefinition Property;
 			if (!ParseTrailingMetadata(Trimmed, Property.Metadata, OutError))
 			{
 				return false;
@@ -850,10 +844,257 @@ namespace UE::DreamShader::Private
 				return false;
 			}
 
-			OutProperties.Add(Property);
 		}
 
 		return true;
+	}
+
+	bool TryMatchGroupHead(const FString& Head, FString& OutGroupName)
+	{
+		const FString Trimmed = Head.TrimStartAndEnd();
+		if (Trimmed.Len() < 5 || !Trimmed.Left(5).Equals(TEXT("Group"), ESearchCase::IgnoreCase))
+		{
+			return false;
+		}
+		const FString Rest = Trimmed.RightChop(5).TrimStartAndEnd();
+		if (!Rest.StartsWith(TEXT("(")) || !Rest.EndsWith(TEXT(")")))
+		{
+			return false;
+		}
+		const FString Inner = Rest.Mid(1, Rest.Len() - 2).TrimStartAndEnd();
+		if (!Inner.StartsWith(TEXT("\"")))
+		{
+			return false;
+		}
+		OutGroupName = Unquote(Inner).TrimStartAndEnd();
+		return true;
+	}
+
+	void StampGroupedProperty(FTextShaderPropertyDefinition& Property, const FString& InheritedGroup, int32& InOutNextAutoSort)
+	{
+		if (InheritedGroup.IsEmpty())
+		{
+			// Top-level (ungrouped) statements keep today's behavior: no inherited group, no auto-sort.
+			return;
+		}
+
+		if (!Property.Metadata.ReflectedProperties.Contains(NormalizeSettingKey(TEXT("Group")))
+			&& !Property.Metadata.ReflectedProperties.Contains(NormalizeSettingKey(TEXT("Category"))))
+		{
+			Property.Metadata.Group = InheritedGroup;
+		}
+
+		// Auto-number group members by declaration order; an explicit SortPriority/Sort wins and does
+		// not consume an auto slot.
+		if (!Property.Metadata.bHasSortPriority)
+		{
+			Property.Metadata.bHasSortPriority = true;
+			Property.Metadata.SortPriority = InOutNextAutoSort;
+			InOutNextAutoSort += 10;
+		}
+	}
+
+	// Recursively parse a Properties body that may contain Group("Name") { ... } scope blocks. Content
+	// must already be comment-stripped. Brace-aware: tracks () [] "" depth like SplitStatements, plus
+	// {} so Group blocks (whose bodies contain ';'-separated statements) are not mis-split.
+	bool ParsePropertyBlock(
+		const FString& Content,
+		const FString& InheritedGroup,
+		int32& InOutNextAutoSort,
+		TArray<FTextShaderPropertyDefinition>& OutProperties,
+		FString& OutError)
+	{
+		auto FlushStatement = [&](FString& Buffer) -> bool
+		{
+			const FString Statement = Buffer.TrimStartAndEnd();
+			Buffer.Reset();
+			if (Statement.IsEmpty())
+			{
+				return true;
+			}
+			FTextShaderPropertyDefinition Property;
+			if (!ParseSinglePropertyStatement(Statement, Property, OutError))
+			{
+				return false;
+			}
+			StampGroupedProperty(Property, InheritedGroup, InOutNextAutoSort);
+			OutProperties.Add(Property);
+			return true;
+		};
+
+		int32 ParenDepth = 0;
+		int32 BracketDepth = 0;
+		bool bInString = false;
+		FString Buffer;
+
+		int32 Index = 0;
+		while (Index < Content.Len())
+		{
+			const TCHAR Char = Content[Index];
+
+			if (bInString)
+			{
+				Buffer.AppendChar(Char);
+				if (Char == TCHAR('\\') && Index + 1 < Content.Len())
+				{
+					Buffer.AppendChar(Content[Index + 1]);
+					Index += 2;
+					continue;
+				}
+				if (Char == TCHAR('"'))
+				{
+					bInString = false;
+				}
+				++Index;
+				continue;
+			}
+
+			if (Char == TCHAR('"'))
+			{
+				bInString = true;
+				Buffer.AppendChar(Char);
+				++Index;
+				continue;
+			}
+			if (Char == TCHAR('('))
+			{
+				++ParenDepth;
+				Buffer.AppendChar(Char);
+				++Index;
+				continue;
+			}
+			if (Char == TCHAR(')'))
+			{
+				ParenDepth = FMath::Max(0, ParenDepth - 1);
+				Buffer.AppendChar(Char);
+				++Index;
+				continue;
+			}
+			if (Char == TCHAR('['))
+			{
+				++BracketDepth;
+				Buffer.AppendChar(Char);
+				++Index;
+				continue;
+			}
+			if (Char == TCHAR(']'))
+			{
+				BracketDepth = FMath::Max(0, BracketDepth - 1);
+				Buffer.AppendChar(Char);
+				++Index;
+				continue;
+			}
+
+			if (ParenDepth == 0 && BracketDepth == 0)
+			{
+				if (Char == TCHAR(';'))
+				{
+					if (!FlushStatement(Buffer))
+					{
+						return false;
+					}
+					++Index;
+					continue;
+				}
+
+				if (Char == TCHAR('{'))
+				{
+					FString GroupName;
+					if (!TryMatchGroupHead(Buffer, GroupName))
+					{
+						OutError = FString::Printf(
+							TEXT("Unexpected '{' in Properties near '%s'. Only Group(\"Name\") { ... } may open a brace here."),
+							*Buffer.TrimStartAndEnd());
+						return false;
+					}
+					if (GroupName.IsEmpty())
+					{
+						OutError = TEXT("Group(...) requires a non-empty name.");
+						return false;
+					}
+
+					int32 BraceDepth = 0;
+					bool bInBlockString = false;
+					int32 InnerStart = INDEX_NONE;
+					int32 InnerEnd = INDEX_NONE;
+					for (int32 Scan = Index; Scan < Content.Len(); ++Scan)
+					{
+						const TCHAR BlockChar = Content[Scan];
+						if (bInBlockString)
+						{
+							if (BlockChar == TCHAR('\\'))
+							{
+								++Scan;
+								continue;
+							}
+							if (BlockChar == TCHAR('"'))
+							{
+								bInBlockString = false;
+							}
+							continue;
+						}
+						if (BlockChar == TCHAR('"'))
+						{
+							bInBlockString = true;
+							continue;
+						}
+						if (BlockChar == TCHAR('{'))
+						{
+							if (BraceDepth == 0)
+							{
+								InnerStart = Scan + 1;
+							}
+							++BraceDepth;
+							continue;
+						}
+						if (BlockChar == TCHAR('}'))
+						{
+							--BraceDepth;
+							if (BraceDepth == 0)
+							{
+								InnerEnd = Scan;
+								break;
+							}
+						}
+					}
+
+					if (InnerStart == INDEX_NONE || InnerEnd == INDEX_NONE)
+					{
+						OutError = FString::Printf(TEXT("Unterminated Group(\"%s\") { ... } block."), *GroupName);
+						return false;
+					}
+
+					const FString Inner = Content.Mid(InnerStart, InnerEnd - InnerStart);
+					Buffer.Reset();
+					if (!ParsePropertyBlock(Inner, GroupName, InOutNextAutoSort, OutProperties, OutError))
+					{
+						return false;
+					}
+
+					Index = InnerEnd + 1;
+					while (Index < Content.Len() && FChar::IsWhitespace(Content[Index]))
+					{
+						++Index;
+					}
+					if (Index < Content.Len() && Content[Index] == TCHAR(';'))
+					{
+						++Index;
+					}
+					continue;
+				}
+			}
+
+			Buffer.AppendChar(Char);
+			++Index;
+		}
+
+		return FlushStatement(Buffer);
+	}
+
+	bool ParsePropertyStatements(const FString& BlockContent, TArray<FTextShaderPropertyDefinition>& OutProperties, FString& OutError)
+	{
+		int32 NextAutoSort = 0;
+		return ParsePropertyBlock(RemoveComments(BlockContent), FString(), NextAutoSort, OutProperties, OutError);
 	}
 
 	bool ParseSettingStatements(const FString& BlockContent, TMap<FString, FString>& OutSettings, FString& OutError)

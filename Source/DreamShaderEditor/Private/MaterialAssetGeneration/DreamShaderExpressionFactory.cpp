@@ -315,16 +315,26 @@ namespace UE::DreamShader::Editor::Private
 				return true;
 			}
 
-			if (FProperty* TextureProperty = FindMaterialExpressionArgumentProperty(Expression->GetClass(), TEXT("Texture")))
+			// Route the `= asset` default to whichever single-asset slot the parameter node exposes,
+			// in priority order. The first matching reflected property wins; a write FAILURE on a
+			// present property is returned as-is (we do not silently fall through to the next slot).
+			static const TCHAR* const AssetSlotCandidates[] = {
+				TEXT("Texture"),
+				TEXT("TextureObject"),
+				TEXT("SparseVolumeTexture"),
+				TEXT("VirtualTexture"),
+				TEXT("TextureCollection"),
+				TEXT("Font"),
+			};
+			for (const TCHAR* SlotName : AssetSlotCandidates)
 			{
-				return SetMaterialExpressionLiteralProperty(Expression, TextureProperty, Property.TextureDefaultObjectPath, OutError);
-			}
-			if (FProperty* TextureObjectProperty = FindMaterialExpressionArgumentProperty(Expression->GetClass(), TEXT("TextureObject")))
-			{
-				return SetMaterialExpressionLiteralProperty(Expression, TextureObjectProperty, Property.TextureDefaultObjectPath, OutError);
+				if (FProperty* SlotProperty = FindMaterialExpressionArgumentProperty(Expression->GetClass(), SlotName))
+				{
+					return SetMaterialExpressionLiteralProperty(Expression, SlotProperty, Property.TextureDefaultObjectPath, OutError);
+				}
 			}
 
-			OutError = FString::Printf(TEXT("'%s' does not expose a Texture property for %s."), *Expression->GetClass()->GetName(), *FormatMetadataContext(Property));
+			OutError = FString::Printf(TEXT("'%s' does not expose a texture/asset property for %s."), *Expression->GetClass()->GetName(), *FormatMetadataContext(Property));
 			return false;
 		}
 

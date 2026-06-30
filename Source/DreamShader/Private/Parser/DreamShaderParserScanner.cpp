@@ -986,52 +986,63 @@ namespace UE::DreamShader::Private
 	bool ParseTextureAssetReference(const FString& InText, FString& OutObjectPath, FString& OutError)
 	{
 		const FString Trimmed = InText.TrimStartAndEnd();
-		FScanner Scanner(Trimmed);
-
-		FString FunctionName;
-		if (!Scanner.ParseIdentifier(FunctionName, OutError) || !FunctionName.Equals(TEXT("Path"), ESearchCase::IgnoreCase))
-		{
-			OutError = TEXT("Texture defaults must use Path(Game|Engine|Plugin.PluginName, \"/Folder/Asset\") or Path(\"/Game/Folder/Asset\").");
-			return false;
-		}
-
-		if (!Scanner.Expect(TCHAR('('), OutError))
-		{
-			return false;
-		}
-
-		FString FirstArgument;
-		if (!Scanner.ParseSimpleValue(FirstArgument, OutError))
-		{
-			return false;
-		}
 
 		FString RootName;
 		FString AssetPath;
-		Scanner.SkipIgnored();
-		if (Scanner.TryConsume(TCHAR(',')))
+
+		if (Trimmed.StartsWith(TEXT("\"")))
 		{
-			RootName = FirstArgument.TrimStartAndEnd();
-			if (!Scanner.ParseSimpleValue(AssetPath, OutError))
-			{
-				return false;
-			}
+			// Bare quoted absolute path: "/Game/Folder/Asset" is accepted as Path("/Game/Folder/Asset").
+			// (A root-relative path still needs Path(Root, "...") because there is no root to resolve.)
+			AssetPath = Trimmed;
 		}
 		else
 		{
-			AssetPath = FirstArgument;
-		}
+			FScanner Scanner(Trimmed);
 
-		if (!Scanner.Expect(TCHAR(')'), OutError))
-		{
-			return false;
-		}
+			FString FunctionName;
+			if (!Scanner.ParseIdentifier(FunctionName, OutError) || !FunctionName.Equals(TEXT("Path"), ESearchCase::IgnoreCase))
+			{
+				OutError = TEXT("Texture defaults must use Path(Game|Engine|Plugin.PluginName, \"/Folder/Asset\"), Path(\"/Game/Folder/Asset\"), or a bare \"/Game/Folder/Asset\".");
+				return false;
+			}
 
-		Scanner.SkipIgnored();
-		if (!Scanner.IsAtEnd())
-		{
-			OutError = TEXT("Unexpected trailing tokens after texture Path(...) reference.");
-			return false;
+			if (!Scanner.Expect(TCHAR('('), OutError))
+			{
+				return false;
+			}
+
+			FString FirstArgument;
+			if (!Scanner.ParseSimpleValue(FirstArgument, OutError))
+			{
+				return false;
+			}
+
+			Scanner.SkipIgnored();
+			if (Scanner.TryConsume(TCHAR(',')))
+			{
+				RootName = FirstArgument.TrimStartAndEnd();
+				if (!Scanner.ParseSimpleValue(AssetPath, OutError))
+				{
+					return false;
+				}
+			}
+			else
+			{
+				AssetPath = FirstArgument;
+			}
+
+			if (!Scanner.Expect(TCHAR(')'), OutError))
+			{
+				return false;
+			}
+
+			Scanner.SkipIgnored();
+			if (!Scanner.IsAtEnd())
+			{
+				OutError = TEXT("Unexpected trailing tokens after texture Path(...) reference.");
+				return false;
+			}
 		}
 
 		AssetPath = Unquote(AssetPath.TrimStartAndEnd());
