@@ -301,14 +301,111 @@ namespace UE::DreamShader
 			return OutCode;
 		}
 
+		// Rewrite each top-level `return <expr>;` in a function body into `__return = <expr>;` so a
+		// function declared with a return type lowers onto the synthetic __return out-parameter. Mirrors
+		// EnsureTopLevelReturn's comment/string/char/brace-aware scan; errors on a bare `return;`.
+		static bool LowerReturnToOutAssign(const FString& InHLSL, FString& OutLoweredHLSL, FString& OutError)
+		{
+			const FString Sanitized = InHLSL.Replace(TEXT("\r\n"), TEXT("\n"));
+			auto IsIdentifierPart = [](const TCHAR Character)
+			{
+				return FChar::IsAlnum(Character) || Character == TCHAR('_');
+			};
+
+			FString Result;
+			Result.Reserve(Sanitized.Len() + 16);
+			int32 BraceDepth = 0;
+			bool bInString = false;
+			bool bInChar = false;
+			bool bInLineComment = false;
+			bool bInBlockComment = false;
+
+			int32 Index = 0;
+			while (Index < Sanitized.Len())
+			{
+				const TCHAR Char = Sanitized[Index];
+				const TCHAR Next = Sanitized.IsValidIndex(Index + 1) ? Sanitized[Index + 1] : TCHAR('\0');
+
+				if (bInLineComment)
+				{
+					Result.AppendChar(Char);
+					if (Char == TCHAR('\n')) { bInLineComment = false; }
+					++Index;
+					continue;
+				}
+				if (bInBlockComment)
+				{
+					Result.AppendChar(Char);
+					if (Char == TCHAR('*') && Next == TCHAR('/')) { Result.AppendChar(Next); bInBlockComment = false; Index += 2; }
+					else { ++Index; }
+					continue;
+				}
+				if (bInString || bInChar)
+				{
+					Result.AppendChar(Char);
+					if (Char == TCHAR('\\') && Sanitized.IsValidIndex(Index + 1)) { Result.AppendChar(Sanitized[Index + 1]); Index += 2; continue; }
+					if (bInString && Char == TCHAR('"')) { bInString = false; }
+					else if (bInChar && Char == TCHAR('\'')) { bInChar = false; }
+					++Index;
+					continue;
+				}
+				if (Char == TCHAR('/') && Next == TCHAR('/')) { bInLineComment = true; Result.AppendChar(Char); Result.AppendChar(Next); Index += 2; continue; }
+				if (Char == TCHAR('/') && Next == TCHAR('*')) { bInBlockComment = true; Result.AppendChar(Char); Result.AppendChar(Next); Index += 2; continue; }
+				if (Char == TCHAR('"')) { bInString = true; Result.AppendChar(Char); ++Index; continue; }
+				if (Char == TCHAR('\'')) { bInChar = true; Result.AppendChar(Char); ++Index; continue; }
+				if (Char == TCHAR('{')) { ++BraceDepth; Result.AppendChar(Char); ++Index; continue; }
+				if (Char == TCHAR('}')) { if (BraceDepth > 0) { --BraceDepth; } Result.AppendChar(Char); ++Index; continue; }
+
+				if (BraceDepth == 0 && Char == TCHAR('r') && Sanitized.Mid(Index, 6) == TEXT("return"))
+				{
+					const bool bLeftBoundary = (Index == 0) || !IsIdentifierPart(Sanitized[Index - 1]);
+					const TCHAR After = Sanitized.IsValidIndex(Index + 6) ? Sanitized[Index + 6] : TCHAR('\0');
+					if (bLeftBoundary && !IsIdentifierPart(After))
+					{
+						int32 Probe = Index + 6;
+						while (Sanitized.IsValidIndex(Probe) && FChar::IsWhitespace(Sanitized[Probe])) { ++Probe; }
+						if (Sanitized.IsValidIndex(Probe) && Sanitized[Probe] == TCHAR(';'))
+						{
+							OutError = TEXT("A function with a return type cannot use a bare 'return;'. Return a value, e.g. 'return expr;'.");
+							return false;
+						}
+						Result.Append(TEXT("__return ="));
+						Index += 6;
+						continue;
+					}
+				}
+
+				Result.AppendChar(Char);
+				++Index;
+			}
+
+			OutLoweredHLSL = Result;
+			return true;
+		}
+
 		static bool ParseModernFunctionSignature(
 			const FString& FunctionName,
 			const FString& ParameterBlock,
+			const bool bHasReturnType,
+			const FString& ReturnTypeToken,
 			FTextShaderFunctionDefinition& OutFunction,
 			FString& OutError)
 		{
 			OutFunction.Inputs.Reset();
 			OutFunction.Results.Reset();
+
+			if (bHasReturnType)
+			{
+				FTextShaderFunctionParameter ReturnParameter;
+				ReturnParameter.Type = NormalizeShaderTypeToken(ReturnTypeToken);
+				ReturnParameter.Name = TEXT("__return");
+				if (ReturnParameter.Type.IsEmpty())
+				{
+					OutError = FString::Printf(TEXT("Function '%s' has an invalid return type '%s'."), *FunctionName, *ReturnTypeToken);
+					return false;
+				}
+				OutFunction.Results.Add(ReturnParameter);
+			}
 
 			for (const FString& RawParameter : SplitTopLevelDelimited(ParameterBlock, TCHAR(',')))
 			{
@@ -362,6 +459,12 @@ namespace UE::DreamShader
 					return false;
 				}
 
+				if (NameToken.Equals(TEXT("__return"), ESearchCase::IgnoreCase))
+				{
+					OutError = FString::Printf(TEXT("Function '%s' parameter name '__return' is reserved for return-type lowering."), *FunctionName);
+					return false;
+				}
+
 				FTextShaderFunctionParameter ParsedParameter;
 				ParsedParameter.Type = TypeToken;
 				ParsedParameter.Name = NameToken;
@@ -373,6 +476,14 @@ namespace UE::DreamShader
 				{
 					OutFunction.Inputs.Add(ParsedParameter);
 				}
+			}
+
+			if (bHasReturnType && OutFunction.Results.Num() > 1)
+			{
+				OutError = FString::Printf(
+					TEXT("Function '%s' has a return type and cannot also declare out parameters. Use out parameters without a return type for multiple outputs."),
+					*FunctionName);
+				return false;
 			}
 
 			if (OutFunction.Results.IsEmpty())
@@ -415,6 +526,27 @@ namespace UE::DreamShader
 				}
 			}
 
+			// Optional leading return type: `Function float Foo(...)` declares Foo returning float.
+			// Disambiguate by lookahead -- if the identifier just read is followed by '(', it is the
+			// function name (legacy form); otherwise it is the return type and the next identifier names
+			// the function.
+			bool bHasReturnType = false;
+			FString ReturnTypeToken;
+			Scanner.SkipIgnored();
+			if (Scanner.Peek() != TCHAR('('))
+			{
+				ReturnTypeToken = FunctionName;
+				bHasReturnType = true;
+				if (!Scanner.ParseIdentifier(FunctionName, OutError))
+				{
+					OutError = FString::Printf(
+						TEXT("%s declaration is missing a function name after the return type '%s'."),
+						bGraphFunction ? TEXT("GraphFunction") : TEXT("Function"),
+						*ReturnTypeToken);
+					return false;
+				}
+			}
+
 			const FString QualifiedFunctionName = NamespaceName.IsEmpty()
 				? FunctionName
 				: NamespaceName + TEXT("::") + FunctionName;
@@ -434,12 +566,21 @@ namespace UE::DreamShader
 			}
 
 			Function.Name = QualifiedFunctionName;
-			if (!ParseModernFunctionSignature(QualifiedFunctionName, ParameterBlock, Function, OutError))
+			if (!ParseModernFunctionSignature(QualifiedFunctionName, ParameterBlock, bHasReturnType, ReturnTypeToken, Function, OutError))
 			{
 				return false;
 			}
 
 			Function.HLSL = NormalizeShaderLanguageText(FunctionBody.TrimStartAndEnd());
+			if (bHasReturnType)
+			{
+				FString LoweredBody;
+				if (!LowerReturnToOutAssign(Function.HLSL, LoweredBody, OutError))
+				{
+					return false;
+				}
+				Function.HLSL = LoweredBody;
+			}
 			if (bGraphFunction)
 			{
 				OutDefinition.GraphFunctions.Add(Function);
