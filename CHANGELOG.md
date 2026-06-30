@@ -1,5 +1,22 @@
 # DreamShader ChangeLog
 
+## 1.4.1 - 2026-07-01
+
+### Added
+
+- Parameter input pins can be wired from the `Graph` with a call form, e.g. `Mask(Input = ...)` and `Tex(Coordinates = ...)`, for channel/component-mask and texture-sample parameters.
+- `Docs/ParameterReference.md`: per-type declaration + metadata reference covering asset slots (`[Prop = Path(...)]`) and input pins for every parameter type.
+
+### Fixed
+
+- Decompiled multi-output Custom nodes emitted both `Output=` and `OutputIndex=` and failed to regenerate; the decompiler now emits a single output selector.
+- `DynamicParameter`, `CurveAtlasRowParameter` inline defaults, and the texture-sample parameter family failed to generate or compile; they now produce valid nodes (texture samples seed a default texture).
+- Import directives no longer shift diagnostic line/column numbers in multi-file sources.
+
+### Changed
+
+- De-duplicated internal JSON/SQLite editor helpers to remove a unity-build symbol-collision risk.
+
 ## 1.4.0 - 2026-06-06
 
 ### Compatibility
