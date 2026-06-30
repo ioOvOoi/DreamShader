@@ -248,4 +248,110 @@ namespace UE::DreamShader::Editor::Private
 		OutValue.bIsSubstrateMaterial = false;
 		return true;
 	}
+
+	bool FCodeGraphBuilder::ParameterTypeAcceptsInputArguments(const FString& ParameterNodeType) const
+	{
+		// Parameter node types that own input pins the author may want to wire from the Graph.
+		static const TCHAR* const InputBearingTypes[] = {
+			TEXT("ChannelMaskParameter"),
+			TEXT("StaticComponentMaskParameter"),
+			TEXT("TextureSampleParameter2D"),
+			TEXT("TextureSampleParameter2DArray"),
+			TEXT("TextureSampleParameterCube"),
+			TEXT("TextureSampleParameterCubeArray"),
+			TEXT("TextureSampleParameterVolume"),
+			TEXT("TextureSampleParameterSubUV"),
+			TEXT("RuntimeVirtualTextureSampleParameter"),
+			TEXT("SparseVolumeTextureSampleParameter"),
+		};
+		for (const TCHAR* Type : InputBearingTypes)
+		{
+			if (ParameterNodeType.Equals(Type, ESearchCase::IgnoreCase))
+			{
+				return true;
+			}
+		}
+		return false;
+	}
+
+	bool FCodeGraphBuilder::EvaluateConfigurableParameterCall(
+		const FTextShaderPropertyDefinition& Property,
+		const TArray<FCodeCallArgument>& Arguments,
+		FCodeValue& OutValue,
+		FString& OutError)
+	{
+		// Materialise the parameter node (and its base output) exactly as a bare reference does, then
+		// wire each named argument onto the matching input pin. The node is cached by name, so a later
+		// bare reference to the same parameter shares this configured node.
+		OutError.Reset();
+		if (!TryCreatePropertyValue(Property.Name, OutValue, OutError))
+		{
+			if (OutError.IsEmpty())
+			{
+				OutError = FString::Printf(TEXT("Could not resolve parameter '%s' for configuration."), *Property.Name);
+			}
+			return false;
+		}
+		if (!OutError.IsEmpty())
+		{
+			return false;
+		}
+
+		UMaterialExpression* Expression = OutValue.Expression;
+		if (!Expression)
+		{
+			OutError = FString::Printf(TEXT("Parameter '%s' did not produce an expression node."), *Property.Name);
+			return false;
+		}
+
+		for (const FCodeCallArgument& Argument : Arguments)
+		{
+			if (!Argument.bIsNamed)
+			{
+				OutError = FString::Printf(
+					TEXT("Parameter '%s' must be called with named arguments wiring its input pins (e.g. %s(Coordinates=...) or %s(Input=...))."),
+					*Property.Name, *Property.Name, *Property.Name);
+				return false;
+			}
+
+			const FString NormalizedArgumentName = UE::DreamShader::NormalizeSettingKey(Argument.Name);
+			FExpressionInput* BoundInput = nullptr;
+			for (int32 InputIndex = 0; InputIndex < GetDreamShaderExpressionInputCount(Expression); ++InputIndex)
+			{
+				FExpressionInput* CandidateInput = Expression->GetInput(InputIndex);
+				const FName InputName = Expression->GetInputName(InputIndex);
+				if (CandidateInput
+					&& !InputName.IsNone()
+					&& UE::DreamShader::NormalizeSettingKey(InputName.ToString()) == NormalizedArgumentName)
+				{
+					BoundInput = CandidateInput;
+					break;
+				}
+			}
+
+			if (!BoundInput)
+			{
+				OutError = FString::Printf(
+					TEXT("Parameter '%s' (%s) has no input pin named '%s'. Asset slots (Texture/Curve/Font/...) are set via [%s=Path(...)] metadata, not call arguments."),
+					*Property.Name, *Property.ParameterNodeType, *Argument.Name, *Argument.Name);
+				return false;
+			}
+
+			FCodeValue InputValue;
+			if (!EvaluateExpression(Argument.Expression, InputValue, OutError))
+			{
+				OutError = FString::Printf(TEXT("Parameter '%s' input '%s': %s"), *Property.Name, *Argument.Name, *OutError);
+				return false;
+			}
+			if (InputValue.bIsTextureObject || InputValue.bIsMaterialAttributes || InputValue.bIsSubstrateMaterial)
+			{
+				OutError = FString::Printf(TEXT("Parameter '%s' input '%s' must be a numeric value."), *Property.Name, *Argument.Name);
+				return false;
+			}
+
+			ConnectCodeValueToInput(*BoundInput, InputValue);
+		}
+
+		return true;
+	}
 }

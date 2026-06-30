@@ -1520,6 +1520,12 @@ namespace UE::DreamShader::Editor::Private
 			{
 				return EvaluateStaticSwitchParameterCall(*Property, Expression->Arguments, OutValue, OutError);
 			}
+			// Parameter node types that own input pins (channel/component mask, texture samples) accept a
+			// call form that wires those pins: e.g. Msk(Input=Col), TexCube(Coordinates=Dir).
+			if (ParameterTypeAcceptsInputArguments(Property->ParameterNodeType))
+			{
+				return EvaluateConfigurableParameterCall(*Property, Expression->Arguments, OutValue, OutError);
+			}
 		}
 
 		const FTextShaderFunctionDefinition* CustomFunction = FindFunctionDefinition(CalleeName);

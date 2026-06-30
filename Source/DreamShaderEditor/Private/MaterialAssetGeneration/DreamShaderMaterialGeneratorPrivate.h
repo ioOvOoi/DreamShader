@@ -452,6 +452,15 @@ namespace UE::DreamShader::Editor::Private
 			const TArray<FCodeCallArgument>& Arguments,
 			FCodeValue& OutValue,
 			FString& OutError);
+		// A declared parameter that owns input pins (channel/component mask, texture samples) can be
+		// called with named arguments to wire those pins, e.g. Msk(Input=Col) or TexCube(Coordinates=Dir).
+		// Asset slots (Texture/Curve/Font/...) are set via [Prop=Path(...)] metadata, not here.
+		bool ParameterTypeAcceptsInputArguments(const FString& ParameterNodeType) const;
+		bool EvaluateConfigurableParameterCall(
+			const FTextShaderPropertyDefinition& Property,
+			const TArray<FCodeCallArgument>& Arguments,
+			FCodeValue& OutValue,
+			FString& OutError);
 		const FTextShaderFunctionDefinition* FindFunctionDefinition(const FString& FunctionName) const;
 		const FTextShaderFunctionDefinition* FindGraphFunctionDefinition(const FString& FunctionName) const;
 		const FTextShaderMaterialFunctionDefinition* FindMaterialFunctionDefinition(const FString& FunctionName) const;
