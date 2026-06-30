@@ -30,6 +30,7 @@
 #include "Materials/MaterialExpressionConstant2Vector.h"
 #include "Materials/MaterialExpressionConstant3Vector.h"
 #include "Materials/MaterialExpressionConstant4Vector.h"
+#include "Materials/MaterialExpressionDynamicParameter.h"
 #include "Materials/MaterialExpressionObjectPositionWS.h"
 #include "Materials/MaterialExpressionNamedReroute.h"
 #include "Materials/MaterialExpressionPanner.h"
@@ -209,6 +210,27 @@ namespace UE::DreamShader::Editor::Private
 			FProperty* Property = FindMaterialExpressionArgumentProperty(Expression->GetClass(), PropertyName);
 			if (!Property)
 			{
+				// Group / SortPriority / Desc are the parameter-panel organization fields auto-injected
+				// from FTextShaderMetadata; they live on UMaterialExpressionParameter. A few parameter
+				// nodes (e.g. UMaterialExpressionDynamicParameter) are not Parameter subclasses and do
+				// not expose them -- skip those advisory fields with a warning instead of aborting the
+				// whole material. Any other (author-typed) reflected property still fails hard so typos
+				// surface.
+				const bool bIsSoftOrganizationField =
+					PropertyName.Equals(TEXT("Group"), ESearchCase::IgnoreCase)
+					|| PropertyName.Equals(TEXT("SortPriority"), ESearchCase::IgnoreCase)
+					|| PropertyName.Equals(TEXT("Desc"), ESearchCase::IgnoreCase);
+				if (bIsSoftOrganizationField)
+				{
+					UE_LOG(
+						LogDreamShader,
+						Warning,
+						TEXT("'%s' does not expose the '%s' organization field; ignoring it for this parameter."),
+						*Expression->GetClass()->GetName(),
+						*PropertyName);
+					continue;
+				}
+
 				OutError = FString::Printf(
 					TEXT("Metadata property '%s' is not a reflected property on '%s'."),
 					*PropertyName,
@@ -242,6 +264,23 @@ namespace UE::DreamShader::Editor::Private
 		if (FProperty* ParameterNameProperty = FindMaterialExpressionArgumentProperty(Expression->GetClass(), TEXT("ParameterName")))
 		{
 			return SetMaterialExpressionLiteralProperty(Expression, ParameterNameProperty, ParameterName, OutError);
+		}
+
+		// UMaterialExpressionDynamicParameter is the one parameter node that is NOT a
+		// UMaterialExpressionParameter: it has no single ParameterName, instead carrying one name per
+		// output in ParamNames[]. Use the declared identifier as the primary (index 0) output name and
+		// keep the engine defaults for the remaining outputs.
+		if (UMaterialExpressionDynamicParameter* DynamicParameter = Cast<UMaterialExpressionDynamicParameter>(Expression))
+		{
+			if (DynamicParameter->ParamNames.Num() == 0)
+			{
+				DynamicParameter->ParamNames.Add(ParameterName);
+			}
+			else
+			{
+				DynamicParameter->ParamNames[0] = ParameterName;
+			}
+			return true;
 		}
 
 		OutError = FString::Printf(TEXT("'%s' does not expose a ParameterName property."), *Expression->GetClass()->GetName());

@@ -12,6 +12,9 @@
 #include "Materials/MaterialExpressionAdd.h"
 #include "Materials/MaterialExpressionMultiply.h"
 #include "Materials/MaterialExpressionSine.h"
+#include "Materials/MaterialExpressionScalarParameter.h"
+#include "Materials/MaterialExpressionVectorParameter.h"
+#include "Materials/MaterialExpressionDynamicParameter.h"
 #include "Decompiler/DreamShaderGraphDecompiler.h"
 #include "Decompiler/DreamShaderDecompileService.h"
 #include "Misc/AutomationTest.h"
@@ -787,6 +790,61 @@ Shader(Name="DreamShaderTests/Automation/%s")
 	}
 
 	TestTrue(TEXT("'sin' generates a Sine node"), CountMaterialExpressionsOfClass<UMaterialExpressionSine>(Material) >= 1);
+	return true;
+}
+
+// Generation half of the parameter-expression coverage (the parse half lives in
+// DreamShaderParameterTests.cpp). Declares parameters with AND without inline defaults, references
+// them in the graph, and asserts the matching UMaterialExpression*Parameter nodes are created --
+// pinning both "the parameter generates its node" and the "default is optional" contract end to end.
+IMPLEMENT_CUSTOM_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderParameterNodeGenerationTest,
+	FDreamShaderQuietAutomationTestBase,
+	"DreamShader.Gen.Parameters.NodeCreation",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FDreamShaderParameterNodeGenerationTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_Params"));
+	// Scal and Vec are declared WITHOUT `= value` on purpose (optional-default contract); Dyn carries
+	// an inline default. All three are referenced so lazy materialization actually creates the nodes.
+	const FString Source = FString::Printf(TEXT(R"(
+Shader(Name="DreamShaderTests/Automation/%s")
+{
+    Properties = {
+        ScalarParameter Scal [Group="Gen"; SortPriority=10;];
+        VectorParameter Vec [Group="Gen"; SortPriority=20;];
+        DynamicParameter Dyn = float4(0.1, 0.2, 0.3, 1.0) [Group="Gen"; SortPriority=30;];
+    }
+
+    Settings = { Domain = "Surface"; ShadingModel = "Unlit"; BlendMode = "Opaque"; }
+
+    Outputs = {
+        vec3 Color;
+        Base.EmissiveColor = Color;
+    }
+
+    Graph = {
+        Color = Vec.rgb * Scal + Dyn.rgb;
+    }
+}
+)"), *AssetName);
+
+	UMaterial* Material = nullptr;
+	if (!GenerateAndLoadMaterial(*this, Artifacts, AssetName, Source, Material))
+	{
+		return false;
+	}
+
+	TestEqual(TEXT("ScalarParameter declared without a default generates exactly one node"),
+		CountMaterialExpressionsOfClass<UMaterialExpressionScalarParameter>(Material), 1);
+	TestEqual(TEXT("VectorParameter declared without a default generates exactly one node"),
+		CountMaterialExpressionsOfClass<UMaterialExpressionVectorParameter>(Material), 1);
+	TestEqual(TEXT("DynamicParameter generates exactly one node"),
+		CountMaterialExpressionsOfClass<UMaterialExpressionDynamicParameter>(Material), 1);
 	return true;
 }
 
