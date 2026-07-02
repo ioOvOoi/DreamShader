@@ -14,6 +14,7 @@ class UMaterial;
 class UMaterialFunction;
 class UMaterialExpression;
 class UMaterialExpressionMaterialFunctionCall;
+class UDreamShaderMaterialInstance;
 class UClass;
 class UEnum;
 class FProperty;
@@ -297,6 +298,9 @@ namespace UE::DreamShader::Editor::Private
 		bool& bOutIsSubstrateMaterial);
 	bool CreateOrReuseMaterial(const FTextShaderDefinition& Definition, UMaterial*& OutMaterial, FString& OutError, bool bTransient = false);
 	bool CreateOrReuseMaterialFunction(const FTextShaderMaterialFunctionDefinition& Definition, UMaterialFunction*& OutFunction, FString& OutError, bool bTransient = false);
+	bool CreateOrReuseInstanceMaterial(const FTextShaderDefinition& Definition, ::UDreamShaderMaterialInstance*& OutInstance, FString& OutError, bool bTransient = false);
+	bool TryResolveBlendModeSetting(const FString& InValue, EBlendMode& OutBlendMode);
+	bool TryResolveShadingModelSetting(const FString& InValue, EMaterialShadingModel& OutShadingModel);
 	bool TryResolveMaterialFunctionParameterType(
 		const FString& InTypeName,
 		int32& OutComponentCount,

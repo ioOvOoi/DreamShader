@@ -6,11 +6,16 @@
 #include "DreamShaderMaterialGeneratorPrivate.h"
 #include "DreamShaderMaterialGeneratorSourceLoading.h"
 
+#include "DreamShaderMaterialInstance.h"
 #include "DreamShaderModule.h"
 #include "DreamShaderParser.h"
 #include "DreamShaderVersionCompat.h"
 
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "CoreGlobals.h"
+#include "HAL/FileManager.h"
+#include "Interfaces/IPluginManager.h"
+#include "Misc/PackageName.h"
 #include "MaterialEditingLibrary.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialExpression.h"
@@ -1950,6 +1955,452 @@ namespace UE::DreamShader::Editor
 		return true;
 	}
 
+	namespace Private
+	{
+		static const TCHAR* GInstanceHostPackageName = TEXT("/DreamShader/Host/M_DreamShaderHost");
+
+		static FString GetHlslTypeForCustomOutput(const ECustomMaterialOutputType OutputType)
+		{
+			switch (OutputType)
+			{
+			case CMOT_Float1: return TEXT("float");
+			case CMOT_Float2: return TEXT("float2");
+			case CMOT_Float3: return TEXT("float3");
+			default:          return TEXT("float4");
+			}
+		}
+
+		struct FInstanceBackendOutput
+		{
+			FDreamShaderInstanceOutput Output;
+			FString BindingSource;
+		};
+
+		// Decide whether Settings = { Backend = "..." } requests the instance backend.
+		static bool ResolveInstanceBackendRequested(const FTextShaderDefinition& Definition, bool& bOutInstanceBackend, FString& OutError)
+		{
+			bOutInstanceBackend = false;
+			FString Value;
+			if (!Definition.TryGetSetting(TEXT("Backend"), Value))
+			{
+				return true;
+			}
+
+			const FString Trimmed = Value.TrimStartAndEnd().TrimQuotes();
+			if (Trimmed.Equals(TEXT("Instance"), ESearchCase::IgnoreCase))
+			{
+				bOutInstanceBackend = true;
+				return true;
+			}
+			if (Trimmed.Equals(TEXT("Graph"), ESearchCase::IgnoreCase) || Trimmed.IsEmpty())
+			{
+				return true;
+			}
+
+			OutError = FString::Printf(TEXT("Unsupported Backend '%s'. Supported values: Graph, Instance."), *Value);
+			return false;
+		}
+
+		// Gather DSL properties/outputs into the instance model. The instance backend covers the
+		// pure-HLSL subset of the DSL: scalar/vector parameters and consts, HLSL Graph code, and
+		// direct Base.<Property> bindings. Everything translator-level is rejected with a clear error.
+		static bool BuildInstanceBackendModel(
+			const FTextShaderDefinition& Definition,
+			TArray<FDreamShaderInstanceParameter>& OutParameters,
+			FString& OutConstDeclarations,
+			TArray<FInstanceBackendOutput>& OutOutputs,
+			FString& OutError)
+		{
+			if (!Definition.Functions.IsEmpty() || !Definition.GraphFunctions.IsEmpty()
+				|| !Definition.MaterialFunctions.IsEmpty() || !Definition.VirtualFunctions.IsEmpty())
+			{
+				OutError = TEXT("Backend=\"Instance\" does not support imported/declared functions yet; write the HLSL directly in the Graph block.");
+				return false;
+			}
+
+			FString DomainValue;
+			if (Definition.TryGetSetting(TEXT("Domain"), DomainValue) || Definition.TryGetSetting(TEXT("MaterialDomain"), DomainValue))
+			{
+				if (!DomainValue.TrimStartAndEnd().TrimQuotes().Equals(TEXT("Surface"), ESearchCase::IgnoreCase))
+				{
+					OutError = FString::Printf(TEXT("Backend=\"Instance\" only supports Domain=\"Surface\" (the shared host material's domain); got '%s'."), *DomainValue);
+					return false;
+				}
+			}
+
+			for (const FTextShaderPropertyDefinition& Property : Definition.Properties)
+			{
+				if (Property.Source != ETextShaderPropertySource::Parameter)
+				{
+					OutError = FString::Printf(TEXT("Backend=\"Instance\" does not support UE builtin property '%s'."), *Property.Name);
+					return false;
+				}
+
+				switch (Property.Type)
+				{
+				case ETextShaderPropertyType::Scalar:
+					if (Property.bConst)
+					{
+						OutConstDeclarations += FString::Printf(TEXT("static const float %s = %f;\n"), *Property.Name, Property.ScalarDefaultValue);
+					}
+					else
+					{
+						FDreamShaderInstanceParameter Parameter;
+						Parameter.Name = FName(*Property.Name);
+						Parameter.Type = EDreamShaderInstanceParameterType::Scalar;
+						Parameter.ScalarDefault = static_cast<float>(Property.ScalarDefaultValue);
+						OutParameters.Add(MoveTemp(Parameter));
+					}
+					break;
+
+				case ETextShaderPropertyType::Vector:
+					if (Property.bConst)
+					{
+						const FLinearColor& Value = Property.VectorDefaultValue;
+						OutConstDeclarations += FString::Printf(
+							TEXT("static const float4 %s = float4(%f, %f, %f, %f);\n"),
+							*Property.Name, Value.R, Value.G, Value.B, Value.A);
+					}
+					else
+					{
+						FDreamShaderInstanceParameter Parameter;
+						Parameter.Name = FName(*Property.Name);
+						Parameter.Type = EDreamShaderInstanceParameterType::Vector;
+						Parameter.VectorDefault = Property.VectorDefaultValue;
+						OutParameters.Add(MoveTemp(Parameter));
+					}
+					break;
+
+				default:
+					OutError = FString::Printf(TEXT("Backend=\"Instance\" does not support texture property '%s' yet."), *Property.Name);
+					return false;
+				}
+			}
+
+			for (const FTextShaderOutputBinding& Binding : Definition.Outputs)
+			{
+				if (Binding.TargetKind != FTextShaderOutputBinding::ETargetKind::MaterialProperty)
+				{
+					OutError = TEXT("Backend=\"Instance\" only supports direct Base.<Property> output bindings.");
+					return false;
+				}
+
+				FResolvedMaterialProperty Resolved;
+				if (!ResolveMaterialProperty(Binding.MaterialProperty, Resolved))
+				{
+					OutError = FString::Printf(TEXT("Unknown material output '%s'."), *Binding.MaterialProperty);
+					return false;
+				}
+				if (Resolved.bIsSubstrateMaterial || Resolved.OutputType == CMOT_MaterialAttributes)
+				{
+					OutError = FString::Printf(TEXT("Backend=\"Instance\" does not support the '%s' output (Substrate/MaterialAttributes are translator-level)."), *Binding.MaterialProperty);
+					return false;
+				}
+
+				FInstanceBackendOutput Output;
+				Output.Output.Property = Resolved.Property;
+				Output.Output.EvalFunctionName = FString::Printf(TEXT("DreamShaderEval_%s"), *Binding.MaterialProperty);
+				Output.Output.OutputType = Resolved.OutputType;
+				Output.BindingSource = Binding.SourceText;
+				OutOutputs.Add(MoveTemp(Output));
+			}
+
+			if (OutOutputs.IsEmpty())
+			{
+				OutError = TEXT("Backend=\"Instance\" requires at least one Base.<Property> output binding.");
+				return false;
+			}
+
+			return true;
+		}
+
+		// Emit the instance's .ush: one eval function per bound material property, all sharing the
+		// DSL parameters as arguments, plus the const declarations. Writes into the generated-shader
+		// directory that DreamShaderModule maps as a virtual shader source root.
+		static bool WriteInstanceGeneratedInclude(
+			const FString& SourceFilePath,
+			const FTextShaderDefinition& Definition,
+			const TArray<FDreamShaderInstanceParameter>& Parameters,
+			const FString& ConstDeclarations,
+			const TArray<FInstanceBackendOutput>& Outputs,
+			FString& OutVirtualPath,
+			FString& OutError)
+		{
+			const FString NormalizedCode = NormalizeShaderLanguageText(Definition.Code);
+			if (NormalizedCode.Contains(TEXT("UE.")) || NormalizedCode.Contains(TEXT("Substrate.")))
+			{
+				OutError = TEXT("Backend=\"Instance\" Graph code must be pure HLSL; UE.*/Substrate.* graph nodes are not available in this backend.");
+				return false;
+			}
+
+			FString ParameterList;
+			for (const FDreamShaderInstanceParameter& Parameter : Parameters)
+			{
+				if (!ParameterList.IsEmpty())
+				{
+					ParameterList += TEXT(", ");
+				}
+				ParameterList += FString::Printf(
+					TEXT("%s %s"),
+					Parameter.Type == EDreamShaderInstanceParameterType::Scalar ? TEXT("float") : TEXT("float4"),
+					*Parameter.Name.ToString());
+			}
+
+			FString Declarations;
+			for (const FTextShaderVariableDeclaration& Declaration : Definition.OutputDeclarations)
+			{
+				const FString HlslType = NormalizeShaderTypeToken(Declaration.Type);
+				const FString DefaultValue = Declaration.bHasDefaultValue
+					? NormalizeShaderLanguageText(Declaration.DefaultValueText)
+					: FString::Printf(TEXT("(%s)0"), *HlslType);
+				Declarations += FString::Printf(TEXT("	%s %s = %s;\n"), *HlslType, *Declaration.Name, *DefaultValue);
+			}
+
+			const uint32 PathHash = GetTypeHash(UE::DreamShader::NormalizeSourceFilePath(SourceFilePath));
+			const FString FileName = FString::Printf(TEXT("DSI_%s_%08x.ush"), *FPaths::GetBaseFilename(SourceFilePath), PathHash);
+			OutVirtualPath = UE::DreamShader::GetGeneratedShaderVirtualDirectory() / FileName;
+
+			FString Content;
+			Content += FString::Printf(TEXT("// Generated by DreamShader (instance backend) from %s -- do not edit.\n"), *FPaths::GetCleanFilename(SourceFilePath));
+			const FString GuardMacro = FString::Printf(TEXT("DREAMSHADER_INSTANCE_%08X"), PathHash);
+			Content += FString::Printf(TEXT("#ifndef %s\n#define %s\n\n"), *GuardMacro, *GuardMacro);
+			if (!ConstDeclarations.IsEmpty())
+			{
+				Content += ConstDeclarations;
+				Content += TEXT("\n");
+			}
+
+			for (const FInstanceBackendOutput& Output : Outputs)
+			{
+				Content += FString::Printf(
+					TEXT("%s %s(%s)\n{\n%s%s\n	return (%s);\n}\n\n"),
+					*GetHlslTypeForCustomOutput(Output.Output.OutputType),
+					*Output.Output.EvalFunctionName,
+					*ParameterList,
+					*Declarations,
+					*NormalizedCode,
+					*NormalizeShaderLanguageText(Output.BindingSource));
+			}
+
+			Content += FString::Printf(TEXT("#endif // %s\n"), *GuardMacro);
+
+			const FString DiskPath = UE::DreamShader::GetGeneratedShaderDirectory() / FileName;
+			if (!FFileHelper::SaveStringToFile(Content, *DiskPath, FFileHelper::EEncodingOptions::ForceUTF8WithoutBOM))
+			{
+				OutError = FString::Printf(TEXT("Failed to write generated instance shader '%s'."), *DiskPath);
+				return false;
+			}
+
+			return true;
+		}
+
+		// The single committed parent material every instance material derives from. Created on first
+		// use and saved into the plugin's Content mount; its graph stays empty because the instance
+		// resource overrides property compilation for every DSL-bound output.
+		static UMaterial* EnsureInstanceHostMaterial(FString& OutError)
+		{
+			const FString HostObjectPath = FString::Printf(TEXT("%s.M_DreamShaderHost"), GInstanceHostPackageName);
+			if (UMaterial* Existing = LoadObject<UMaterial>(nullptr, *HostObjectPath))
+			{
+				return Existing;
+			}
+
+			if (!FPackageName::MountPointExists(TEXT("/DreamShader/")))
+			{
+				const TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("DreamShader"));
+				if (!Plugin)
+				{
+					OutError = TEXT("DreamShader plugin descriptor not found; cannot mount plugin content for the instance host material.");
+					return nullptr;
+				}
+
+				const FString ContentDirectory = Plugin->GetContentDir();
+				IFileManager::Get().MakeDirectory(*ContentDirectory, true);
+				FPackageName::RegisterMountPoint(TEXT("/DreamShader/"), ContentDirectory);
+			}
+
+			UPackage* HostPackage = CreatePackage(GInstanceHostPackageName);
+			if (!HostPackage)
+			{
+				OutError = FString::Printf(TEXT("Failed to create package '%s'."), GInstanceHostPackageName);
+				return nullptr;
+			}
+
+			UMaterial* Host = NewObject<UMaterial>(HostPackage, TEXT("M_DreamShaderHost"), RF_Public | RF_Standalone);
+			if (!Host)
+			{
+				OutError = TEXT("Failed to create the DreamShader instance host material.");
+				return nullptr;
+			}
+
+			Host->PostEditChange();
+			FAssetRegistryModule::AssetCreated(Host);
+
+			// SaveAssetPackage only saves dirty packages; a freshly NewObject'd asset isn't dirty yet.
+			Host->MarkPackageDirty();
+
+			FString SaveError;
+			if (!SaveAssetPackage(Host, SaveError))
+			{
+				// The host must persist: saved maps reference instances whose parent chain resolves
+				// through this asset on every future session and at cook.
+				OutError = FString::Printf(TEXT("Failed to save the instance host material: %s"), *SaveError);
+				return nullptr;
+			}
+
+			return Host;
+		}
+
+		static bool GenerateInstanceMaterialFromDefinition(
+			const FString& SourceFilePath,
+			const FString& SourceHash,
+			const FTextShaderDefinition& Definition,
+			FString& OutMessage,
+			const bool bForce,
+			const bool bTransient)
+		{
+			TArray<FDreamShaderInstanceParameter> Parameters;
+			FString ConstDeclarations;
+			TArray<FInstanceBackendOutput> Outputs;
+			FString ModelError;
+			if (!BuildInstanceBackendModel(Definition, Parameters, ConstDeclarations, Outputs, ModelError))
+			{
+				OutMessage = FString::Printf(TEXT("%s: %s"), *SourceFilePath, *ModelError);
+				return false;
+			}
+
+			FString IncludeVirtualPath;
+			FString IncludeError;
+			if (!WriteInstanceGeneratedInclude(SourceFilePath, Definition, Parameters, ConstDeclarations, Outputs, IncludeVirtualPath, IncludeError))
+			{
+				OutMessage = FString::Printf(TEXT("%s: %s"), *SourceFilePath, *IncludeError);
+				return false;
+			}
+
+			FString HostError;
+			UMaterial* HostMaterial = EnsureInstanceHostMaterial(HostError);
+			if (!HostMaterial)
+			{
+				OutMessage = FString::Printf(TEXT("%s: %s"), *SourceFilePath, *HostError);
+				return false;
+			}
+
+			UDreamShaderMaterialInstance* Instance = nullptr;
+			FString InstanceError;
+			if (!CreateOrReuseInstanceMaterial(Definition, Instance, InstanceError, bTransient) || !Instance)
+			{
+				OutMessage = FString::Printf(TEXT("%s: %s"), *SourceFilePath, *InstanceError);
+				return false;
+			}
+
+			if (!bForce && IsGeneratedAssetSourceCurrent(Instance, SourceFilePath, SourceHash))
+			{
+				OutMessage = FString::Printf(TEXT("Skipped %s from %s; source hash is unchanged."), *Instance->GetPathName(), *SourceFilePath);
+				return true;
+			}
+
+			// SetParentEditorOnly with deferred recache: the single shader recache happens in
+			// UpdateStaticPermutation below, after everything the translation consumes is in place.
+			Instance->SetParentEditorOnly(HostMaterial, /*RecacheShader*/ false);
+			Instance->ClearParameterValuesEditorOnly();
+			Instance->SourceFilePath = SourceFilePath;
+			Instance->SourceHash = SourceHash;
+			Instance->GeneratedIncludeVirtualPath = IncludeVirtualPath;
+			Instance->InstanceParameters = Parameters;
+			Instance->InstanceOutputs.Reset(Outputs.Num());
+			for (const FInstanceBackendOutput& Output : Outputs)
+			{
+				Instance->InstanceOutputs.Add(Output.Output);
+			}
+
+#if WITH_EDITORONLY_DATA
+			Instance->EvalExpressions.Reset(Outputs.Num());
+			FString ArgumentList;
+			for (const FDreamShaderInstanceParameter& Parameter : Parameters)
+			{
+				if (!ArgumentList.IsEmpty())
+				{
+					ArgumentList += TEXT(", ");
+				}
+				ArgumentList += Parameter.Name.ToString();
+			}
+			for (const FInstanceBackendOutput& Output : Outputs)
+			{
+				UMaterialExpressionCustom* EvalExpression = NewObject<UMaterialExpressionCustom>(Instance);
+				EvalExpression->Inputs.Reset();
+				for (const FDreamShaderInstanceParameter& Parameter : Parameters)
+				{
+					FCustomInput Input;
+					Input.InputName = Parameter.Name;
+					EvalExpression->Inputs.Add(MoveTemp(Input));
+				}
+				EvalExpression->OutputType = Output.Output.OutputType;
+				EvalExpression->Code = FString::Printf(TEXT("return %s(%s);"), *Output.Output.EvalFunctionName, *ArgumentList);
+				EvalExpression->IncludeFilePaths = { IncludeVirtualPath };
+				EvalExpression->Description = FString::Printf(TEXT("DreamShader %s"), *Output.Output.EvalFunctionName);
+				Instance->EvalExpressions.Add(EvalExpression);
+			}
+#endif
+
+			for (const FDreamShaderInstanceParameter& Parameter : Parameters)
+			{
+				if (Parameter.Type == EDreamShaderInstanceParameterType::Scalar)
+				{
+					Instance->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(Parameter.Name), Parameter.ScalarDefault);
+				}
+				else
+				{
+					Instance->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(Parameter.Name), Parameter.VectorDefault);
+				}
+			}
+
+			FString SettingValue;
+			if (Definition.TryGetSetting(TEXT("BlendMode"), SettingValue) || Definition.TryGetSetting(TEXT("RenderType"), SettingValue))
+			{
+				EBlendMode BlendMode = BLEND_Opaque;
+				if (TryResolveBlendModeSetting(SettingValue, BlendMode))
+				{
+					Instance->BasePropertyOverrides.bOverride_BlendMode = true;
+					Instance->BasePropertyOverrides.BlendMode = BlendMode;
+				}
+			}
+			if (Definition.TryGetSetting(TEXT("ShadingModel"), SettingValue))
+			{
+				EMaterialShadingModel ShadingModel = MSM_DefaultLit;
+				if (TryResolveShadingModelSetting(SettingValue, ShadingModel))
+				{
+					Instance->BasePropertyOverrides.bOverride_ShadingModel = true;
+					Instance->BasePropertyOverrides.ShadingModel = ShadingModel;
+				}
+			}
+
+			Instance->UpdateStaticPermutation();
+			Instance->PostEditChange();
+			ApplySourceMetadata(Instance, SourceFilePath, SourceHash);
+
+			if (!bTransient)
+			{
+				// SaveAssetPackage only saves dirty packages; mark explicitly so a freshly created
+				// (or hash-skipped-then-forced) instance actually reaches disk.
+				Instance->MarkPackageDirty();
+
+				FString SaveError;
+				if (!SaveAssetPackage(Instance, SaveError))
+				{
+					OutMessage = FString::Printf(TEXT("%s: %s"), *SourceFilePath, *SaveError);
+					return false;
+				}
+			}
+
+			OutMessage = FString::Printf(
+				TEXT("Generated DreamShader instance material %s from %s (%d output%s, %d parameter%s)."),
+				*Instance->GetPathName(), *SourceFilePath,
+				Outputs.Num(), Outputs.Num() == 1 ? TEXT("") : TEXT("s"),
+				Parameters.Num(), Parameters.Num() == 1 ? TEXT("") : TEXT("s"));
+			return true;
+		}
+	}
+
 	bool FMaterialGenerator::GenerateMaterialFromFile(const FString& InSourceFilePath, FString& OutMessage, const bool bForce, const bool bTransient)
 	{
 		const FString SourceFilePath = UE::DreamShader::NormalizeSourceFilePath(InSourceFilePath);
@@ -2033,6 +2484,24 @@ namespace UE::DreamShader::Editor
 		{
 			OutMessage = FString::Printf(TEXT("%s: Base.FrontMaterial and Base.MaterialAttributes cannot be used by the same Shader."), *SourceFilePath);
 			return false;
+		}
+
+		bool bInstanceBackend = false;
+		FString BackendError;
+		if (!Private::ResolveInstanceBackendRequested(Definition, bInstanceBackend, BackendError))
+		{
+			OutMessage = FString::Printf(TEXT("%s: %s"), *SourceFilePath, *BackendError);
+			return false;
+		}
+		if (bInstanceBackend)
+		{
+			if (bUsesReturn)
+			{
+				OutMessage = FString::Printf(TEXT("%s: Backend=\"Instance\" requires named Outputs with Base.<Property> bindings (return-style Outputs are not supported)."), *SourceFilePath);
+				return false;
+			}
+			MaterialSlowTask.EnterProgressFrame(8.0f, FText::FromString(FString::Printf(TEXT("Generating instance material for '%s'..."), *Definition.Name)));
+			return Private::GenerateInstanceMaterialFromDefinition(SourceFilePath, SourceHash, Definition, OutMessage, bForce, bTransient);
 		}
 
 		if (!Definition.Functions.IsEmpty())

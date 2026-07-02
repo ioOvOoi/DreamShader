@@ -1,5 +1,6 @@
 #include "DreamShaderMaterialGeneratorPrivate.h"
 
+#include "DreamShaderMaterialInstance.h"
 #include "DreamShaderVersionCompat.h"
 
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -346,6 +347,57 @@ namespace UE::DreamShader::Editor::Private
 		if (!bTransient)
 		{
 			FAssetRegistryModule::AssetCreated(OutMaterial);
+		}
+		return true;
+	}
+
+	bool CreateOrReuseInstanceMaterial(const FTextShaderDefinition& Definition, UDreamShaderMaterialInstance*& OutInstance, FString& OutError, const bool bTransient)
+	{
+		FString PackageName;
+		FString ObjectPath;
+		FString AssetName;
+		if (!ResolveDreamShaderAssetDestination(Definition.Name, Definition.Root, PackageName, ObjectPath, AssetName, OutError))
+		{
+			return false;
+		}
+
+		if (UObject* ExistingObject = LoadObject<UObject>(nullptr, *ObjectPath))
+		{
+			OutInstance = Cast<UDreamShaderMaterialInstance>(ExistingObject);
+			if (!OutInstance)
+			{
+				OutError = FString::Printf(
+					TEXT("Asset '%s' already exists and is not a DreamShader instance material. Delete it (or remove Backend=\"Instance\") before switching backends."),
+					*ObjectPath);
+				return false;
+			}
+
+			return true;
+		}
+
+		UPackage* InstancePackage = CreatePackage(*PackageName);
+		if (!InstancePackage)
+		{
+			OutError = FString::Printf(TEXT("Failed to create package '%s'."), *PackageName);
+			return false;
+		}
+
+		if (bTransient)
+		{
+			InstancePackage->SetPackageFlags(PKG_NewlyCreated);
+		}
+
+		// Material instances don't support undo/redo (the shader map desyncs), so no RF_Transactional.
+		OutInstance = NewObject<UDreamShaderMaterialInstance>(InstancePackage, FName(*AssetName), RF_Public | RF_Standalone);
+		if (!OutInstance)
+		{
+			OutError = FString::Printf(TEXT("Failed to create instance material '%s'."), *ObjectPath);
+			return false;
+		}
+
+		if (!bTransient)
+		{
+			FAssetRegistryModule::AssetCreated(OutInstance);
 		}
 		return true;
 	}

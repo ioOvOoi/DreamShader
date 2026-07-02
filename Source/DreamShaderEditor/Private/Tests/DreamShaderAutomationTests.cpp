@@ -1,4 +1,5 @@
 #include "Commandlet/DreamShaderCommandletRunner.h"
+#include "DreamShaderMaterialInstance.h"
 #include "DreamShaderModule.h"
 #include "DreamShaderParser.h"
 #include "DreamShaderTypes.h"
@@ -1005,6 +1006,138 @@ Shader(Name="DreamShaderTests/Automation/%s")
 		IsNamedInputConnected(Material, TEXT("MaterialExpressionChannelMaskParameter"), TEXT("Input")));
 	TestTrue(TEXT("TextureSampleParameterCube Coordinates pin is wired by TexCube(Coordinates=...)"),
 		IsNamedInputConnected(Material, TEXT("MaterialExpressionTextureSampleParameterCube"), TEXT("Coordinates")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderGenerateInstanceBackendTest,
+	"DreamShader.Compiler.Generate.InstanceBackend",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FDreamShaderGenerateInstanceBackendTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_AutoInstance"));
+	const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+	Artifacts.AddObjectPath(ObjectPath);
+	AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
+	AddExpectedAutomationCleanupWarnings(*this);
+
+	const FString Source = FString::Printf(TEXT(R"(Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
+{
+    Properties = {
+        ScalarParameter Boost = 0.5;
+        VectorParameter Tint = float4(1.0, 0.5, 0.25, 1.0);
+        const float K = 2.0;
+    }
+
+    Settings = {
+        Backend = "Instance";
+        ShadingModel = "Unlit";
+        BlendMode = "Opaque";
+    }
+
+    Outputs = {
+        vec3 Color;
+        Base.EmissiveColor = Color;
+    }
+
+    Graph = {
+        Color = Tint.rgb * Boost * K;
+    }
+}
+)"), *AssetName);
+
+	FString SourceFilePath;
+	if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), Source, SourceFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(SourceFilePath);
+
+	FString Message;
+	const bool bGenerated = FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, true);
+	if (!TestTrue(FString::Printf(TEXT("Instance material generation succeeds: %s"), *Message), bGenerated))
+	{
+		return false;
+	}
+
+	UDreamShaderMaterialInstance* Instance = LoadObject<UDreamShaderMaterialInstance>(nullptr, *ObjectPath);
+	if (!TestNotNull(FString::Printf(TEXT("Generated instance material loads from '%s'."), *ObjectPath), Instance))
+	{
+		return false;
+	}
+
+	TestNotNull(TEXT("Instance is parented to the shared host material."), Instance->Parent.Get());
+	if (Instance->Parent)
+	{
+		TestEqual(TEXT("Parent is M_DreamShaderHost."), Instance->Parent->GetName(), FString(TEXT("M_DreamShaderHost")));
+	}
+
+	TestTrue(TEXT("Instance forces a static permutation."), Instance->HasOverridenBaseProperties());
+	TestEqual(TEXT("Const property does not become a parameter."), Instance->InstanceParameters.Num(), 2);
+	TestEqual(TEXT("One bound output."), Instance->InstanceOutputs.Num(), 1);
+	if (Instance->InstanceOutputs.Num() == 1)
+	{
+		TestEqual(TEXT("Output binds EmissiveColor."), Instance->InstanceOutputs[0].Property.GetValue(), MP_EmissiveColor);
+		TestEqual(TEXT("Eval function name."), Instance->InstanceOutputs[0].EvalFunctionName, FString(TEXT("DreamShaderEval_EmissiveColor")));
+	}
+
+#if WITH_EDITORONLY_DATA
+	if (TestEqual(TEXT("One eval expression per output."), Instance->EvalExpressions.Num(), 1) && Instance->EvalExpressions[0])
+	{
+		const UMaterialExpressionCustom* EvalExpression = Instance->EvalExpressions[0];
+		TestTrue(TEXT("Eval code calls the eval function."), EvalExpression->Code.Contains(TEXT("DreamShaderEval_EmissiveColor")));
+		TestEqual(TEXT("Eval expression inputs match the parameters."), EvalExpression->Inputs.Num(), 2);
+		TestTrue(TEXT("Eval expression includes the generated .ush."),
+			EvalExpression->IncludeFilePaths.Num() == 1 && EvalExpression->IncludeFilePaths[0] == Instance->GeneratedIncludeVirtualPath);
+	}
+#endif
+
+	// The generated include exists on disk and holds the eval function + const fold.
+	{
+		const FString FileName = FPaths::GetCleanFilename(Instance->GeneratedIncludeVirtualPath);
+		const FString DiskPath = UE::DreamShader::GetGeneratedShaderDirectory() / FileName;
+		FString IncludeContent;
+		if (TestTrue(TEXT("Generated instance .ush exists on disk."), FFileHelper::LoadFileToString(IncludeContent, *DiskPath)))
+		{
+			TestTrue(TEXT(".ush defines the eval function."), IncludeContent.Contains(TEXT("DreamShaderEval_EmissiveColor")));
+			TestTrue(TEXT(".ush inlines the const property."), IncludeContent.Contains(TEXT("static const float K")));
+		}
+	}
+
+	float BoostValue = 0.0f;
+	TestTrue(TEXT("Scalar parameter default is set on the instance."),
+		Instance->GetScalarParameterValue(FMaterialParameterInfo(TEXT("Boost")), BoostValue) && FMath::IsNearlyEqual(BoostValue, 0.5f));
+
+	TestTrue(TEXT("ShadingModel setting lands in BasePropertyOverrides."),
+		Instance->BasePropertyOverrides.bOverride_ShadingModel && Instance->BasePropertyOverrides.ShadingModel == MSM_Unlit);
+
+	// Distinct source hashes must yield distinct shader map ids (DDC keys) — the generated include is
+	// injected during translation and invisible to the material's own include hashing.
+	{
+		UMaterial* BaseMaterial = Instance->GetMaterial();
+		const FString OriginalSourceHash = Instance->SourceHash;
+
+		TUniquePtr<FMaterialResource> ResourceA(Instance->AllocatePermutationResource());
+		ResourceA->SetMaterial(BaseMaterial, Instance, GMaxRHIShaderPlatform);
+		FMaterialShaderMapId IdA;
+		ResourceA->BuildShaderMapId(IdA, nullptr);
+
+		Instance->SourceHash = OriginalSourceHash + TEXT("_changed");
+		TUniquePtr<FMaterialResource> ResourceB(Instance->AllocatePermutationResource());
+		ResourceB->SetMaterial(BaseMaterial, Instance, GMaxRHIShaderPlatform);
+		FMaterialShaderMapId IdB;
+		ResourceB->BuildShaderMapId(IdB, nullptr);
+		Instance->SourceHash = OriginalSourceHash;
+
+		TestNotEqual(TEXT("SourceHash salts the shader map id (ExpressionIncludesHash)."),
+			IdA.ExpressionIncludesHash, IdB.ExpressionIncludesHash);
+	}
+
 	return true;
 }
 
