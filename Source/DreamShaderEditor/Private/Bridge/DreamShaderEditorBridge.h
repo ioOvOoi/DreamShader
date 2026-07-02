@@ -58,6 +58,7 @@ namespace UE::DreamShader::Editor::Private
 		void RequestCleanGeneratedShaders();
 		void RequestCleanPersistedGeneratedAssets();
 		int32 CollectPersistedGeneratedAssets(TArray<UObject*>& OutAssets);
+		void ToggleShowVirtualMaterialsInContentBrowser();
 		void OpenDreamShaderWorkspace();
 		void ExportMaterialToDreamShaderFile(TWeakObjectPtr<UMaterial> Material);
 		void ExportMaterialFunctionToDreamShaderFile(TWeakObjectPtr<UMaterialFunction> MaterialFunction);

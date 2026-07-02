@@ -25,6 +25,7 @@
 #include "ObjectTools.h"
 #include "UObject/UnrealType.h"
 #include "UObject/UObjectGlobals.h"
+#include "UObject/UObjectIterator.h"
 #include "ContentBrowserMenuContexts.h"
 #include "DirectoryWatcherModule.h"
 #include "Dom/JsonObject.h"
@@ -779,6 +780,19 @@ namespace UE::DreamShader::Editor::Private
 				FSlateIcon(FAppStyle::GetAppStyleSetName(), TEXT("Icons.Delete")),
 				FUIAction(FExecuteAction::CreateSP(AsShared(), &FDreamShaderEditorBridge::RequestCleanPersistedGeneratedAssets)));
 			Section.AddMenuEntry(
+				TEXT("DreamShader.ToggleShowVirtualMaterials"),
+				LOCTEXT("DreamShaderToggleShowVirtualMaterialsLabel", "Show Virtual Materials"),
+				LOCTEXT("DreamShaderToggleShowVirtualMaterialsTooltip", "Show memory-only DreamShader materials in the Content Browser and asset pickers — needed when picking one as a material instance Parent or referencing it from a detail panel. While shown, an explicit Save on one would persist it to disk (the shadow warning and Clean command cover recovery)."),
+				FSlateIcon(),
+				FUIAction(
+					FExecuteAction::CreateSP(AsShared(), &FDreamShaderEditorBridge::ToggleShowVirtualMaterialsInContentBrowser),
+					FCanExecuteAction(),
+					FIsActionChecked::CreateLambda([]()
+					{
+						return GetDefault<UDreamShaderSettings>()->bShowVirtualMaterialsInContentBrowser;
+					})),
+				EUserInterfaceActionType::ToggleButton);
+			Section.AddMenuEntry(
 				TEXT("DreamShader.OpenWorkspace"),
 				LOCTEXT("DreamShaderOpenWorkspaceLabel", "Open Dream Shader Workspace (VSCode)"),
 				LOCTEXT("DreamShaderOpenWorkspaceTooltip", "Open the configured DreamShader source workspace in VSCode, or Notepad if VSCode is unavailable."),
@@ -1109,6 +1123,50 @@ namespace UE::DreamShader::Editor::Private
 		}
 
 		return OutAssets.Num();
+	}
+
+	void FDreamShaderEditorBridge::ToggleShowVirtualMaterialsInContentBrowser()
+	{
+		if (bIsShuttingDown || IsEngineExitRequested() || GExitPurge)
+		{
+			return;
+		}
+
+		UDreamShaderSettings* Settings = GetMutableDefault<UDreamShaderSettings>();
+		Settings->bShowVirtualMaterialsInContentBrowser = !Settings->bShowVirtualMaterialsInContentBrowser;
+		Settings->TryUpdateDefaultConfigFile();
+		const bool bShow = Settings->bShowVirtualMaterialsInContentBrowser;
+
+		// IsAsset() reads the setting live; broadcast per-instance registry events so the Content
+		// Browser (and open asset pickers) add/remove the tiles immediately instead of on the next
+		// re-enumeration.
+		int32 ToggledCount = 0;
+		for (TObjectIterator<UDreamShaderMaterialInstance> It; It; ++It)
+		{
+			UDreamShaderMaterialInstance* Instance = *It;
+			if (!IsValid(Instance) || !Instance->GetPackage()->HasAnyPackageFlags(PKG_NewlyCreated))
+			{
+				continue;
+			}
+
+			if (bShow)
+			{
+				FAssetRegistryModule::AssetCreated(Instance);
+			}
+			else
+			{
+				FAssetRegistryModule::AssetDeleted(Instance);
+			}
+			++ToggledCount;
+		}
+
+		ShowDreamShaderNotification(
+			FText::Format(
+				bShow
+					? LOCTEXT("DreamShaderVirtualMaterialsShown", "Showing {0} virtual material(s) in the Content Browser and asset pickers.")
+					: LOCTEXT("DreamShaderVirtualMaterialsHidden", "Hidden {0} virtual material(s) from the Content Browser and asset pickers."),
+				FText::AsNumber(ToggledCount)),
+			SNotificationItem::CS_Success);
 	}
 
 	void FDreamShaderEditorBridge::RequestCleanPersistedGeneratedAssets()
