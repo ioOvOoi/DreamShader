@@ -9,6 +9,7 @@
 #include "DreamShaderMaterialInstance.h"
 #include "DreamShaderModule.h"
 #include "DreamShaderParser.h"
+#include "DreamShaderSettings.h"
 #include "DreamShaderVersionCompat.h"
 
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -1979,16 +1980,22 @@ namespace UE::DreamShader::Editor
 			FString BindingSource;
 		};
 
-		// Decide whether Settings = { Backend = "..." } requests the instance backend.
-		static bool ResolveInstanceBackendRequested(const FTextShaderDefinition& Definition, bool& bOutInstanceBackend, FString& OutError)
+		// Decide whether the file should use the instance backend: an explicit
+		// Settings = { Backend = "..." } wins; otherwise the project's DefaultBackend applies
+		// (with automatic Graph fallback for files the instance backend can't express).
+		static bool ResolveInstanceBackendRequested(const FTextShaderDefinition& Definition, bool& bOutInstanceBackend, bool& bOutExplicit, FString& OutError)
 		{
 			bOutInstanceBackend = false;
+			bOutExplicit = false;
 			FString Value;
 			if (!Definition.TryGetSetting(TEXT("Backend"), Value))
 			{
+				const UDreamShaderSettings* Settings = GetDefault<UDreamShaderSettings>();
+				bOutInstanceBackend = Settings && Settings->DefaultBackend == EDreamShaderDefaultBackend::Instance;
 				return true;
 			}
 
+			bOutExplicit = true;
 			const FString Trimmed = Value.TrimStartAndEnd().TrimQuotes();
 			if (Trimmed.Equals(TEXT("Instance"), ESearchCase::IgnoreCase))
 			{
@@ -2014,10 +2021,17 @@ namespace UE::DreamShader::Editor
 			TArray<FInstanceBackendOutput>& OutOutputs,
 			FString& OutError)
 		{
-			if (!Definition.Functions.IsEmpty() || !Definition.GraphFunctions.IsEmpty()
-				|| !Definition.MaterialFunctions.IsEmpty() || !Definition.VirtualFunctions.IsEmpty())
+			if (!Definition.GraphFunctions.IsEmpty() || !Definition.MaterialFunctions.IsEmpty() || !Definition.VirtualFunctions.IsEmpty())
 			{
-				OutError = TEXT("Backend=\"Instance\" does not support imported/declared functions yet; write the HLSL directly in the Graph block.");
+				OutError = TEXT("Backend=\"Instance\" supports plain HLSL Functions only; GraphFunction / ShaderFunction / VirtualFunction blocks need the Graph backend.");
+				return false;
+			}
+
+			// The Graph body is raw HLSL in this backend; translator-level graph nodes cannot appear.
+			const FString NormalizedCode = NormalizeShaderLanguageText(Definition.Code);
+			if (NormalizedCode.Contains(TEXT("UE.")) || NormalizedCode.Contains(TEXT("Substrate.")))
+			{
+				OutError = TEXT("Backend=\"Instance\" Graph code must be pure HLSL; UE.*/Substrate.* graph nodes are not available in this backend.");
 				return false;
 			}
 
@@ -2130,11 +2144,6 @@ namespace UE::DreamShader::Editor
 			FString& OutError)
 		{
 			const FString NormalizedCode = NormalizeShaderLanguageText(Definition.Code);
-			if (NormalizedCode.Contains(TEXT("UE.")) || NormalizedCode.Contains(TEXT("Substrate.")))
-			{
-				OutError = TEXT("Backend=\"Instance\" Graph code must be pure HLSL; UE.*/Substrate.* graph nodes are not available in this backend.");
-				return false;
-			}
 
 			FString ParameterList;
 			for (const FDreamShaderInstanceParameter& Parameter : Parameters)
@@ -2163,10 +2172,59 @@ namespace UE::DreamShader::Editor
 			const FString FileName = FString::Printf(TEXT("DSI_%s_%08x.ush"), *FPaths::GetBaseFilename(SourceFilePath), PathHash);
 			OutVirtualPath = UE::DreamShader::GetGeneratedShaderVirtualDirectory() / FileName;
 
+			// Imported/declared HLSL functions live in the (already written) functions include; alias
+			// their DSL names to the collision-safe generated symbols so Graph code can call them
+			// naturally. The defines are scoped inside this file's guard and undefined at the end so
+			// they cannot leak into the rest of the material translation unit.
+			FString FunctionIncludes;
+			FString FunctionAliases;
+			FString FunctionAliasUndefs;
+			if (!Definition.Functions.IsEmpty())
+			{
+				FunctionIncludes = FString::Printf(TEXT("#include \"%s\"\n"), *BuildGeneratedIncludeVirtualPath(SourceFilePath));
+
+				const auto IsPlainIdentifier = [](const FString& Name)
+				{
+					if (Name.IsEmpty() || (!FChar::IsAlpha(Name[0]) && Name[0] != TCHAR('_')))
+					{
+						return false;
+					}
+					for (const TCHAR Char : Name)
+					{
+						if (!FChar::IsAlnum(Char) && Char != TCHAR('_'))
+						{
+							return false;
+						}
+					}
+					return true;
+				};
+
+				for (const FTextShaderFunctionDefinition& Function : Definition.Functions)
+				{
+					const FString Symbol = BuildGeneratedFunctionSymbolName(Function);
+					if (IsPlainIdentifier(Function.Name) && Function.Name != Symbol)
+					{
+						FunctionAliases += FString::Printf(TEXT("#define %s %s\n"), *Function.Name, *Symbol);
+						FunctionAliasUndefs += FString::Printf(TEXT("#undef %s\n"), *Function.Name);
+					}
+					else
+					{
+						// Namespaced names can't be macro aliases; call the symbol directly.
+						FunctionAliases += FString::Printf(TEXT("// %s -> call as %s\n"), *Function.Name, *Symbol);
+					}
+				}
+			}
+
 			FString Content;
 			Content += FString::Printf(TEXT("// Generated by DreamShader (instance backend) from %s -- do not edit.\n"), *FPaths::GetCleanFilename(SourceFilePath));
 			const FString GuardMacro = FString::Printf(TEXT("DREAMSHADER_INSTANCE_%08X"), PathHash);
 			Content += FString::Printf(TEXT("#ifndef %s\n#define %s\n\n"), *GuardMacro, *GuardMacro);
+			Content += FunctionIncludes;
+			Content += FunctionAliases;
+			if (!FunctionIncludes.IsEmpty() || !FunctionAliases.IsEmpty())
+			{
+				Content += TEXT("\n");
+			}
 			if (!ConstDeclarations.IsEmpty())
 			{
 				Content += ConstDeclarations;
@@ -2185,6 +2243,7 @@ namespace UE::DreamShader::Editor
 					*NormalizeShaderLanguageText(Output.BindingSource));
 			}
 
+			Content += FunctionAliasUndefs;
 			Content += FString::Printf(TEXT("#endif // %s\n"), *GuardMacro);
 
 			const FString DiskPath = UE::DreamShader::GetGeneratedShaderDirectory() / FileName;
@@ -2258,20 +2317,13 @@ namespace UE::DreamShader::Editor
 			const FString& SourceFilePath,
 			const FString& SourceHash,
 			const FTextShaderDefinition& Definition,
+			const TArray<FDreamShaderInstanceParameter>& Parameters,
+			const FString& ConstDeclarations,
+			const TArray<FInstanceBackendOutput>& Outputs,
 			FString& OutMessage,
 			const bool bForce,
 			const bool bTransient)
 		{
-			TArray<FDreamShaderInstanceParameter> Parameters;
-			FString ConstDeclarations;
-			TArray<FInstanceBackendOutput> Outputs;
-			FString ModelError;
-			if (!BuildInstanceBackendModel(Definition, Parameters, ConstDeclarations, Outputs, ModelError))
-			{
-				OutMessage = FString::Printf(TEXT("%s: %s"), *SourceFilePath, *ModelError);
-				return false;
-			}
-
 			FString IncludeVirtualPath;
 			FString IncludeError;
 			if (!WriteInstanceGeneratedInclude(SourceFilePath, Definition, Parameters, ConstDeclarations, Outputs, IncludeVirtualPath, IncludeError))
@@ -2495,24 +2547,8 @@ namespace UE::DreamShader::Editor
 			return false;
 		}
 
-		bool bInstanceBackend = false;
-		FString BackendError;
-		if (!Private::ResolveInstanceBackendRequested(Definition, bInstanceBackend, BackendError))
-		{
-			OutMessage = FString::Printf(TEXT("%s: %s"), *SourceFilePath, *BackendError);
-			return false;
-		}
-		if (bInstanceBackend)
-		{
-			if (bUsesReturn)
-			{
-				OutMessage = FString::Printf(TEXT("%s: Backend=\"Instance\" requires named Outputs with Base.<Property> bindings (return-style Outputs are not supported)."), *SourceFilePath);
-				return false;
-			}
-			MaterialSlowTask.EnterProgressFrame(8.0f, FText::FromString(FString::Printf(TEXT("Generating instance material for '%s'..."), *Definition.Name)));
-			return Private::GenerateInstanceMaterialFromDefinition(SourceFilePath, SourceHash, Definition, OutMessage, bForce, bTransient);
-		}
-
+		// Both backends consume the imported-functions include, so it is written before the
+		// backend split.
 		if (!Definition.Functions.IsEmpty())
 		{
 			FString IncludeWriteError;
@@ -2521,6 +2557,52 @@ namespace UE::DreamShader::Editor
 				OutMessage = FString::Printf(TEXT("%s: %s"), *SourceFilePath, *IncludeWriteError);
 				return false;
 			}
+		}
+
+		bool bInstanceBackend = false;
+		bool bExplicitBackend = false;
+		FString BackendError;
+		if (!Private::ResolveInstanceBackendRequested(Definition, bInstanceBackend, bExplicitBackend, BackendError))
+		{
+			OutMessage = FString::Printf(TEXT("%s: %s"), *SourceFilePath, *BackendError);
+			return false;
+		}
+		if (bInstanceBackend)
+		{
+			TArray<FDreamShaderInstanceParameter> InstanceParameters;
+			FString InstanceConstDeclarations;
+			TArray<Private::FInstanceBackendOutput> InstanceOutputs;
+			FString CapabilityError;
+			bool bCapable = !bUsesReturn;
+			if (!bCapable)
+			{
+				CapabilityError = TEXT("Backend=\"Instance\" requires named Outputs with Base.<Property> bindings (return-style Outputs are not supported).");
+			}
+			else
+			{
+				bCapable = Private::BuildInstanceBackendModel(Definition, InstanceParameters, InstanceConstDeclarations, InstanceOutputs, CapabilityError);
+			}
+
+			if (bCapable)
+			{
+				MaterialSlowTask.EnterProgressFrame(8.0f, FText::FromString(FString::Printf(TEXT("Generating instance material for '%s'..."), *Definition.Name)));
+				return Private::GenerateInstanceMaterialFromDefinition(
+					SourceFilePath, SourceHash, Definition,
+					InstanceParameters, InstanceConstDeclarations, InstanceOutputs,
+					OutMessage, bForce, bTransient);
+			}
+
+			if (bExplicitBackend)
+			{
+				OutMessage = FString::Printf(TEXT("%s: %s"), *SourceFilePath, *CapabilityError);
+				return false;
+			}
+
+			// DefaultBackend=Instance is a preference, not a mandate: files that need graph-only
+			// features keep working through the Graph backend, with a note explaining why.
+			UE_LOG(LogDreamShader, Display,
+				TEXT("DreamShader: '%s' uses the Graph backend (Instance default not applicable: %s)"),
+				*SourceFilePath, *CapabilityError);
 		}
 
 		UMaterial* Material = nullptr;

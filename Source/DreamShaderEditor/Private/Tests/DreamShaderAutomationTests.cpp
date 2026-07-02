@@ -2,6 +2,7 @@
 #include "DreamShaderMaterialInstance.h"
 #include "DreamShaderModule.h"
 #include "DreamShaderParser.h"
+#include "DreamShaderSettings.h"
 #include "DreamShaderTypes.h"
 #include "DreamShaderVersionCompat.h"
 #include "MaterialAssetGeneration/DreamShaderMaterialGenerator.h"
@@ -1208,6 +1209,13 @@ bool FDreamShaderGenerateInstanceBackendVirtualTest::RunTest(const FString& Para
 	FString ExistingDiskPackage;
 	TestFalse(TEXT("Virtual instance has no package file on disk."),
 		FPackageName::DoesPackageExist(Instance->GetPackage()->GetName(), &ExistingDiskPackage));
+
+	// Memory-only instances hide from asset enumeration (Content Browser, save pickers) unless the
+	// user opts in via bShowVirtualMaterialsInContentBrowser; object-path references still resolve.
+	if (!GetDefault<UDreamShaderSettings>()->bShowVirtualMaterialsInContentBrowser)
+	{
+		TestFalse(TEXT("Virtual instance is not an enumerable asset (hidden from the Content Browser)."), Instance->IsAsset());
+	}
 
 	return true;
 }

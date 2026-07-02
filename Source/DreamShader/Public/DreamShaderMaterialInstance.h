@@ -93,4 +93,8 @@ public:
 	virtual FMaterialResource* AllocatePermutationResource() override;
 	virtual bool HasOverridenBaseProperties() const override;
 	//~ End UMaterialInstance interface
+
+	//~ Begin UObject interface
+	virtual bool IsAsset() const override;
+	//~ End UObject interface
 };

@@ -1,7 +1,9 @@
 #include "DreamShaderMaterialInstance.h"
 
+#include "DreamShaderSettings.h"
 #include "Hash/xxhash.h"
 #include "MaterialShared.h"
+#include "UObject/Package.h"
 
 #if WITH_EDITOR
 #include "MaterialCompiler.h"
@@ -118,4 +120,20 @@ bool UDreamShaderMaterialInstance::HasOverridenBaseProperties() const
 		return true;
 	}
 	return Super::HasOverridenBaseProperties();
+}
+
+bool UDreamShaderMaterialInstance::IsAsset() const
+{
+	// Memory-only virtual instances hide from asset enumeration — the Content Browser and the
+	// asset registry discover in-memory assets by iterating live objects and asking IsAsset()
+	// (AssetRegistry.cpp object-iterator path), so returning false here removes them from the
+	// browser and from save pickers (which also prevents an accidental explicit Save from
+	// materializing them). The source file is the authoring surface; references still resolve
+	// through the object path. Persisted instances behave like normal assets.
+	if (GetPackage()->HasAnyPackageFlags(PKG_NewlyCreated)
+		&& !GetDefault<UDreamShaderSettings>()->bShowVirtualMaterialsInContentBrowser)
+	{
+		return false;
+	}
+	return Super::IsAsset();
 }

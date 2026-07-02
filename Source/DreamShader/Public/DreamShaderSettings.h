@@ -7,6 +7,16 @@
 
 #include "DreamShaderSettings.generated.h"
 
+/** Backend used for source files that do not specify Settings = { Backend = "..." } themselves. */
+UENUM()
+enum class EDreamShaderDefaultBackend : uint8
+{
+	/** Build a UMaterial node graph per material (full DSL feature surface). */
+	Graph,
+	/** Compile the shading logic into a generated .ush and emit a lightweight material instance (no node graph). */
+	Instance,
+};
+
 UCLASS(Config=Engine, DefaultConfig, meta=(DisplayName="DreamShader"))
 class DREAMSHADER_API UDreamShaderSettings : public UDeveloperSettings
 {
@@ -52,6 +62,16 @@ public:
 		meta=(DisplayName="Enable Virtual Material Mode",
 			ToolTip="When enabled, DreamShader generates materials as transient in-memory assets at editor startup instead of saving .uasset files. DreamShader source files become the single asset source. Materials are automatically generated as persistent assets during cooking for packaging."))
 	bool bVirtualMaterialMode = false;
+
+	UPROPERTY(Config, EditAnywhere, Category="Virtual Materials",
+		meta=(DisplayName="Show Virtual Materials In Content Browser",
+			ToolTip="When enabled, memory-only DreamShader instance materials appear in the Content Browser like unsaved assets. Disabled by default: the source files are the intended authoring surface, and hiding the instances also prevents accidental Save actions from materializing them to disk."))
+	bool bShowVirtualMaterialsInContentBrowser = false;
+
+	UPROPERTY(Config, EditAnywhere, Category="Compiler",
+		meta=(DisplayName="Default Backend",
+			ToolTip="Backend used when a source file does not specify Settings = { Backend = \"...\" }. Graph builds a UMaterial node graph. Instance compiles the shading logic into a generated .ush and emits a lightweight material instance of the shared host material (no node graph); files that need graph-only features (UE.*/Substrate nodes, textures, graph functions) automatically fall back to Graph."))
+	EDreamShaderDefaultBackend DefaultBackend = EDreamShaderDefaultBackend::Graph;
 
 	UPROPERTY(Config, EditAnywhere, Category="Compiler")
 	bool bAutoCompileOnSave = true;
