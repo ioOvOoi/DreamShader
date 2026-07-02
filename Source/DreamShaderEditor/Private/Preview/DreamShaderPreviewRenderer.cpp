@@ -20,11 +20,16 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "ObjectTools.h"
+#include "RenderingThread.h"
+#include "RHI.h"
+#include "RHIGPUReadback.h"
+#include "RHITransition.h"
 #include "SceneView.h"
 #include "Serialization/JsonSerializer.h"
 #include "Serialization/JsonWriter.h"
 #include "ShaderCompiler.h"
 #include "ThumbnailHelpers.h"
+#include "ThumbnailRendering/SceneThumbnailInfoWithPrimitive.h"
 
 namespace UE::DreamShader::Editor::Private
 {
@@ -85,6 +90,82 @@ namespace UE::DreamShader::Editor::Private
 			return ResolveDreamShaderAssetDestination(Definition.Name, Definition.Root, PackageName, OutObjectPath, AssetName, OutError);
 		}
 
+		// Maps the VSCode extension's mesh selector value to the same primitive-shape enum the
+		// native Material Editor's own preview-shape toolbar button writes to
+		// ThumbnailInfo->PrimitiveType. Unrecognized/empty values fall back to sphere, matching
+		// FDreamShaderPreviewRequest::Mesh's default.
+		EThumbnailPrimType ResolvePreviewPrimitiveType(const FString& Mesh)
+		{
+			if (Mesh.Equals(TEXT("plane"), ESearchCase::IgnoreCase))
+			{
+				return TPT_Plane;
+			}
+			if (Mesh.Equals(TEXT("cube"), ESearchCase::IgnoreCase))
+			{
+				return TPT_Cube;
+			}
+			if (Mesh.Equals(TEXT("cylinder"), ESearchCase::IgnoreCase))
+			{
+				return TPT_Cylinder;
+			}
+			if (Mesh.Equals(TEXT("shaderball"), ESearchCase::IgnoreCase))
+			{
+				return TPT_ShaderBall;
+			}
+			return TPT_Sphere;
+		}
+
+		// Shared by ApplyPreviewMeshSelection/ApplyPreviewCameraOrbit -- both need to read/write the
+		// same USceneThumbnailInfoWithPrimitive that FMaterialThumbnailScene itself reads from
+		// Material->ThumbnailInfo, lazily creating one (matching what the native Material Editor's
+		// own preview toolbar would do the first time you touch shape or orbit for an asset that
+		// never had one).
+		USceneThumbnailInfoWithPrimitive* GetOrCreatePreviewThumbnailInfo(UMaterial* Material)
+		{
+			USceneThumbnailInfoWithPrimitive* ThumbnailInfo = Cast<USceneThumbnailInfoWithPrimitive>(Material->ThumbnailInfo);
+			if (!ThumbnailInfo)
+			{
+				ThumbnailInfo = NewObject<USceneThumbnailInfoWithPrimitive>(Material);
+				Material->ThumbnailInfo = ThumbnailInfo;
+			}
+			return ThumbnailInfo;
+		}
+
+		// FMaterialThumbnailScene::SetMaterialInterface() picks its preview primitive by reading
+		// Material->ThumbnailInfo->PrimitiveType (falling back to a plane if the material's own
+		// Domain forces one, e.g. UI materials) -- there's no way to select a shape through the
+		// scene itself. So the requested mesh has to be written onto the material asset's own
+		// ThumbnailInfo before every SetMaterialInterface() call, same as the native Material
+		// Editor's preview-shape button does.
+		void ApplyPreviewMeshSelection(UMaterial* Material, const FString& Mesh)
+		{
+			if (!Material)
+			{
+				return;
+			}
+
+			GetOrCreatePreviewThumbnailInfo(Material)->PrimitiveType = ResolvePreviewPrimitiveType(Mesh);
+		}
+
+		// FMaterialThumbnailScene::GetViewMatrixParameters()/CreateView() likewise read
+		// Material->ThumbnailInfo->OrbitYaw/OrbitPitch fresh on every call (no cached view matrix to
+		// invalidate), the same fields the Material Editor's own drag-to-orbit preview viewport
+		// writes to -- so a client-driven orbit angle just needs to land here before each render,
+		// same shape as the mesh selection above. The engine applies no clamp of its own; the VSCode
+		// side clamps pitch to roughly +/-89 degrees before sending it to avoid gimbal-flip framing
+		// (see EditorViewportClient.cpp's own +/-90 pitch clamp for the native equivalent).
+		void ApplyPreviewCameraOrbit(UMaterial* Material, float OrbitYaw, float OrbitPitch)
+		{
+			if (!Material)
+			{
+				return;
+			}
+
+			USceneThumbnailInfoWithPrimitive* ThumbnailInfo = GetOrCreatePreviewThumbnailInfo(Material);
+			ThumbnailInfo->OrbitYaw = OrbitYaw;
+			ThumbnailInfo->OrbitPitch = OrbitPitch;
+		}
+
 		void WaitForPreviewMaterialCompilation(UMaterial* Material)
 		{
 			TArray<UObject*> MaterialObjects;
@@ -97,98 +178,26 @@ namespace UE::DreamShader::Editor::Private
 			FlushRenderingCommands();
 		}
 
-		bool BuildThumbnailPng(UMaterial* Material, const int32 Width, const int32 Height, const bool bWaitForCompilation, TArray64<uint8>& OutPngData, FString& OutError)
+		bool BuildThumbnailPng(UMaterial* Material, const int32 Width, const int32 Height, const FString& Mesh, float OrbitYaw, float OrbitPitch, const bool bWaitForCompilation, TArray64<uint8>& OutPngData, FString& OutError)
 		{
-			OutPngData.Reset();
-			if (!Material)
-			{
-				OutError = TEXT("Preview material is not valid.");
-				return false;
-			}
-
-			if (bWaitForCompilation)
+			if (bWaitForCompilation && Material)
 			{
 				WaitForPreviewMaterialCompilation(Material);
 			}
 
-			const int32 PreviewWidth = FMath::Clamp(Width, 64, 2048);
-			const int32 PreviewHeight = FMath::Clamp(Height, 64, 2048);
-			UTextureRenderTarget2D* RenderTarget = NewObject<UTextureRenderTarget2D>(GetTransientPackage());
-			if (!RenderTarget)
-			{
-				OutError = TEXT("Failed to create preview render target.");
-				return false;
-			}
-			RenderTarget->ClearColor = FLinearColor(0.025f, 0.025f, 0.03f, 1.0f);
-			RenderTarget->InitCustomFormat(PreviewWidth, PreviewHeight, PF_B8G8R8A8, false);
-			RenderTarget->UpdateResourceImmediate(true);
-
-			FTextureRenderTargetResource* RenderTargetResource = RenderTarget->GameThread_GetRenderTargetResource();
-			if (!RenderTargetResource)
-			{
-				OutError = TEXT("Failed to access preview render target resource.");
-				return false;
-			}
-
-			FMaterialThumbnailScene ThumbnailScene;
-			ThumbnailScene.SetMaterialInterface(Material);
-			FCanvas Canvas(RenderTargetResource, nullptr, FGameTime::GetTimeSinceAppStart(), GMaxRHIFeatureLevel);
-			Canvas.Clear(RenderTarget->ClearColor);
-
-			FSceneViewFamilyContext ViewFamily(FSceneViewFamily::ConstructionValues(
-				RenderTargetResource,
-				ThumbnailScene.GetScene(),
-				FEngineShowFlags(ESFIM_Game))
-				.SetTime(FGameTime::GetTimeSinceAppStart()));
-			ViewFamily.EngineShowFlags.MotionBlur = 0;
-			ViewFamily.EngineShowFlags.AntiAliasing = 0;
-			ViewFamily.EngineShowFlags.SetSeparateTranslucency(ThumbnailScene.ShouldSetSeparateTranslucency(Material));
-
-			FSceneView* View = ThumbnailScene.CreateView(&ViewFamily, 0, 0, PreviewWidth, PreviewHeight);
-			if (!View)
-			{
-				OutError = FString::Printf(TEXT("Failed to create preview view for '%s'."), *Material->GetPathName());
-				return false;
-			}
-
-			ViewFamily.EngineShowFlags.ScreenPercentage = false;
-			ViewFamily.SetScreenPercentageInterface(new FLegacyScreenPercentageDriver(
-				ViewFamily,
-				1.0f));
-			GetRendererModule().BeginRenderingViewFamily(&Canvas, &ViewFamily);
-			Canvas.Flush_GameThread();
-			FlushRenderingCommands();
-
-			TArray<FColor> Colors;
-			if (!RenderTargetResource->ReadPixels(Colors) || Colors.Num() != PreviewWidth * PreviewHeight)
-			{
-				OutError = FString::Printf(TEXT("Failed to read preview pixels for '%s'."), *Material->GetPathName());
-				return false;
-			}
-			for (FColor& Color : Colors)
-			{
-				Color.A = 255;
-			}
-			ThumbnailScene.SetMaterialInterface(nullptr);
-
-			FImageUtils::PNGCompressImageArray(
-				PreviewWidth,
-				PreviewHeight,
-				TArrayView64<const FColor>(Colors.GetData(), Colors.Num()),
-				OutPngData);
-			if (OutPngData.IsEmpty())
-			{
-				OutError = FString::Printf(TEXT("Failed to encode preview thumbnail for '%s'."), *Material->GetPathName());
-				return false;
-			}
-
-			return true;
+			// One-shot call sites (the initial preview frame, and the file-bridge fallback) don't
+			// stream many frames for the same material, so a short-lived context here is fine --
+			// FDreamShaderPreviewRenderContext's persistence benefit is for SendPreviewFrame's
+			// repeated per-tick calls (see FClientPreviewState::RenderContext), which reuse one
+			// context across the whole streaming session instead of constructing one per call.
+			FDreamShaderPreviewRenderContext TemporaryContext;
+			return TemporaryContext.RenderFrame(Material, Width, Height, Mesh, OrbitYaw, OrbitPitch, OutPngData, OutError);
 		}
 
-		bool SaveThumbnailPng(UMaterial* Material, const int32 Width, const int32 Height, const FString& ImagePath, FString& OutError)
+		bool SaveThumbnailPng(UMaterial* Material, const int32 Width, const int32 Height, const FString& Mesh, float OrbitYaw, float OrbitPitch, const FString& ImagePath, FString& OutError)
 		{
 			TArray64<uint8> PngData;
-			if (!BuildThumbnailPng(Material, Width, Height, true, PngData, OutError))
+			if (!BuildThumbnailPng(Material, Width, Height, Mesh, OrbitYaw, OrbitPitch, true, PngData, OutError))
 			{
 				return false;
 			}
@@ -202,6 +211,296 @@ namespace UE::DreamShader::Editor::Private
 
 			return true;
 		}
+	}
+
+	FDreamShaderPreviewRenderContext::FDreamShaderPreviewRenderContext() = default;
+	FDreamShaderPreviewRenderContext::~FDreamShaderPreviewRenderContext() = default;
+
+	bool FDreamShaderPreviewRenderContext::EnsureResources(int32 Width, int32 Height, FString& OutError)
+	{
+		const int32 PreviewWidth = FMath::Clamp(Width, 64, 2048);
+		const int32 PreviewHeight = FMath::Clamp(Height, 64, 2048);
+
+		if (!ThumbnailScene.IsValid())
+		{
+			ThumbnailScene = MakeUnique<FMaterialThumbnailScene>();
+		}
+
+		if (RenderTarget.IsValid() && CachedWidth == PreviewWidth && CachedHeight == PreviewHeight)
+		{
+			return true;
+		}
+
+		UTextureRenderTarget2D* NewRenderTarget = NewObject<UTextureRenderTarget2D>(GetTransientPackage());
+		if (!NewRenderTarget)
+		{
+			OutError = TEXT("Failed to create preview render target.");
+			return false;
+		}
+		NewRenderTarget->ClearColor = FLinearColor(0.025f, 0.025f, 0.03f, 1.0f);
+		NewRenderTarget->InitCustomFormat(PreviewWidth, PreviewHeight, PF_B8G8R8A8, false);
+		NewRenderTarget->UpdateResourceImmediate(true);
+
+		RenderTarget = TStrongObjectPtr<UTextureRenderTarget2D>(NewRenderTarget);
+		CachedWidth = PreviewWidth;
+		CachedHeight = PreviewHeight;
+		return true;
+	}
+
+	// Shared by RenderFrame() and KickoffFrame(): assigns the material and submits the scene
+	// render. Does NOT clear the thumbnail scene's material interface afterward -- this context
+	// is reused across many frames of (usually) the same material, so there's nothing to clean up
+	// between frames, and clearing it asynchronously (before the render thread has actually
+	// finished processing the submission) would race with in-flight rendering commands that still
+	// reference the scene's current state. The temporary context RenderFrame's one-shot callers
+	// construct locally is torn down as a whole right after use anyway.
+	bool FDreamShaderPreviewRenderContext::RenderCurrentFrame(UMaterial* Material, const FString& Mesh, float OrbitYaw, float OrbitPitch, FString& OutError)
+	{
+		FTextureRenderTargetResource* RenderTargetResource = RenderTarget->GameThread_GetRenderTargetResource();
+		if (!RenderTargetResource)
+		{
+			OutError = TEXT("Failed to access preview render target resource.");
+			return false;
+		}
+
+		ApplyPreviewMeshSelection(Material, Mesh);
+		ApplyPreviewCameraOrbit(Material, OrbitYaw, OrbitPitch);
+		ThumbnailScene->SetMaterialInterface(Material);
+		FCanvas Canvas(RenderTargetResource, nullptr, FGameTime::GetTimeSinceAppStart(), GMaxRHIFeatureLevel);
+		Canvas.Clear(RenderTarget->ClearColor);
+
+		FSceneViewFamilyContext ViewFamily(FSceneViewFamily::ConstructionValues(
+			RenderTargetResource,
+			ThumbnailScene->GetScene(),
+			FEngineShowFlags(ESFIM_Game))
+			.SetTime(FGameTime::GetTimeSinceAppStart()));
+		ViewFamily.EngineShowFlags.MotionBlur = 0;
+		ViewFamily.EngineShowFlags.AntiAliasing = 0;
+		ViewFamily.EngineShowFlags.SetSeparateTranslucency(ThumbnailScene->ShouldSetSeparateTranslucency(Material));
+
+		FSceneView* View = ThumbnailScene->CreateView(&ViewFamily, 0, 0, CachedWidth, CachedHeight);
+		if (!View)
+		{
+			OutError = FString::Printf(TEXT("Failed to create preview view for '%s'."), *Material->GetPathName());
+			return false;
+		}
+
+		ViewFamily.EngineShowFlags.ScreenPercentage = false;
+		ViewFamily.SetScreenPercentageInterface(new FLegacyScreenPercentageDriver(
+			ViewFamily,
+			1.0f));
+		GetRendererModule().BeginRenderingViewFamily(&Canvas, &ViewFamily);
+		Canvas.Flush_GameThread();
+		return true;
+	}
+
+	bool FDreamShaderPreviewRenderContext::RenderFrame(UMaterial* Material, int32 Width, int32 Height, const FString& Mesh, float OrbitYaw, float OrbitPitch, TArray64<uint8>& OutPngData, FString& OutError)
+	{
+		OutPngData.Reset();
+		if (!Material)
+		{
+			OutError = TEXT("Preview material is not valid.");
+			return false;
+		}
+
+		if (!EnsureResources(Width, Height, OutError) || !RenderCurrentFrame(Material, Mesh, OrbitYaw, OrbitPitch, OutError))
+		{
+			return false;
+		}
+
+		// Unlike KickoffFrame(), this call site needs the pixels back before it returns, so it
+		// still pays for a full game-thread stall here.
+		FlushRenderingCommands();
+
+		FTextureRenderTargetResource* RenderTargetResource = RenderTarget->GameThread_GetRenderTargetResource();
+		TArray<FColor> Colors;
+		if (!RenderTargetResource || !RenderTargetResource->ReadPixels(Colors) || Colors.Num() != CachedWidth * CachedHeight)
+		{
+			OutError = FString::Printf(TEXT("Failed to read preview pixels for '%s'."), *Material->GetPathName());
+			return false;
+		}
+
+		for (FColor& Color : Colors)
+		{
+			Color.A = 255;
+		}
+
+		FImageUtils::PNGCompressImageArray(
+			CachedWidth,
+			CachedHeight,
+			TArrayView64<const FColor>(Colors.GetData(), Colors.Num()),
+			OutPngData);
+		if (OutPngData.IsEmpty())
+		{
+			OutError = FString::Printf(TEXT("Failed to encode preview thumbnail for '%s'."), *Material->GetPathName());
+			return false;
+		}
+
+		return true;
+	}
+
+	bool FDreamShaderPreviewRenderContext::KickoffFrame(UMaterial* Material, int32 Width, int32 Height, const FString& Mesh, float OrbitYaw, float OrbitPitch, FString& OutError)
+	{
+		if (bReadbackInFlight)
+		{
+			OutError = TEXT("A preview readback is already in flight.");
+			return false;
+		}
+		if (!Material)
+		{
+			OutError = TEXT("Preview material is not valid.");
+			return false;
+		}
+		if (!EnsureResources(Width, Height, OutError) || !RenderCurrentFrame(Material, Mesh, OrbitYaw, OrbitPitch, OutError))
+		{
+			return false;
+		}
+
+		FTextureRenderTargetResource* RenderTargetResource = RenderTarget->GameThread_GetRenderTargetResource();
+		if (!RenderTargetResource)
+		{
+			OutError = TEXT("Failed to access preview render target resource.");
+			return false;
+		}
+
+		if (!PendingReadback.IsValid())
+		{
+			PendingReadback = MakeShared<FRHIGPUTextureReadback>(TEXT("DreamShaderPreviewReadback"));
+		}
+
+		const int32 ReadbackWidth = CachedWidth;
+		const int32 ReadbackHeight = CachedHeight;
+		TSharedPtr<FRHIGPUTextureReadback> Readback = PendingReadback;
+		// Mirrors ObjectTools.cpp's ReadbackThumbnailAsync()/FAsyncObjectThumbnail pattern (the
+		// engine's own async thumbnail-readback helper) -- enqueue the GPU->CPU copy on the render
+		// thread and return immediately without waiting for it.
+		ENQUEUE_RENDER_COMMAND(DreamShaderPreviewEnqueueCopy)(
+			[RenderTargetResource, Readback, ReadbackWidth, ReadbackHeight](FRHICommandListImmediate& RHICmdList)
+			{
+				FRHITexture* Texture = RenderTargetResource->GetRenderTargetTexture();
+				if (!Texture)
+				{
+					return;
+				}
+				RHICmdList.Transition(FRHITransitionInfo(Texture, ERHIAccess::SRVMask, ERHIAccess::CopySrc));
+				const FResolveRect SrcRect(0, 0, ReadbackWidth, ReadbackHeight);
+				Readback->EnqueueCopy(RHICmdList, Texture, SrcRect);
+				RHICmdList.Transition(FRHITransitionInfo(Texture, ERHIAccess::CopySrc, ERHIAccess::SRVMask));
+			});
+
+		bReadbackInFlight = true;
+		bCopyEnqueued = false;
+		PendingPromise.Reset();
+		PendingFuture.Reset();
+		return true;
+	}
+
+	bool FDreamShaderPreviewRenderContext::TryConsumeReadyFrame(TArray64<uint8>& OutPngData, FString& OutError)
+	{
+		if (!bReadbackInFlight || !PendingReadback.IsValid())
+		{
+			return false;
+		}
+
+		if (!bCopyEnqueued)
+		{
+			// Non-blocking poll (safe to call directly from the game thread -- this mirrors
+			// FAsyncObjectThumbnail::IsTextureReadbackReady() in ObjectTools.cpp, which does the
+			// same). Once true, the GPU has actually finished the copy enqueued by KickoffFrame().
+			if (!PendingReadback->IsReady())
+			{
+				return false;
+			}
+
+			TSharedPtr<TPromise<FDreamShaderPreviewReadbackData>> Promise = MakeShared<TPromise<FDreamShaderPreviewReadbackData>>();
+			PendingFuture = Promise->GetFuture();
+			PendingPromise = Promise;
+
+			const int32 Width = CachedWidth;
+			const int32 Height = CachedHeight;
+			TSharedPtr<FRHIGPUTextureReadback> Readback = PendingReadback;
+			// Also mirrors ObjectTools.cpp's EnqueueReadbackDataCopy(): Lock()/Unlock() must
+			// happen on the render thread, so the copy-to-CPU-memory step is itself another
+			// render command; its result is hand off to the game thread via the promise/future.
+			ENQUEUE_RENDER_COMMAND(DreamShaderPreviewCopyReadback)(
+				[Promise, Readback, Width, Height](FRHICommandListImmediate& RHICmdList)
+				{
+					FDreamShaderPreviewReadbackData Data;
+					Data.Width = Width;
+					Data.Height = Height;
+
+					int32 ReadbackRowWidth = 0;
+					int32 ReadbackRowHeight = 0;
+					void* ReadbackBuffer = Readback->Lock(ReadbackRowWidth, &ReadbackRowHeight);
+					if (ReadbackBuffer && ReadbackRowWidth >= Width && ReadbackRowHeight >= Height)
+					{
+						Data.Colors.SetNumUninitialized(Width * Height);
+						if (ReadbackRowWidth == Width)
+						{
+							FMemory::Memcpy(Data.Colors.GetData(), ReadbackBuffer, static_cast<SIZE_T>(Width) * Height * sizeof(FColor));
+						}
+						else
+						{
+							// The staging texture's row pitch differs from the requested width --
+							// copy one row at a time instead of assuming a tightly-packed buffer.
+							const uint8* Src = reinterpret_cast<const uint8*>(ReadbackBuffer);
+							for (int32 Row = 0; Row < Height; ++Row)
+							{
+								FMemory::Memcpy(
+									reinterpret_cast<uint8*>(Data.Colors.GetData()) + static_cast<SIZE_T>(Row) * Width * sizeof(FColor),
+									Src + static_cast<SIZE_T>(Row) * ReadbackRowWidth * sizeof(FColor),
+									static_cast<SIZE_T>(Width) * sizeof(FColor));
+							}
+						}
+						Data.bSucceeded = true;
+					}
+					else
+					{
+						Data.Error = TEXT("Failed to lock preview readback buffer.");
+					}
+					Readback->Unlock();
+					Promise->SetValue(MoveTemp(Data));
+				});
+
+			bCopyEnqueued = true;
+			return false;
+		}
+
+		if (!PendingFuture.IsSet() || !PendingFuture->IsReady())
+		{
+			return false;
+		}
+
+		FDreamShaderPreviewReadbackData Data = PendingFuture->Get();
+		bReadbackInFlight = false;
+		bCopyEnqueued = false;
+		PendingPromise.Reset();
+		PendingFuture.Reset();
+
+		if (!Data.bSucceeded)
+		{
+			OutError = Data.Error.IsEmpty() ? TEXT("Preview readback failed.") : Data.Error;
+			return false;
+		}
+
+		for (FColor& Color : Data.Colors)
+		{
+			Color.A = 255;
+		}
+
+		OutPngData.Reset();
+		FImageUtils::PNGCompressImageArray(
+			Data.Width,
+			Data.Height,
+			TArrayView64<const FColor>(Data.Colors.GetData(), Data.Colors.Num()),
+			OutPngData);
+		if (OutPngData.IsEmpty())
+		{
+			OutError = TEXT("Failed to encode preview thumbnail.");
+			return false;
+		}
+
+		return true;
 	}
 
 	FString FDreamShaderPreviewRenderer::GetPreviewDirectory()
@@ -268,15 +567,15 @@ namespace UE::DreamShader::Editor::Private
 		return true;
 	}
 
-	bool FDreamShaderPreviewRenderer::RenderMaterialPreviewFrame(UMaterial* Material, int32 Width, int32 Height, TArray64<uint8>& OutPngData, FString& OutError)
+	bool FDreamShaderPreviewRenderer::RenderMaterialPreviewFrame(UMaterial* Material, int32 Width, int32 Height, const FString& Mesh, float OrbitYaw, float OrbitPitch, TArray64<uint8>& OutPngData, FString& OutError)
 	{
-		return BuildThumbnailPng(Material, Width, Height, false, OutPngData, OutError);
+		return BuildThumbnailPng(Material, Width, Height, Mesh, OrbitYaw, OrbitPitch, false, OutPngData, OutError);
 	}
 
-	bool FDreamShaderPreviewRenderer::SaveMaterialPreviewFrame(UMaterial* Material, const FString& SourceFilePath, int32 Width, int32 Height, FString& OutImagePath, FString& OutError)
+	bool FDreamShaderPreviewRenderer::SaveMaterialPreviewFrame(UMaterial* Material, const FString& SourceFilePath, int32 Width, int32 Height, const FString& Mesh, float OrbitYaw, float OrbitPitch, FString& OutImagePath, FString& OutError)
 	{
 		OutImagePath = BuildPreviewImagePath(SourceFilePath);
-		return SaveThumbnailPng(Material, Width, Height, OutImagePath, OutError);
+		return SaveThumbnailPng(Material, Width, Height, Mesh, OrbitYaw, OrbitPitch, OutImagePath, OutError);
 	}
 
 	bool FDreamShaderPreviewRenderer::RenderMaterialPreview(const FDreamShaderPreviewRequest& Request, FDreamShaderPreviewResult& OutResult)
@@ -289,7 +588,7 @@ namespace UE::DreamShader::Editor::Private
 
 		FString RenderError;
 		FString ImagePath;
-		if (!SaveMaterialPreviewFrame(Material, OutResult.SourceFilePath, Request.Width, Request.Height, ImagePath, RenderError))
+		if (!SaveMaterialPreviewFrame(Material, OutResult.SourceFilePath, Request.Width, Request.Height, Request.Mesh, Request.OrbitYaw, Request.OrbitPitch, ImagePath, RenderError))
 		{
 			OutResult.Message = RenderError;
 			return false;

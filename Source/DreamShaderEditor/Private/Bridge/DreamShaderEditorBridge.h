@@ -35,6 +35,12 @@ namespace UE::DreamShader::Editor::Private
 		void QueueDependentSourcesForImport(const FString& ImportFilePath);
 		void OnDirectoryChanged(const TArray<FFileChangeData>& FileChanges);
 		bool Tick(float DeltaSeconds);
+		// Separate from Tick() (which only runs every 0.1s -- plenty for polling request/ready
+		// files on disk, but far too slow for streamed preview frames: it hard-caps deliverable
+		// preview frame rate at 10 FPS no matter what dreamshader.previewLiveFrameRate or the
+		// panel's FPS control ask for). Registered as its own every-frame ticker so the preview
+		// WebSocket server can actually deliver up to the 60 FPS ceiling it now supports.
+		bool TickPreview(float DeltaSeconds);
 		void ProcessRequestFiles();
 		void ProcessReadyFiles();
 		void ProcessSourceFile(const FString& SourceFilePath);
@@ -71,6 +77,7 @@ namespace UE::DreamShader::Editor::Private
 		FString WatchedSourceDirectory;
 		FDelegateHandle DirectoryWatcherHandle;
 		FTSTicker::FDelegateHandle TickerHandle;
+		FTSTicker::FDelegateHandle PreviewTickerHandle;
 		FDelegateHandle MaterialCompilationFinishedHandle;
 		FDelegateHandle ToolMenusStartupCallbackHandle;
 		FDelegateHandle PostEngineInitHandle;

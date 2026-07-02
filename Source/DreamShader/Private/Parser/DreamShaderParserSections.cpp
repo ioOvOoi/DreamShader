@@ -1066,7 +1066,12 @@ namespace UE::DreamShader::Private
 
 					const FString Inner = Content.Mid(InnerStart, InnerEnd - InnerStart);
 					Buffer.Reset();
-					if (!ParsePropertyBlock(Inner, GroupName, InOutNextAutoSort, OutProperties, OutError))
+					// Nested Group("Outer") { Group("Inner") { ... } } composes into "Outer|Inner", matching
+					// Unreal's native '|' sub-category syntax for the Group/Category property.
+					const FString ComposedGroup = InheritedGroup.IsEmpty()
+						? GroupName
+						: InheritedGroup + TEXT("|") + GroupName;
+					if (!ParsePropertyBlock(Inner, ComposedGroup, InOutNextAutoSort, OutProperties, OutError))
 					{
 						return false;
 					}

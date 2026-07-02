@@ -233,4 +233,65 @@ Shader(Name="DreamShaderTests/Params/M_GroupScope", Root="Game")
 	return true;
 }
 
+// Nested Group("Outer") { Group("Inner") { ... } } composes into "Outer|Inner", matching Unreal's
+// native '|' sub-category syntax; a sibling statement directly inside the outer group keeps just
+// the outer name, and Group("A|B") typed as a single literal name is passed through unchanged.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderPropertyNestedGroupScopeTest,
+	"DreamShader.Lang.ParameterExpressions.NestedGroupScope",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FDreamShaderPropertyNestedGroupScopeTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader;
+
+	const FString Source = TEXT(R"(
+Shader(Name="DreamShaderTests/Params/M_NestedGroupScope", Root="Game")
+{
+    Properties {
+        Group("Surface") {
+            Group("SS") {
+                ScalarParameter Test = 0.5 [Slider(0, 1)];
+            }
+            ScalarParameter Rough = 0.2;
+        }
+        Group("Manual|Literal") {
+            ScalarParameter Explicit = 1.0;
+        }
+    }
+    Settings { Domain = "Surface"; ShadingModel = "Unlit"; BlendMode = "Opaque"; }
+    Outputs { vec3 Color; Base.EmissiveColor = Color; }
+    Graph { Color = vec3(Rough, Rough, Rough); }
+}
+)");
+
+	FTextShaderDefinition Definition;
+	FString ParseError;
+	if (!TestTrue(FString::Printf(TEXT("Nested-group-scope source parses: %s"), *ParseError),
+		FTextShaderParser::Parse(Source, Definition, ParseError)))
+	{
+		return false;
+	}
+
+	auto Find = [&Definition](const TCHAR* Name) -> const FTextShaderPropertyDefinition*
+	{
+		return Definition.Properties.FindByPredicate(
+			[Name](const FTextShaderPropertyDefinition& Candidate) { return Candidate.Name == Name; });
+	};
+
+	const FTextShaderPropertyDefinition* Test = Find(TEXT("Test"));
+	const FTextShaderPropertyDefinition* Rough = Find(TEXT("Rough"));
+	const FTextShaderPropertyDefinition* Explicit = Find(TEXT("Explicit"));
+	if (!TestNotNull(TEXT("Test"), Test) || !TestNotNull(TEXT("Rough"), Rough) || !TestNotNull(TEXT("Explicit"), Explicit))
+	{
+		return false;
+	}
+
+	TestEqual(TEXT("Test (nested Group(\"SS\") inside Group(\"Surface\")) composes to 'Surface|SS'"), Test->Metadata.Group, FString(TEXT("Surface|SS")));
+	TestEqual(TEXT("Rough (direct child of Group(\"Surface\")) keeps just 'Surface'"), Rough->Metadata.Group, FString(TEXT("Surface")));
+	TestEqual(TEXT("Explicit (single literal 'Manual|Literal' name) passes through unchanged"), Explicit->Metadata.Group, FString(TEXT("Manual|Literal")));
+
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS
