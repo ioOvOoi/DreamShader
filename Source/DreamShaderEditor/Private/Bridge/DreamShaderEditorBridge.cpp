@@ -159,7 +159,7 @@ namespace UE::DreamShader::Editor::Private
 
 		if (bVirtualMaterialMode)
 		{
-			PostEngineInitHandle = FCoreDelegates::OnPostEngineInit.AddSP(
+			PostEngineInitHandle = FCoreDelegates::GetOnPostEngineInit().AddSP(
 				AsShared(),
 				&FDreamShaderEditorBridge::GenerateAllVirtualMaterials);
 		}
@@ -227,7 +227,7 @@ namespace UE::DreamShader::Editor::Private
 
 		if (PostEngineInitHandle.IsValid())
 		{
-			FCoreDelegates::OnPostEngineInit.Remove(PostEngineInitHandle);
+			FCoreDelegates::GetOnPostEngineInit().Remove(PostEngineInitHandle);
 			PostEngineInitHandle.Reset();
 		}
 
