@@ -1141,4 +1141,75 @@ bool FDreamShaderGenerateInstanceBackendTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderGenerateInstanceBackendVirtualTest,
+	"DreamShader.Compiler.Generate.InstanceBackendVirtual",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FDreamShaderGenerateInstanceBackendVirtualTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_AutoInstanceVirtual"));
+	const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+	Artifacts.AddObjectPath(ObjectPath);
+	AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
+	AddExpectedAutomationCleanupWarnings(*this);
+
+	const FString Source = FString::Printf(TEXT(R"(Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
+{
+    Properties = {
+        ScalarParameter Boost = 0.25;
+    }
+
+    Settings = {
+        Backend = "Instance";
+        ShadingModel = "Unlit";
+    }
+
+    Outputs = {
+        vec3 Color;
+        Base.EmissiveColor = Color;
+    }
+
+    Graph = {
+        Color = vec3(Boost, Boost, Boost);
+    }
+}
+)"), *AssetName);
+
+	FString SourceFilePath;
+	if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), Source, SourceFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(SourceFilePath);
+
+	FString Message;
+	const bool bGenerated = FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ true);
+	if (!TestTrue(FString::Printf(TEXT("Virtual instance generation succeeds: %s"), *Message), bGenerated))
+	{
+		return false;
+	}
+
+	UDreamShaderMaterialInstance* Instance = FindObject<UDreamShaderMaterialInstance>(nullptr, *ObjectPath);
+	if (!TestNotNull(TEXT("Virtual instance exists in memory."), Instance))
+	{
+		return false;
+	}
+
+	// The whole point of virtual mode: nothing reaches disk and nothing can be nagged into saving.
+	TestFalse(TEXT("Virtual instance package is not dirty (no save-prompt materialization)."),
+		Instance->GetPackage()->IsDirty());
+	TestTrue(TEXT("Virtual instance package is flagged newly-created (in-memory import resolution)."),
+		Instance->GetPackage()->HasAnyPackageFlags(PKG_NewlyCreated));
+	FString ExistingDiskPackage;
+	TestFalse(TEXT("Virtual instance has no package file on disk."),
+		FPackageName::DoesPackageExist(Instance->GetPackage()->GetName(), &ExistingDiskPackage));
+
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS
