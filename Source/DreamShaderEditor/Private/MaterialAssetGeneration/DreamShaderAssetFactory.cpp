@@ -1,6 +1,7 @@
 #include "DreamShaderMaterialGeneratorPrivate.h"
 
 #include "DreamShaderMaterialInstance.h"
+#include "DreamShaderModule.h"
 #include "DreamShaderVersionCompat.h"
 
 #include "AssetRegistry/AssetRegistryModule.h"
@@ -292,6 +293,19 @@ namespace UE::DreamShader::Editor::Private
 		return true;
 	}
 
+	// In virtual material mode a stale saved asset at the target path wins over in-memory
+	// regeneration (the reuse path below loads and mutates it, unsaved). Surface that loudly so
+	// users understand why a "virtual" material still shows up as an on-disk asset.
+	static void WarnIfVirtualModeShadowedByDiskAsset(const bool bTransient, const FString& PackageName, const FString& ObjectPath)
+	{
+		if (bTransient && FPackageName::DoesPackageExist(PackageName))
+		{
+			UE_LOG(LogDreamShader, Warning,
+				TEXT("Virtual material mode: '%s' already exists as a saved asset, which shadows in-memory regeneration. Delete the saved asset to make it fully virtual."),
+				*ObjectPath);
+		}
+	}
+
 	bool CreateOrReuseMaterial(const FTextShaderDefinition& Definition, UMaterial*& OutMaterial, FString& OutError, const bool bTransient)
 	{
 		FString PackageName;
@@ -311,6 +325,7 @@ namespace UE::DreamShader::Editor::Private
 				return false;
 			}
 
+			WarnIfVirtualModeShadowedByDiskAsset(bTransient, PackageName, ObjectPath);
 			return true;
 		}
 
@@ -372,6 +387,7 @@ namespace UE::DreamShader::Editor::Private
 				return false;
 			}
 
+			WarnIfVirtualModeShadowedByDiskAsset(bTransient, PackageName, ObjectPath);
 			return true;
 		}
 
@@ -446,6 +462,7 @@ namespace UE::DreamShader::Editor::Private
 				return false;
 			}
 
+			WarnIfVirtualModeShadowedByDiskAsset(bTransient, PackageName, ObjectPath);
 			return true;
 		}
 

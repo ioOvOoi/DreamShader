@@ -30,7 +30,10 @@ namespace UE::DreamShader::Editor::Private
 		static FString GetSourceFileMetadata(UObject* Asset);
 
 		void QueueFullScan();
+		void HandlePostEngineInit();
+		void HandleSettingsPropertyChanged(UObject* Object, struct FPropertyChangedEvent& Event);
 		void GenerateAllVirtualMaterials();
+		static bool IsVirtualMaterialModeEnabled();
 		void QueueSourceFile(const FString& SourceFilePath);
 		void QueueDependentSourcesForImport(const FString& ImportFilePath);
 		void OnDirectoryChanged(const TArray<FFileChangeData>& FileChanges);
@@ -81,8 +84,8 @@ namespace UE::DreamShader::Editor::Private
 		FDelegateHandle MaterialCompilationFinishedHandle;
 		FDelegateHandle ToolMenusStartupCallbackHandle;
 		FDelegateHandle PostEngineInitHandle;
+		FDelegateHandle SettingsChangedHandle;
 		bool bIsShuttingDown = false;
 		bool bMenusRegistered = false;
-		bool bVirtualMaterialMode = false;
 	};
 }

@@ -19,6 +19,8 @@
 #include "Async/Async.h"
 #include "CoreGlobals.h"
 #include "Misc/CoreDelegates.h"
+#include "UObject/UnrealType.h"
+#include "UObject/UObjectGlobals.h"
 #include "ContentBrowserMenuContexts.h"
 #include "DirectoryWatcherModule.h"
 #include "Dom/JsonObject.h"
@@ -144,9 +146,6 @@ namespace UE::DreamShader::Editor::Private
 	{
 		bIsShuttingDown = false;
 
-		const UDreamShaderSettings* Settings = GetDefault<UDreamShaderSettings>();
-		bVirtualMaterialMode = Settings && Settings->bVirtualMaterialMode;
-
 		IFileManager::Get().MakeDirectory(*GetBridgeDirectory(), true);
 		IFileManager::Get().MakeDirectory(*GetRequestDirectory(), true);
 		IFileManager::Get().MakeDirectory(*FDreamShaderPreviewRenderer::GetPreviewDirectory(), true);
@@ -157,12 +156,14 @@ namespace UE::DreamShader::Editor::Private
 		FDreamShaderWorkspaceService::ExportSubstrateBuiltinsManifest();
 		SyncVirtualFunctionDefinitions();
 
-		if (bVirtualMaterialMode)
-		{
-			PostEngineInitHandle = FCoreDelegates::GetOnPostEngineInit().AddSP(
-				AsShared(),
-				&FDreamShaderEditorBridge::GenerateAllVirtualMaterials);
-		}
+		// Registered unconditionally and gated inside on the LIVE setting: caching the flag here
+		// made a mid-session Project Settings toggle silently ineffective until the next restart.
+		PostEngineInitHandle = FCoreDelegates::GetOnPostEngineInit().AddSP(
+			AsShared(),
+			&FDreamShaderEditorBridge::HandlePostEngineInit);
+		SettingsChangedHandle = FCoreUObjectDelegates::OnObjectPropertyChanged.AddSP(
+			AsShared(),
+			&FDreamShaderEditorBridge::HandleSettingsPropertyChanged);
 
 		QueueFullScan();
 		UpdateDiagnosticsFile();
@@ -231,6 +232,12 @@ namespace UE::DreamShader::Editor::Private
 			PostEngineInitHandle.Reset();
 		}
 
+		if (SettingsChangedHandle.IsValid())
+		{
+			FCoreUObjectDelegates::OnObjectPropertyChanged.Remove(SettingsChangedHandle);
+			SettingsChangedHandle.Reset();
+		}
+
 		if (MaterialCompilationFinishedHandle.IsValid())
 		{
 			UMaterial::OnMaterialCompilationFinished().Remove(MaterialCompilationFinishedHandle);
@@ -276,6 +283,39 @@ namespace UE::DreamShader::Editor::Private
 		for (FString& SourceFile : SourceFiles)
 		{
 			PendingFiles.Add(UE::DreamShader::NormalizeSourceFilePath(SourceFile), Now);
+		}
+	}
+
+	bool FDreamShaderEditorBridge::IsVirtualMaterialModeEnabled()
+	{
+		const UDreamShaderSettings* Settings = GetDefault<UDreamShaderSettings>();
+		return Settings && Settings->bVirtualMaterialMode;
+	}
+
+	void FDreamShaderEditorBridge::HandlePostEngineInit()
+	{
+		if (IsVirtualMaterialModeEnabled())
+		{
+			GenerateAllVirtualMaterials();
+		}
+	}
+
+	void FDreamShaderEditorBridge::HandleSettingsPropertyChanged(UObject* Object, FPropertyChangedEvent& Event)
+	{
+		if (!Object || !Object->IsA<UDreamShaderSettings>()
+			|| Event.GetPropertyName() != GET_MEMBER_NAME_CHECKED(UDreamShaderSettings, bVirtualMaterialMode))
+		{
+			return;
+		}
+
+		if (IsVirtualMaterialModeEnabled())
+		{
+			UE_LOG(LogDreamShader, Display, TEXT("DreamShader virtual material mode enabled; regenerating all source files in memory."));
+			GenerateAllVirtualMaterials();
+		}
+		else
+		{
+			UE_LOG(LogDreamShader, Display, TEXT("DreamShader virtual material mode disabled; future compiles will persist assets. In-memory materials from this session remain until they are recompiled or the editor restarts."));
 		}
 	}
 
@@ -564,7 +604,7 @@ namespace UE::DreamShader::Editor::Private
 	void FDreamShaderEditorBridge::ProcessSourceFile(const FString& SourceFilePath)
 	{
 		UE::DreamShader::Compiler::FDreamShaderCompileService CompileService(UE::DreamShader::Editor::GetEditorCompileAdapter());
-		const UE::DreamShader::Compiler::FDreamShaderCompileResult Result = CompileService.CompileAssets(SourceFilePath, false, bVirtualMaterialMode);
+		const UE::DreamShader::Compiler::FDreamShaderCompileResult Result = CompileService.CompileAssets(SourceFilePath, false, IsVirtualMaterialModeEnabled());
 		if (Result.bSucceeded)
 		{
 			ClearDiagnosticsForSourceAndDependencies(SourceFilePath);

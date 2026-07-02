@@ -1807,6 +1807,9 @@ namespace UE::DreamShader::Editor
 			if (bTransient)
 			{
 				FunctionSlowTask.EnterProgressFrame(1.0f);
+				// Modify()/PostEditChange dirtied the in-memory package; clear it so no save-all or
+				// exit prompt can silently persist a virtual material function.
+				MaterialFunction->GetPackage()->SetDirtyFlag(false);
 			}
 			else
 			{
@@ -2378,7 +2381,13 @@ namespace UE::DreamShader::Editor
 			Instance->PostEditChange();
 			ApplySourceMetadata(Instance, SourceFilePath, SourceHash);
 
-			if (!bTransient)
+			if (bTransient)
+			{
+				// The editor-only setters and PostEditChange dirtied the in-memory package; clear it
+				// so no save-all or exit prompt can silently persist a virtual instance material.
+				Instance->GetPackage()->SetDirtyFlag(false);
+			}
+			else
 			{
 				// SaveAssetPackage only saves dirty packages; mark explicitly so a freshly created
 				// (or hash-skipped-then-forced) instance actually reaches disk.
@@ -2995,6 +3004,9 @@ namespace UE::DreamShader::Editor
 		if (bTransient)
 		{
 			MaterialSlowTask.EnterProgressFrame(1.0f);
+			// Modify()/PostEditChange dirtied the in-memory package; clear it so no save-all or
+			// exit prompt can silently persist a virtual material and fork the source of truth.
+			Material->GetPackage()->SetDirtyFlag(false);
 		}
 		else
 		{
