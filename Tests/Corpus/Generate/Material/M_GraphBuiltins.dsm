@@ -1,0 +1,13 @@
+// F4: GLSL builtin aliases (fract, mod) and the scalar-splat constructor resolve in a Graph block,
+// matching the function-body (HLSL) path.
+Shader(Name="DreamShaderTests/Generate/M_GraphBuiltins", Root="Game")
+{
+    Properties { ScalarParameter K = 0.5; }
+    Settings { Domain = "Surface"; ShadingModel = "Unlit"; BlendMode = "Opaque"; }
+    Outputs { vec3 Color; Base.EmissiveColor = Color; }
+    Graph {
+        float a = fract(K * 3.0);
+        float b = mod(K, 0.3);
+        Color = vec3(a + b);
+    }
+}

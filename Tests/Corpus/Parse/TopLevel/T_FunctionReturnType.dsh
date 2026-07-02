@@ -1,0 +1,4 @@
+// Tier 1: single-out functions may declare a return type and use `return <expr>;`.
+Function float Luma(in vec3 color) { return dot(color, float3(0.299, 0.587, 0.114)); }
+Function vec3 Tinted(in vec3 color, in vec3 tint) { return color * tint; }
+GraphFunction float DoubleIt(in float x) { return x * 2.0; }

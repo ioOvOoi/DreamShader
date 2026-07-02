@@ -8,7 +8,6 @@
 #include "IWebSocketNetworkingModule.h"
 #include "IWebSocketServer.h"
 #include "INetworkingWebSocket.h"
-#include "Misc/Base64.h"
 #include "Misc/FileHelper.h"
 #include "Modules/ModuleManager.h"
 #include "Serialization/JsonSerializer.h"
@@ -19,6 +18,12 @@ namespace UE::DreamShader::Editor::Private
 	namespace
 	{
 		static constexpr uint32 DefaultPreviewWebSocketPort = 17864;
+
+		// Wire-level type tags for SendTagged() -- must match PREVIEW_WIRE_TYPE_JSON/BINARY in
+		// preview.js exactly, since the client has no other way to tell these apart (see SendTagged
+		// below and DreamShaderPreviewWebSocketServer.h for why).
+		static constexpr uint8 PreviewWireTypeJson = 1;
+		static constexpr uint8 PreviewWireTypeBinary = 2;
 
 		FString GetStringField(const TSharedPtr<FJsonObject>& Object, const TCHAR* FieldName)
 		{
@@ -49,7 +54,7 @@ namespace UE::DreamShader::Editor::Private
 			{
 				return 0.0;
 			}
-			return 1.0 / FMath::Clamp(FrameRate, 0.25, 10.0);
+			return 1.0 / FMath::Clamp(FrameRate, 0.25, 60.0);
 		}
 	}
 
@@ -202,6 +207,17 @@ namespace UE::DreamShader::Editor::Private
 		PreviewRequest.Width = FMath::Clamp(FMath::RoundToInt(Width), 64, 2048);
 		PreviewRequest.Height = FMath::Clamp(FMath::RoundToInt(Height), 64, 2048);
 
+		// Optional -- absent (e.g. a legacy client, or a fresh session) falls back to
+		// FDreamShaderPreviewRequest's own defaults, which match USceneThumbnailInfo's baseline
+		// framing. Present when the client is re-requesting after a mesh/refresh change while
+		// already having rotated the camera, so the rotation isn't lost.
+		double OrbitYaw = PreviewRequest.OrbitYaw;
+		double OrbitPitch = PreviewRequest.OrbitPitch;
+		RequestObject->TryGetNumberField(TEXT("orbitYaw"), OrbitYaw);
+		RequestObject->TryGetNumberField(TEXT("orbitPitch"), OrbitPitch);
+		PreviewRequest.OrbitYaw = static_cast<float>(OrbitYaw);
+		PreviewRequest.OrbitPitch = static_cast<float>(OrbitPitch);
+
 		FDreamShaderPreviewResult PreviewResult;
 		UMaterial* Material = nullptr;
 		const bool bPreviewSucceeded = FDreamShaderPreviewRenderer::ResolvePreviewMaterial(PreviewRequest, PreviewResult, Material);
@@ -216,9 +232,12 @@ namespace UE::DreamShader::Editor::Private
 				PreviewResult.SourceFilePath,
 				PreviewRequest.Width,
 				PreviewRequest.Height,
+				PreviewRequest.Mesh,
+				PreviewRequest.OrbitYaw,
+				PreviewRequest.OrbitPitch,
 				ImagePath,
 				RenderError);
-			if (!bSavedPreview || !FDreamShaderPreviewRenderer::RenderMaterialPreviewFrame(Material, PreviewRequest.Width, PreviewRequest.Height, FirstFramePngData, RenderError))
+			if (!bSavedPreview || !FDreamShaderPreviewRenderer::RenderMaterialPreviewFrame(Material, PreviewRequest.Width, PreviewRequest.Height, PreviewRequest.Mesh, PreviewRequest.OrbitYaw, PreviewRequest.OrbitPitch, FirstFramePngData, RenderError))
 			{
 				PreviewResult.bSucceeded = false;
 				PreviewResult.Message = RenderError;
@@ -243,12 +262,14 @@ namespace UE::DreamShader::Editor::Private
 		ResultObject->SetStringField(TEXT("message"), PreviewResult.Message);
 		ResultObject->SetStringField(TEXT("updatedAtUtc"), FDateTime::UtcNow().ToIso8601());
 
+		// As in SendPreviewFrame: metadata message first, image bytes as a following tagged message
+		// (see SendTagged) -- no Base64 in either the JSON payload or on the wire.
+		SendJson(Socket, ResultObject);
 		if (bStreamingReady && !FirstFramePngData.IsEmpty())
 		{
-			ResultObject->SetStringField(TEXT("imageBase64"), FBase64::Encode(FirstFramePngData.GetData(), static_cast<uint32>(FirstFramePngData.Num())));
+			SendBinary(Socket, FirstFramePngData.GetData(), FirstFramePngData.Num());
 		}
 
-		SendJson(Socket, ResultObject);
 		if (bStreamingReady)
 		{
 			FClientPreviewState& State = PreviewStates.FindOrAdd(Socket);
@@ -256,6 +277,8 @@ namespace UE::DreamShader::Editor::Private
 			State.SourceFilePath = PreviewResult.SourceFilePath;
 			State.AssetPath = PreviewResult.AssetPath;
 			State.Mesh = PreviewResult.Mesh;
+			State.OrbitYaw = PreviewRequest.OrbitYaw;
+			State.OrbitPitch = PreviewRequest.OrbitPitch;
 			State.Material = Material;
 			State.Width = PreviewRequest.Width;
 			State.Height = PreviewRequest.Height;
@@ -264,6 +287,7 @@ namespace UE::DreamShader::Editor::Private
 			State.FrameIndex = 0;
 			State.LastAckFrameIndex = -1;
 			State.bFrameInFlight = false;
+			State.RenderContext = MakeUnique<FDreamShaderPreviewRenderContext>();
 			bool bStream = true;
 			RequestObject->TryGetBoolField(TEXT("stream"), bStream);
 			State.bStreaming = bStream && State.FrameIntervalSeconds > 0.0;
@@ -294,6 +318,17 @@ namespace UE::DreamShader::Editor::Private
 		State->FrameIntervalSeconds = GetFrameIntervalSeconds(RequestObject);
 		State->bStreaming = bStream && State->FrameIntervalSeconds > 0.0;
 
+		// Drag-to-rotate updates ride this same previewControl message (sent on every mouse-move
+		// while dragging, same as it's already sent on every frame ack/frame-rate change) --
+		// missing fields keep the current angle rather than resetting, so a control ping that isn't
+		// about rotation (e.g. a plain frame ack) can't accidentally snap the camera back.
+		double OrbitYaw = State->OrbitYaw;
+		double OrbitPitch = State->OrbitPitch;
+		RequestObject->TryGetNumberField(TEXT("orbitYaw"), OrbitYaw);
+		RequestObject->TryGetNumberField(TEXT("orbitPitch"), OrbitPitch);
+		State->OrbitYaw = static_cast<float>(OrbitYaw);
+		State->OrbitPitch = static_cast<float>(OrbitPitch);
+
 		double AckFrameIndex = -1.0;
 		if (RequestObject->TryGetNumberField(TEXT("ackFrameIndex"), AckFrameIndex))
 		{
@@ -308,15 +343,69 @@ namespace UE::DreamShader::Editor::Private
 
 	void FDreamShaderPreviewWebSocketServer::SendPreviewFrame(INetworkingWebSocket* Socket, FClientPreviewState& State, double NowSeconds)
 	{
-		if (!State.bStreaming || State.bFrameInFlight || !State.Material.IsValid() || State.FrameIntervalSeconds <= 0.0 || NowSeconds - State.LastFrameSeconds < State.FrameIntervalSeconds)
+		if (!State.bStreaming || !State.Material.IsValid() || !State.RenderContext.IsValid() || State.FrameIntervalSeconds <= 0.0)
+		{
+			return;
+		}
+
+		// A frame kicked off on an earlier tick is still being rendered/read back on the GPU --
+		// poll it without blocking the game thread. This may take several ticks; every one of them
+		// returns immediately either way, which is the entire point of the async path.
+		if (State.RenderContext->IsReadbackInFlight())
+		{
+			TArray64<uint8> PngData;
+			FString Error;
+			if (!State.RenderContext->TryConsumeReadyFrame(PngData, Error))
+			{
+				if (!Error.IsEmpty())
+				{
+					TSharedRef<FJsonObject> ErrorObject = MakeShared<FJsonObject>();
+					ErrorObject->SetStringField(TEXT("type"), TEXT("previewResult"));
+					SetOptionalStringField(ErrorObject, TEXT("requestId"), State.RequestId);
+					ErrorObject->SetStringField(TEXT("status"), TEXT("error"));
+					ErrorObject->SetStringField(TEXT("sourceFile"), State.SourceFilePath);
+					ErrorObject->SetStringField(TEXT("assetPath"), State.AssetPath);
+					ErrorObject->SetStringField(TEXT("mesh"), State.Mesh);
+					ErrorObject->SetStringField(TEXT("message"), Error);
+					ErrorObject->SetStringField(TEXT("updatedAtUtc"), FDateTime::UtcNow().ToIso8601());
+					SendJson(Socket, ErrorObject);
+					State.bStreaming = false;
+				}
+				// Still pending (no error) -- try again next tick.
+				return;
+			}
+
+			TSharedRef<FJsonObject> FrameObject = MakeShared<FJsonObject>();
+			FrameObject->SetStringField(TEXT("type"), TEXT("previewFrame"));
+			SetOptionalStringField(FrameObject, TEXT("requestId"), State.RequestId);
+			FrameObject->SetStringField(TEXT("sourceFile"), State.SourceFilePath);
+			FrameObject->SetStringField(TEXT("assetPath"), State.AssetPath);
+			FrameObject->SetStringField(TEXT("mesh"), State.Mesh);
+			FrameObject->SetNumberField(TEXT("frameIndex"), State.FrameIndex++);
+			FrameObject->SetStringField(TEXT("updatedAtUtc"), FDateTime::UtcNow().ToIso8601());
+			// Metadata is sent first; the image itself follows immediately as a separate tagged
+			// message (no Base64) -- the client correlates the two by arrival order on this one
+			// connection, which TCP already guarantees.
+			SendJson(Socket, FrameObject);
+			SendBinary(Socket, PngData.GetData(), PngData.Num());
+			State.bFrameInFlight = true;
+			return;
+		}
+
+		// No readback pending -- only start a new one once the client has acked the previous frame
+		// (flow control) and the configured frame interval has elapsed (rate limiting).
+		if (State.bFrameInFlight || NowSeconds - State.LastFrameSeconds < State.FrameIntervalSeconds)
 		{
 			return;
 		}
 
 		State.LastFrameSeconds = NowSeconds;
-		TArray64<uint8> PngData;
 		FString Error;
-		if (!FDreamShaderPreviewRenderer::RenderMaterialPreviewFrame(State.Material.Get(), State.Width, State.Height, PngData, Error))
+		// Reuses this session's persistent render target/thumbnail scene (see
+		// FDreamShaderPreviewRenderContext) and only enqueues the GPU->CPU copy -- the actual pixel
+		// data is picked up over the next few ticks via TryConsumeReadyFrame() above, so this never
+		// stalls the game thread waiting on the GPU.
+		if (!State.RenderContext->KickoffFrame(State.Material.Get(), State.Width, State.Height, State.Mesh, State.OrbitYaw, State.OrbitPitch, Error))
 		{
 			TSharedRef<FJsonObject> ErrorObject = MakeShared<FJsonObject>();
 			ErrorObject->SetStringField(TEXT("type"), TEXT("previewResult"));
@@ -329,20 +418,7 @@ namespace UE::DreamShader::Editor::Private
 			ErrorObject->SetStringField(TEXT("updatedAtUtc"), FDateTime::UtcNow().ToIso8601());
 			SendJson(Socket, ErrorObject);
 			State.bStreaming = false;
-			return;
 		}
-
-		TSharedRef<FJsonObject> FrameObject = MakeShared<FJsonObject>();
-		FrameObject->SetStringField(TEXT("type"), TEXT("previewFrame"));
-		SetOptionalStringField(FrameObject, TEXT("requestId"), State.RequestId);
-		FrameObject->SetStringField(TEXT("sourceFile"), State.SourceFilePath);
-		FrameObject->SetStringField(TEXT("assetPath"), State.AssetPath);
-		FrameObject->SetStringField(TEXT("mesh"), State.Mesh);
-		FrameObject->SetNumberField(TEXT("frameIndex"), State.FrameIndex++);
-		FrameObject->SetStringField(TEXT("imageBase64"), FBase64::Encode(PngData.GetData(), static_cast<uint32>(PngData.Num())));
-		FrameObject->SetStringField(TEXT("updatedAtUtc"), FDateTime::UtcNow().ToIso8601());
-		SendJson(Socket, FrameObject);
-		State.bFrameInFlight = true;
 	}
 
 	void FDreamShaderPreviewWebSocketServer::SendJson(INetworkingWebSocket* Socket, const TSharedRef<FJsonObject>& JsonObject)
@@ -360,7 +436,41 @@ namespace UE::DreamShader::Editor::Private
 		}
 
 		FTCHARToUTF8 Converter(*OutputText);
-		Socket->Send(reinterpret_cast<const uint8*>(Converter.Get()), Converter.Length(), false);
+		SendTagged(Socket, PreviewWireTypeJson, reinterpret_cast<const uint8*>(Converter.Get()), Converter.Length());
+	}
+
+	// Sends raw image bytes, immediately after (and correlated with, by arrival order on this
+	// single connection) a preceding SendJson() metadata message -- avoids the CPU cost of
+	// Base64-encoding the image into the JSON payload and the ~33% size inflation that would add to
+	// every streamed frame.
+	void FDreamShaderPreviewWebSocketServer::SendBinary(INetworkingWebSocket* Socket, const uint8* Data, int64 Length)
+	{
+		if (!Socket || !Data || Length <= 0)
+		{
+			return;
+		}
+
+		SendTagged(Socket, PreviewWireTypeBinary, Data, Length);
+	}
+
+	void FDreamShaderPreviewWebSocketServer::SendTagged(INetworkingWebSocket* Socket, uint8 TypeTag, const uint8* Data, int64 Length)
+	{
+		if (!Socket)
+		{
+			return;
+		}
+
+		TArray<uint8> Tagged;
+		Tagged.Reserve(static_cast<int32>(Length) + 1);
+		Tagged.Add(TypeTag);
+		if (Data && Length > 0)
+		{
+			Tagged.Append(Data, static_cast<int32>(Length));
+		}
+
+		// bPrependSize=true is requested unconditionally -- see the comment on SendTagged() in the
+		// header for why the WS opcode itself can't be trusted to distinguish message kinds here.
+		Socket->Send(Tagged.GetData(), Tagged.Num(), true);
 		Socket->Flush();
 	}
 }

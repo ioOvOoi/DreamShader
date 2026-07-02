@@ -22,6 +22,7 @@
 #include "Materials/MaterialExpressionDivide.h"
 #include "Materials/MaterialExpressionDotProduct.h"
 #include "Materials/MaterialExpressionFloor.h"
+#include "Materials/MaterialExpressionFmod.h"
 #include "Materials/MaterialExpressionFrac.h"
 #include "Materials/MaterialExpressionFunctionInput.h"
 #include "Materials/MaterialExpressionFunctionOutput.h"

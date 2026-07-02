@@ -140,4 +140,158 @@ bool FDreamShaderParameterParseAllTest::RunTest(const FString& Parameters)
 	return true;
 }
 
+// Group("X") { ... } Properties scope: stamps the group + an auto-incrementing SortPriority (step 10,
+// global counter; explicit values win and don't consume a slot); loose params are untouched. Also
+// pins the Slider(min,max) shorthand and asset-in-= (bare quoted absolute path) -- none of which the
+// corpus golden can see, so they are asserted at the FTextShaderDefinition level here.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderPropertyGroupScopeTest,
+	"DreamShader.Lang.ParameterExpressions.GroupScope",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FDreamShaderPropertyGroupScopeTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader;
+
+	const FString Source = TEXT(R"(
+Shader(Name="DreamShaderTests/Params/M_GroupScope", Root="Game")
+{
+    Properties {
+        Group("Surface") {
+            ScalarParameter A = 0.5 [Slider(0, 1)];
+            VectorParameter B = float4(1, 1, 1, 1);
+        }
+        Group("Detail") {
+            ScalarParameter C = 1.0 [SortPriority=99;];
+            ScalarParameter D = 2.0;
+        }
+        ScalarParameter Loose = 3.0;
+        TextureSampleParameter2D Tex = "/Engine/EngineResources/WhiteSquareTexture";
+    }
+    Settings { Domain = "Surface"; ShadingModel = "Unlit"; BlendMode = "Opaque"; }
+    Outputs { vec3 Color; Base.EmissiveColor = Color; }
+    Graph { Color = vec3(A, A, A); }
+}
+)");
+
+	FTextShaderDefinition Definition;
+	FString ParseError;
+	if (!TestTrue(FString::Printf(TEXT("Group-scope source parses: %s"), *ParseError),
+		FTextShaderParser::Parse(Source, Definition, ParseError)))
+	{
+		return false;
+	}
+
+	auto Find = [&Definition](const TCHAR* Name) -> const FTextShaderPropertyDefinition*
+	{
+		return Definition.Properties.FindByPredicate(
+			[Name](const FTextShaderPropertyDefinition& Candidate) { return Candidate.Name == Name; });
+	};
+
+	const FTextShaderPropertyDefinition* A = Find(TEXT("A"));
+	const FTextShaderPropertyDefinition* B = Find(TEXT("B"));
+	const FTextShaderPropertyDefinition* C = Find(TEXT("C"));
+	const FTextShaderPropertyDefinition* D = Find(TEXT("D"));
+	const FTextShaderPropertyDefinition* Loose = Find(TEXT("Loose"));
+	const FTextShaderPropertyDefinition* Tex = Find(TEXT("Tex"));
+	if (!TestNotNull(TEXT("A"), A) || !TestNotNull(TEXT("B"), B) || !TestNotNull(TEXT("C"), C)
+		|| !TestNotNull(TEXT("D"), D) || !TestNotNull(TEXT("Loose"), Loose) || !TestNotNull(TEXT("Tex"), Tex))
+	{
+		return false;
+	}
+
+	// Group stamping.
+	TestEqual(TEXT("A inherits group 'Surface'"), A->Metadata.Group, FString(TEXT("Surface")));
+	TestEqual(TEXT("B inherits group 'Surface'"), B->Metadata.Group, FString(TEXT("Surface")));
+	TestEqual(TEXT("C inherits group 'Detail'"), C->Metadata.Group, FString(TEXT("Detail")));
+	TestEqual(TEXT("D inherits group 'Detail'"), D->Metadata.Group, FString(TEXT("Detail")));
+	TestTrue(TEXT("loose param keeps no group"), Loose->Metadata.Group.IsEmpty());
+
+	// Auto SortPriority: global counter, step 10; explicit value (C) wins and does not consume a slot.
+	TestTrue(TEXT("A auto-sorted"), A->Metadata.bHasSortPriority);
+	TestEqual(TEXT("A SortPriority == 0"), A->Metadata.SortPriority, 0);
+	TestEqual(TEXT("B SortPriority == 10"), B->Metadata.SortPriority, 10);
+	TestEqual(TEXT("C keeps explicit SortPriority == 99"), C->Metadata.SortPriority, 99);
+	TestEqual(TEXT("D SortPriority == 20 (explicit C didn't consume the counter)"), D->Metadata.SortPriority, 20);
+	TestFalse(TEXT("loose param is not auto-sorted"), Loose->Metadata.bHasSortPriority);
+
+	// Slider(0, 1) shorthand -> two slider reflected properties.
+	int32 SliderKeyCount = 0;
+	for (const TPair<FString, FString>& Pair : A->Metadata.ReflectedProperties)
+	{
+		if (Pair.Key.Contains(TEXT("slider"), ESearchCase::IgnoreCase))
+		{
+			++SliderKeyCount;
+		}
+	}
+	TestEqual(TEXT("Slider(0,1) expands to SliderMin + SliderMax"), SliderKeyCount, 2);
+
+	// asset-in-= via a bare quoted absolute path.
+	TestTrue(TEXT("Tex bound an asset path from '= \"/Engine/...\"'"),
+		Tex->TextureDefaultObjectPath.Contains(TEXT("WhiteSquareTexture")));
+
+	return true;
+}
+
+// Nested Group("Outer") { Group("Inner") { ... } } composes into "Outer|Inner", matching Unreal's
+// native '|' sub-category syntax; a sibling statement directly inside the outer group keeps just
+// the outer name, and Group("A|B") typed as a single literal name is passed through unchanged.
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderPropertyNestedGroupScopeTest,
+	"DreamShader.Lang.ParameterExpressions.NestedGroupScope",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FDreamShaderPropertyNestedGroupScopeTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader;
+
+	const FString Source = TEXT(R"(
+Shader(Name="DreamShaderTests/Params/M_NestedGroupScope", Root="Game")
+{
+    Properties {
+        Group("Surface") {
+            Group("SS") {
+                ScalarParameter Test = 0.5 [Slider(0, 1)];
+            }
+            ScalarParameter Rough = 0.2;
+        }
+        Group("Manual|Literal") {
+            ScalarParameter Explicit = 1.0;
+        }
+    }
+    Settings { Domain = "Surface"; ShadingModel = "Unlit"; BlendMode = "Opaque"; }
+    Outputs { vec3 Color; Base.EmissiveColor = Color; }
+    Graph { Color = vec3(Rough, Rough, Rough); }
+}
+)");
+
+	FTextShaderDefinition Definition;
+	FString ParseError;
+	if (!TestTrue(FString::Printf(TEXT("Nested-group-scope source parses: %s"), *ParseError),
+		FTextShaderParser::Parse(Source, Definition, ParseError)))
+	{
+		return false;
+	}
+
+	auto Find = [&Definition](const TCHAR* Name) -> const FTextShaderPropertyDefinition*
+	{
+		return Definition.Properties.FindByPredicate(
+			[Name](const FTextShaderPropertyDefinition& Candidate) { return Candidate.Name == Name; });
+	};
+
+	const FTextShaderPropertyDefinition* Test = Find(TEXT("Test"));
+	const FTextShaderPropertyDefinition* Rough = Find(TEXT("Rough"));
+	const FTextShaderPropertyDefinition* Explicit = Find(TEXT("Explicit"));
+	if (!TestNotNull(TEXT("Test"), Test) || !TestNotNull(TEXT("Rough"), Rough) || !TestNotNull(TEXT("Explicit"), Explicit))
+	{
+		return false;
+	}
+
+	TestEqual(TEXT("Test (nested Group(\"SS\") inside Group(\"Surface\")) composes to 'Surface|SS'"), Test->Metadata.Group, FString(TEXT("Surface|SS")));
+	TestEqual(TEXT("Rough (direct child of Group(\"Surface\")) keeps just 'Surface'"), Rough->Metadata.Group, FString(TEXT("Surface")));
+	TestEqual(TEXT("Explicit (single literal 'Manual|Literal' name) passes through unchanged"), Explicit->Metadata.Group, FString(TEXT("Manual|Literal")));
+
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS

@@ -361,6 +361,43 @@ namespace UE::DreamShader::Editor::Private
 			return TEXT("float4");
 		}
 
+		// Translates the EMaterialValueType bitmask an input pin reports (via GetInputType /
+		// GetInputValueType) into the same friendly type vocabulary used elsewhere in the manifest.
+		// Most expressions never override this and inherit UMaterialExpression's base default of
+		// MCT_Float ("any float1-4, auto-promoted"), which is reported as the generic "float" rather
+		// than falling through to the uninformative "value" placeholder.
+		FString GetFriendlyNameForMaterialInputValueType(const uint64 ValueTypeMask)
+		{
+			switch (ValueTypeMask)
+			{
+			case MCT_Float1: return TEXT("float1");
+			case MCT_Float2: return TEXT("float2");
+			case MCT_Float3: return TEXT("float3");
+			case MCT_Float4: return TEXT("float4");
+			case MCT_StaticBool:
+			case MCT_Bool: return TEXT("bool");
+			case MCT_Texture2D: return TEXT("Texture2D");
+			case MCT_TextureCube: return TEXT("TextureCube");
+			case MCT_Texture2DArray: return TEXT("Texture2DArray");
+			case MCT_TextureCubeArray: return TEXT("TextureCubeArray");
+			case MCT_VolumeTexture: return TEXT("VolumeTexture");
+			case MCT_MaterialAttributes: return TEXT("MaterialAttributes");
+			default:
+				break;
+			}
+
+			if (ValueTypeMask != 0 && (ValueTypeMask & ~static_cast<uint64>(MCT_Float)) == 0)
+			{
+				return TEXT("float");
+			}
+			if (ValueTypeMask != 0 && (ValueTypeMask & ~static_cast<uint64>(MCT_Texture)) == 0)
+			{
+				return TEXT("Texture");
+			}
+
+			return TEXT("value");
+		}
+
 		template<typename EnumType>
 		void AddSettingsMappingEntries(
 			const FString& Kind,
@@ -970,8 +1007,12 @@ namespace UE::DreamShader::Editor::Private
 			ExpressionObject->SetStringField(TEXT("className"), Class->GetName());
 			ExpressionObject->SetStringField(TEXT("pathName"), Class->GetPathName());
 
+			// Non-const: GetInputType/GetInputValueType are non-const virtuals on UMaterialExpression.
+			UMaterialExpression* DefaultExpression = Cast<UMaterialExpression>(Class->GetDefaultObject(false));
+
 			TArray<TSharedPtr<FJsonValue>> PropertyValues;
 			TArray<TSharedPtr<FJsonValue>> InputValues;
+			int32 NextInputIndex = 0;
 			for (TFieldIterator<FProperty> PropertyIt(Class, EFieldIteratorFlags::IncludeSuper); PropertyIt; ++PropertyIt)
 			{
 				FProperty* Property = *PropertyIt;
@@ -981,9 +1022,23 @@ namespace UE::DreamShader::Editor::Private
 				}
 
 				const bool bIsInput = UE::DreamShader::Editor::Private::IsMaterialExpressionInputProperty(Property);
+				FString PropertyType = GetReflectedPropertyTypeName(Property);
+				if (bIsInput && DefaultExpression)
+				{
+#if DREAMSHADER_UE_VERSION_AT_LEAST(5, 6)
+					const uint64 ValueTypeMask = static_cast<uint64>(DefaultExpression->GetInputValueType(NextInputIndex));
+#else
+					PRAGMA_DISABLE_DEPRECATION_WARNINGS
+					const uint64 ValueTypeMask = static_cast<uint64>(DefaultExpression->GetInputType(NextInputIndex));
+					PRAGMA_ENABLE_DEPRECATION_WARNINGS
+#endif
+					PropertyType = GetFriendlyNameForMaterialInputValueType(ValueTypeMask);
+					++NextInputIndex;
+				}
+
 				TSharedRef<FJsonObject> PropertyObject = MakeShared<FJsonObject>();
 				PropertyObject->SetStringField(TEXT("name"), Property->GetName());
-				PropertyObject->SetStringField(TEXT("type"), GetReflectedPropertyTypeName(Property));
+				PropertyObject->SetStringField(TEXT("type"), PropertyType);
 				PropertyObject->SetBoolField(TEXT("isInput"), bIsInput);
 
 				PropertyValues.Add(MakeShared<FJsonValueObject>(PropertyObject));
@@ -996,7 +1051,7 @@ namespace UE::DreamShader::Editor::Private
 			ExpressionObject->SetArrayField(TEXT("inputs"), InputValues);
 
 			TArray<TSharedPtr<FJsonValue>> OutputValues;
-			if (const UMaterialExpression* DefaultExpression = Cast<UMaterialExpression>(Class->GetDefaultObject(false)))
+			if (DefaultExpression)
 			{
 				for (int32 OutputIndex = 0; OutputIndex < DefaultExpression->Outputs.Num(); ++OutputIndex)
 				{

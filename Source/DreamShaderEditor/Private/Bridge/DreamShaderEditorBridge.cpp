@@ -191,6 +191,15 @@ namespace UE::DreamShader::Editor::Private
 		TickerHandle = FTSTicker::GetCoreTicker().AddTicker(
 			FTickerDelegate::CreateSP(AsShared(), &FDreamShaderEditorBridge::Tick),
 			0.1f);
+
+		// 0.0f means "call every tick" (as opposed to waiting InDelay seconds between calls) --
+		// needed here because the preview WebSocket server's own per-client frame throttle
+		// (dreamshader.previewLiveFrameRate / the panel's FPS control, up to 60) can't deliver
+		// faster than whatever rate this ticker actually runs at. Sharing the 0.1s ticker above
+		// would silently cap every preview session at 10 FPS regardless of that setting.
+		PreviewTickerHandle = FTSTicker::GetCoreTicker().AddTicker(
+			FTickerDelegate::CreateSP(AsShared(), &FDreamShaderEditorBridge::TickPreview),
+			0.0f);
 	}
 
 	void FDreamShaderEditorBridge::Shutdown()
@@ -202,6 +211,12 @@ namespace UE::DreamShader::Editor::Private
 		{
 			FTSTicker::GetCoreTicker().RemoveTicker(TickerHandle);
 			TickerHandle.Reset();
+		}
+
+		if (PreviewTickerHandle.IsValid())
+		{
+			FTSTicker::GetCoreTicker().RemoveTicker(PreviewTickerHandle);
+			PreviewTickerHandle.Reset();
 		}
 
 		if (PreviewWebSocketServer)
@@ -428,6 +443,18 @@ namespace UE::DreamShader::Editor::Private
 
 		ProcessRequestFiles();
 		ProcessReadyFiles();
+		return true;
+	}
+
+	bool FDreamShaderEditorBridge::TickPreview(float DeltaSeconds)
+	{
+		(void)DeltaSeconds;
+
+		if (bIsShuttingDown || IsEngineExitRequested() || GExitPurge)
+		{
+			return false;
+		}
+
 		if (PreviewWebSocketServer)
 		{
 			PreviewWebSocketServer->Tick();

@@ -1,0 +1,2 @@
+// A return-typed function cannot use a bare `return;` (must return a value).
+Function float Bad(in float x) { return; }
