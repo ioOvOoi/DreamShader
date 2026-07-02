@@ -56,6 +56,8 @@ namespace UE::DreamShader::Editor::Private
 		void PopulateMaterialFunctionDreamShaderMenu(UToolMenu* InMenu, TWeakObjectPtr<UMaterialFunction> MaterialFunction);
 		void RequestRecompileAll();
 		void RequestCleanGeneratedShaders();
+		void RequestCleanPersistedGeneratedAssets();
+		int32 CollectPersistedGeneratedAssets(TArray<UObject*>& OutAssets);
 		void OpenDreamShaderWorkspace();
 		void ExportMaterialToDreamShaderFile(TWeakObjectPtr<UMaterial> Material);
 		void ExportMaterialFunctionToDreamShaderFile(TWeakObjectPtr<UMaterialFunction> MaterialFunction);

@@ -16,9 +16,13 @@
 #include "VirtualFunction/DreamShaderVirtualFunctionSyncService.h"
 #include "Workspace/DreamShaderWorkspaceService.h"
 
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Async/Async.h"
 #include "CoreGlobals.h"
+#include "DreamShaderMaterialInstance.h"
 #include "Misc/CoreDelegates.h"
+#include "Misc/PackageName.h"
+#include "ObjectTools.h"
 #include "UObject/UnrealType.h"
 #include "UObject/UObjectGlobals.h"
 #include "ContentBrowserMenuContexts.h"
@@ -312,6 +316,17 @@ namespace UE::DreamShader::Editor::Private
 		{
 			UE_LOG(LogDreamShader, Display, TEXT("DreamShader virtual material mode enabled; regenerating all source files in memory."));
 			GenerateAllVirtualMaterials();
+
+			// Stale persisted assets shadow the in-memory versions; point the user at the cleanup.
+			TArray<UObject*> ShadowingAssets;
+			if (CollectPersistedGeneratedAssets(ShadowingAssets) > 0)
+			{
+				ShowDreamShaderNotification(
+					FText::Format(
+						LOCTEXT("DreamShaderVirtualModeShadowed", "{0} previously generated asset(s) are still saved on disk and shadow virtual material mode. Run Tools > DreamShader > Clean Persisted Generated Assets to remove them."),
+						FText::AsNumber(ShadowingAssets.Num())),
+					SNotificationItem::CS_Fail);
+			}
 		}
 		else
 		{
@@ -758,6 +773,12 @@ namespace UE::DreamShader::Editor::Private
 				FSlateIcon(FAppStyle::GetAppStyleSetName(), TEXT("Icons.Delete")),
 				FUIAction(FExecuteAction::CreateSP(AsShared(), &FDreamShaderEditorBridge::RequestCleanGeneratedShaders)));
 			Section.AddMenuEntry(
+				TEXT("DreamShader.CleanPersistedGeneratedAssets"),
+				LOCTEXT("DreamShaderCleanPersistedGeneratedAssetsLabel", "Clean Persisted Generated Assets"),
+				LOCTEXT("DreamShaderCleanPersistedGeneratedAssetsTooltip", "Delete DreamShader-generated material assets that are saved on disk (they shadow virtual material mode). Shows a confirmation with the full list; source files are untouched and regenerate in memory."),
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), TEXT("Icons.Delete")),
+				FUIAction(FExecuteAction::CreateSP(AsShared(), &FDreamShaderEditorBridge::RequestCleanPersistedGeneratedAssets)));
+			Section.AddMenuEntry(
 				TEXT("DreamShader.OpenWorkspace"),
 				LOCTEXT("DreamShaderOpenWorkspaceLabel", "Open Dream Shader Workspace (VSCode)"),
 				LOCTEXT("DreamShaderOpenWorkspaceTooltip", "Open the configured DreamShader source workspace in VSCode, or Notepad if VSCode is unavailable."),
@@ -1052,6 +1073,77 @@ namespace UE::DreamShader::Editor::Private
 		CleanGeneratedShaderDirectory();
 		QueueFullScan();
 		UE_LOG(LogDreamShader, Display, TEXT("DreamShader cleaned generated shader includes and queued a full .dsm/.dsf recompile scan."));
+	}
+
+	int32 FDreamShaderEditorBridge::CollectPersistedGeneratedAssets(TArray<UObject*>& OutAssets)
+	{
+		const FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+
+		FARFilter Filter;
+		Filter.PackagePaths.Add(TEXT("/Game"));
+		Filter.bRecursivePaths = true;
+		Filter.bRecursiveClasses = true;
+		Filter.ClassPaths.Add(UMaterial::StaticClass()->GetClassPathName());
+		Filter.ClassPaths.Add(UMaterialFunction::StaticClass()->GetClassPathName());
+		Filter.ClassPaths.Add(UDreamShaderMaterialInstance::StaticClass()->GetClassPathName());
+
+		TArray<FAssetData> AssetDataList;
+		AssetRegistryModule.Get().GetAssets(Filter, AssetDataList);
+
+		for (const FAssetData& AssetData : AssetDataList)
+		{
+			// Only assets that actually live on disk qualify; in-memory virtual assets are the
+			// desired end state. The provenance metadata gate means hand-authored materials are
+			// never touched — only assets DreamShader itself generated (including orphans whose
+			// source file has since been deleted or renamed).
+			if (!FPackageName::DoesPackageExist(AssetData.PackageName.ToString()))
+			{
+				continue;
+			}
+
+			UObject* Asset = AssetData.GetAsset();
+			if (Asset && !GetSourceFileMetadata(Asset).IsEmpty())
+			{
+				OutAssets.Add(Asset);
+			}
+		}
+
+		return OutAssets.Num();
+	}
+
+	void FDreamShaderEditorBridge::RequestCleanPersistedGeneratedAssets()
+	{
+		if (bIsShuttingDown || IsEngineExitRequested() || GExitPurge)
+		{
+			return;
+		}
+
+		TArray<UObject*> AssetsToDelete;
+		if (CollectPersistedGeneratedAssets(AssetsToDelete) == 0)
+		{
+			ShowDreamShaderNotification(
+				LOCTEXT("DreamShaderCleanPersistedNoneFound", "No persisted DreamShader-generated assets found."),
+				SNotificationItem::CS_Success);
+			return;
+		}
+
+		// Standard editor delete flow: lists the assets, checks references, and asks the user to
+		// confirm. Sources (.dsm/.dsf) are untouched, so everything is regenerable.
+		const int32 DeletedCount = ObjectTools::DeleteObjects(AssetsToDelete, /*bShowConfirmation*/ true);
+		UE_LOG(LogDreamShader, Display, TEXT("DreamShader deleted %d of %d persisted generated asset(s)."), DeletedCount, AssetsToDelete.Num());
+
+		if (DeletedCount > 0 && IsVirtualMaterialModeEnabled())
+		{
+			// Recreate the deleted assets in memory right away so references resolve without a restart.
+			GenerateAllVirtualMaterials();
+		}
+
+		ShowDreamShaderNotification(
+			FText::Format(
+				LOCTEXT("DreamShaderCleanPersistedResult", "Deleted {0} of {1} persisted generated asset(s)."),
+				FText::AsNumber(DeletedCount),
+				FText::AsNumber(AssetsToDelete.Num())),
+			DeletedCount > 0 ? SNotificationItem::CS_Success : SNotificationItem::CS_Fail);
 	}
 
 	void FDreamShaderEditorBridge::OpenDreamShaderWorkspace()
