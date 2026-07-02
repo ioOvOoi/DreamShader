@@ -156,7 +156,7 @@ namespace UE::DreamShader::Private
 			Compiler->SetMaterialProperty(Property, OverrideShaderFrequency, bUsePreviousFrameTime);
 
 			TArray<int32> CompiledInputs;
-			CompiledInputs.Reserve(Instance->InstanceParameters.Num() + Instance->UsedTexCoordCount + 1);
+			CompiledInputs.Reserve(Instance->InstanceParameters.Num() + Instance->UsedTexCoordCount + Instance->SceneReads.Num() + 1);
 			for (const FDreamShaderInstanceParameter& Parameter : Instance->InstanceParameters)
 			{
 				switch (Parameter.Type)
@@ -197,6 +197,31 @@ namespace UE::DreamShader::Private
 			if (Instance->bUsesVertexColorBuiltin)
 			{
 				CompiledInputs.Add(Compiler->VertexColor());
+			}
+
+			// Scene reads (value-producing): unlike the dummy chunks above, each result flows into the
+			// eval function by name. Compiling the call is also what registers scene-texture usage and
+			// drives the copy pass — an inline HLSL sample of the copy texture would read undefined data.
+			// Order and count match the named FCustomInputs the generator baked onto EvalExpression.
+			for (const FDreamShaderSceneRead& SceneRead : Instance->SceneReads)
+			{
+				switch (SceneRead.Kind)
+				{
+				case EDreamShaderSceneReadKind::SceneDepth:
+					CompiledInputs.Add(Compiler->SceneDepth(INDEX_NONE, INDEX_NONE, /*bUseOffset*/ false));
+					break;
+				case EDreamShaderSceneReadKind::SceneColor:
+					CompiledInputs.Add(Compiler->SceneColor(INDEX_NONE, INDEX_NONE, /*bUseOffset*/ false));
+					break;
+				case EDreamShaderSceneReadKind::SceneTexture:
+					CompiledInputs.Add(Compiler->SceneTextureLookup(
+						INDEX_NONE, static_cast<uint32>(SceneRead.SceneTextureId),
+						/*bFiltered*/ false, /*bClamped*/ false, /*bUnused*/ false));
+					break;
+				default:
+					checkNoEntry();
+					break;
+				}
 			}
 
 			const int32 Result = Compiler->CustomExpression(EvalExpression, 0, CompiledInputs);

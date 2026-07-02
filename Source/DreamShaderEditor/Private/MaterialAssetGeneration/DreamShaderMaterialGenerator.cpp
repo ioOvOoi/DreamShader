@@ -16,6 +16,7 @@
 #include "CoreGlobals.h"
 #include "Engine/Texture.h"
 #include "HAL/FileManager.h"
+#include "RenderUtils.h"
 #include "Interfaces/IPluginManager.h"
 #include "MaterialShared.h"
 #include "Misc/PackageName.h"
@@ -29,6 +30,7 @@
 #include "Materials/MaterialExpressionMakeMaterialAttributes.h"
 #include "Materials/MaterialFunction.h"
 #include "Materials/MaterialFunctionMaterialLayerBlend.h"
+#include "MaterialSceneTextureId.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Misc/ScopedSlowTask.h"
@@ -1965,6 +1967,83 @@ namespace UE::DreamShader::Editor
 	{
 		static const TCHAR* GInstanceHostPackageName = TEXT("/DreamShader/Host/M_DreamShaderHost");
 
+		// One committed host UMaterial per supported material domain. MaterialDomain is not overridable
+		// per instance (no bOverride_MaterialDomain), so each domain needs its own host; every host
+		// stays graphless so this project's Substrate config collapses it to the legacy per-property
+		// path our resource drives.
+		struct FInstanceHostSpec
+		{
+			EMaterialDomain Domain;
+			const TCHAR* PackageName;
+			const TCHAR* AssetName;
+		};
+
+		static const FInstanceHostSpec* FindInstanceHostSpec(EMaterialDomain Domain)
+		{
+			static const FInstanceHostSpec Specs[] = {
+				{ MD_Surface,     TEXT("/DreamShader/Host/M_DreamShaderHost"),    TEXT("M_DreamShaderHost") },
+				{ MD_UI,          TEXT("/DreamShader/Host/M_DreamShaderHost_UI"), TEXT("M_DreamShaderHost_UI") },
+				{ MD_PostProcess, TEXT("/DreamShader/Host/M_DreamShaderHost_PP"), TEXT("M_DreamShaderHost_PP") },
+			};
+			for (const FInstanceHostSpec& Spec : Specs)
+			{
+				if (Spec.Domain == Domain)
+				{
+					return &Spec;
+				}
+			}
+			return nullptr;
+		}
+
+		// Resolve the DSL Domain setting to the EMaterialDomain the instance backend supports. Absent
+		// setting defaults to Surface. Only the domains with a committed host are accepted.
+		static bool ResolveInstanceDomain(const FTextShaderDefinition& Definition, EMaterialDomain& OutDomain, FString& OutError)
+		{
+			FString DomainValue;
+			if (!Definition.TryGetSetting(TEXT("Domain"), DomainValue) && !Definition.TryGetSetting(TEXT("MaterialDomain"), DomainValue))
+			{
+				OutDomain = MD_Surface;
+				return true;
+			}
+
+			const FString Trimmed = DomainValue.TrimStartAndEnd().TrimQuotes();
+			if (Trimmed.Equals(TEXT("Surface"), ESearchCase::IgnoreCase))
+			{
+				OutDomain = MD_Surface;
+				return true;
+			}
+			if (Trimmed.Equals(TEXT("UI"), ESearchCase::IgnoreCase) || Trimmed.Equals(TEXT("UserInterface"), ESearchCase::IgnoreCase))
+			{
+				OutDomain = MD_UI;
+				return true;
+			}
+			if (Trimmed.Equals(TEXT("PostProcess"), ESearchCase::IgnoreCase) || Trimmed.Equals(TEXT("PP"), ESearchCase::IgnoreCase))
+			{
+				OutDomain = MD_PostProcess;
+				return true;
+			}
+
+			OutError = FString::Printf(TEXT("Backend=\"Instance\" supports Domain = Surface | UI | PostProcess; got '%s'."), *Trimmed);
+			return false;
+		}
+
+		// Domain-scoped output whitelist. Surface keeps the general pixel-property allowance (further
+		// gated by the Substrate/MaterialAttributes/vertex-frequency rejects); UI and PostProcess only
+		// compile their small active-property set (Material::IsPropertyActive), so reject the rest with
+		// a clear message instead of silently emitting a dead output.
+		static bool IsOutputPropertyValidForDomain(EMaterialDomain Domain, EMaterialProperty Property)
+		{
+			switch (Domain)
+			{
+			case MD_UI:
+				return Property == MP_EmissiveColor || Property == MP_Opacity || Property == MP_OpacityMask;
+			case MD_PostProcess:
+				return Property == MP_EmissiveColor || Property == MP_Opacity;
+			default:
+				return true;
+			}
+		}
+
 		static FString GetHlslTypeForCustomOutput(const ECustomMaterialOutputType OutputType)
 		{
 			switch (OutputType)
@@ -1990,7 +2069,146 @@ namespace UE::DreamShader::Editor
 			FString LoweredCode;
 			int32 UsedTexCoordCount = 0;
 			bool bUsesVertexColor = false;
+			// Instance-level, de-duplicated by (Kind, SceneTextureId); order = eval argument order.
+			TArray<FDreamShaderSceneRead> SceneReads;
+			EMaterialDomain Domain = MD_Surface;
+			// Local declarations that stand in for a MaterialAttributes output variable's fields, emitted
+			// into every eval body before the lowered code (e.g. "float3 __Attrs_BaseColor = (float3)0;").
+			FString MaterialAttributeLocals;
 		};
+
+		// Rewrite `<Var>.<Field>` member accesses of a MaterialAttributes output variable into flat
+		// per-field locals `__<Var>_<Field>`, recording every referenced field (first-seen order) and
+		// which were written (assignment LHS: '=' or a compound assign). This lets a whole-attributes
+		// bind reuse the per-channel eval machinery with no dependency on the procedurally-generated
+		// FMaterialAttributes HLSL struct.
+		static void RewriteMaterialAttributeAccesses(
+			const FString& Var,
+			FString& InOutCode,
+			TArray<FString>& OutReferencedFields,
+			TSet<FString>& OutWrittenFields)
+		{
+			const FString Prefix = Var + TEXT(".");
+			FString Result;
+			Result.Reserve(InOutCode.Len());
+			int32 Index = 0;
+			while (Index < InOutCode.Len())
+			{
+				const int32 Found = InOutCode.Find(Prefix, ESearchCase::CaseSensitive, ESearchDir::FromStart, Index);
+				if (Found == INDEX_NONE)
+				{
+					Result += InOutCode.Mid(Index);
+					break;
+				}
+
+				const bool bAtTokenStart = Found == 0
+					|| !(FChar::IsAlnum(InOutCode[Found - 1]) || InOutCode[Found - 1] == TCHAR('_'));
+				if (!bAtTokenStart)
+				{
+					Result += InOutCode.Mid(Index, Found + Prefix.Len() - Index);
+					Index = Found + Prefix.Len();
+					continue;
+				}
+
+				int32 FieldStart = Found + Prefix.Len();
+				int32 FieldEnd = FieldStart;
+				while (FieldEnd < InOutCode.Len() && (FChar::IsAlnum(InOutCode[FieldEnd]) || InOutCode[FieldEnd] == TCHAR('_')))
+				{
+					++FieldEnd;
+				}
+				const FString Field = InOutCode.Mid(FieldStart, FieldEnd - FieldStart);
+
+				Result += InOutCode.Mid(Index, Found - Index);
+				if (Field.IsEmpty())
+				{
+					Result += Prefix;
+					Index = FieldStart;
+					continue;
+				}
+
+				OutReferencedFields.AddUnique(Field);
+
+				int32 Scan = FieldEnd;
+				while (Scan < InOutCode.Len() && FChar::IsWhitespace(InOutCode[Scan]))
+				{
+					++Scan;
+				}
+				if (Scan < InOutCode.Len())
+				{
+					const TCHAR Char = InOutCode[Scan];
+					const bool bPlainAssign = Char == TCHAR('=') && (Scan + 1 >= InOutCode.Len() || InOutCode[Scan + 1] != TCHAR('='));
+					const bool bCompoundAssign = (Char == TCHAR('+') || Char == TCHAR('-') || Char == TCHAR('*') || Char == TCHAR('/'))
+						&& Scan + 1 < InOutCode.Len() && InOutCode[Scan + 1] == TCHAR('=');
+					if (bPlainAssign || bCompoundAssign)
+					{
+						OutWrittenFields.Add(Field);
+					}
+				}
+
+				Result += FString::Printf(TEXT("__%s_%s"), *Var, *Field);
+				Index = FieldEnd;
+			}
+			InOutCode = MoveTemp(Result);
+		}
+
+		// The HLSL scalar type a scene read arrives as in the eval signature.
+		static const TCHAR* SceneReadArgType(EDreamShaderSceneReadKind Kind)
+		{
+			return Kind == EDreamShaderSceneReadKind::SceneDepth ? TEXT("float") : TEXT("float4");
+		}
+
+		// SceneTexture Id whitelist. GBuffer ids (WorldNormal/BaseColor/...) Errorf on forward/mobile
+		// and User* ids alias PostProcessInput0-6, so only the always-valid post-process buffers are
+		// exposed. SceneColor is deliberately absent — in a PostProcess material the engine steers you
+		// to PostProcessInput0.
+		static bool ResolveInstanceSceneTextureId(const FString& IdName, int32& OutId, FString& OutError)
+		{
+			struct FEntry { const TCHAR* Name; ESceneTextureId Id; };
+			static const FEntry Entries[] = {
+				{ TEXT("PostProcessInput0"), PPI_PostProcessInput0 },
+				{ TEXT("SceneDepth"),        PPI_SceneDepth },
+				{ TEXT("CustomDepth"),       PPI_CustomDepth },
+				{ TEXT("CustomStencil"),     PPI_CustomStencil },
+				{ TEXT("Velocity"),          PPI_Velocity },
+			};
+			for (const FEntry& Entry : Entries)
+			{
+				if (IdName.Equals(Entry.Name, ESearchCase::IgnoreCase))
+				{
+					OutId = static_cast<int32>(Entry.Id);
+					return true;
+				}
+			}
+			OutError = FString::Printf(
+				TEXT("Backend=\"Instance\": UE.SceneTexture Id '%s' is not supported. Use PostProcessInput0, SceneDepth, CustomDepth, CustomStencil, or Velocity."),
+				*IdName);
+			return false;
+		}
+
+		// Find-or-add a scene read (deduped by kind + id) and return the eval-argument name every
+		// occurrence lowers to. Names are stable/derministic so two calls collapse to one argument.
+		static FName FindOrAddSceneRead(TArray<FDreamShaderSceneRead>& InOutSceneReads, EDreamShaderSceneReadKind Kind, int32 SceneTextureId)
+		{
+			for (const FDreamShaderSceneRead& Existing : InOutSceneReads)
+			{
+				if (Existing.Kind == Kind && Existing.SceneTextureId == SceneTextureId)
+				{
+					return Existing.ArgName;
+				}
+			}
+
+			FDreamShaderSceneRead SceneRead;
+			SceneRead.Kind = Kind;
+			SceneRead.SceneTextureId = SceneTextureId;
+			switch (Kind)
+			{
+			case EDreamShaderSceneReadKind::SceneDepth:   SceneRead.ArgName = TEXT("DreamShaderSceneDepth"); break;
+			case EDreamShaderSceneReadKind::SceneColor:   SceneRead.ArgName = TEXT("DreamShaderSceneColor"); break;
+			case EDreamShaderSceneReadKind::SceneTexture: SceneRead.ArgName = FName(*FString::Printf(TEXT("DreamShaderSceneTex_%d"), SceneTextureId)); break;
+			}
+			InOutSceneReads.Add(SceneRead);
+			return SceneRead.ArgName;
+		}
 
 		// No-argument pure-read builtins: each reads straight off FMaterialPixelParameters (or a
 		// Get*(Parameters) helper) at pixel frequency, populated unconditionally at pixel entry, so it
@@ -2037,6 +2255,7 @@ namespace UE::DreamShader::Editor
 			FString& OutCode,
 			int32& InOutUsedTexCoordCount,
 			bool& bInOutUsesVertexColor,
+			TArray<FDreamShaderSceneRead>& InOutSceneReads,
 			FString& OutError)
 		{
 			OutCode.Reset(InCode.Len());
@@ -2150,6 +2369,35 @@ namespace UE::DreamShader::Editor
 				{
 					bInOutUsesVertexColor = true;
 					Replacement = TEXT("DS_VertexColor(Parameters)");
+				}
+				else if (MemberName.Equals(TEXT("SceneDepth"), ESearchCase::IgnoreCase) || MemberName.Equals(TEXT("SceneColor"), ESearchCase::IgnoreCase))
+				{
+					// Value-producing scene reads: cannot be reconstructed in HLSL, so they lower to an
+					// eval-function argument the resource fills by compiling the matching scene call. The
+					// screen-UV default form takes no arguments here (custom-UV forms are a later step).
+					if (!Arguments.IsEmpty())
+					{
+						OutError = FString::Printf(TEXT("Backend=\"Instance\": UE.%s(...) takes no arguments (screen UV only)."), *MemberName);
+						return false;
+					}
+					const EDreamShaderSceneReadKind Kind = MemberName.Equals(TEXT("SceneDepth"), ESearchCase::IgnoreCase)
+						? EDreamShaderSceneReadKind::SceneDepth
+						: EDreamShaderSceneReadKind::SceneColor;
+					Replacement = FindOrAddSceneRead(InOutSceneReads, Kind, /*SceneTextureId*/ 0).ToString();
+				}
+				else if (MemberName.Equals(TEXT("SceneTexture"), ESearchCase::IgnoreCase))
+				{
+					// UE.SceneTexture(Id="PostProcessInput0") — a PostProcess scene-buffer read. The Id
+					// resolves to an ESceneTextureId; the value flows in as a float4 eval argument. The
+					// domain gate (PostProcess only) is enforced after all scene reads are collected.
+					StripNamedArgument(TEXT("Id"));
+					const FString IdName = Arguments.TrimStartAndEnd().TrimQuotes();
+					int32 SceneTextureId = 0;
+					if (!ResolveInstanceSceneTextureId(IdName, SceneTextureId, OutError))
+					{
+						return false;
+					}
+					Replacement = FindOrAddSceneRead(InOutSceneReads, EDreamShaderSceneReadKind::SceneTexture, SceneTextureId).ToString();
 				}
 				else if (const TCHAR* BuiltinReplacement = FindNoArgInstanceBuiltin(MemberName))
 				{
@@ -2265,24 +2513,19 @@ namespace UE::DreamShader::Editor
 
 			// Lower supported UE.* builtins to their DS_* equivalents first; whatever survives is a
 			// translator-level graph node the raw-HLSL backend genuinely cannot express.
-			if (!LowerInstanceBuiltins(Definition.Code, OutModel.LoweredCode, OutModel.UsedTexCoordCount, OutModel.bUsesVertexColor, OutError))
+			if (!LowerInstanceBuiltins(Definition.Code, OutModel.LoweredCode, OutModel.UsedTexCoordCount, OutModel.bUsesVertexColor, OutModel.SceneReads, OutError))
 			{
 				return false;
 			}
 			if (OutModel.LoweredCode.Contains(TEXT("UE.")) || OutModel.LoweredCode.Contains(TEXT("Substrate.")))
 			{
-				OutError = TEXT("Backend=\"Instance\" Graph code must be pure HLSL; only the UE.Time/UE.TexCoord/UE.VertexColor builtins are lowered — other UE.*/Substrate.* graph nodes need the Graph backend.");
+				OutError = TEXT("Backend=\"Instance\" Graph code must be pure HLSL; only the UE.Time/UE.TexCoord/UE.VertexColor/UE.SceneDepth/UE.SceneColor and state-read builtins are lowered — other UE.*/Substrate.* graph nodes need the Graph backend.");
 				return false;
 			}
 
-			FString DomainValue;
-			if (Definition.TryGetSetting(TEXT("Domain"), DomainValue) || Definition.TryGetSetting(TEXT("MaterialDomain"), DomainValue))
+			if (!ResolveInstanceDomain(Definition, OutModel.Domain, OutError))
 			{
-				if (!DomainValue.TrimStartAndEnd().TrimQuotes().Equals(TEXT("Surface"), ESearchCase::IgnoreCase))
-				{
-					OutError = FString::Printf(TEXT("Backend=\"Instance\" only supports Domain=\"Surface\" (the shared host material's domain); got '%s'."), *DomainValue);
-					return false;
-				}
+				return false;
 			}
 
 			for (const FTextShaderPropertyDefinition& Property : Definition.Properties)
@@ -2414,10 +2657,75 @@ namespace UE::DreamShader::Editor
 					OutError = FString::Printf(TEXT("Unknown material output '%s'."), *Binding.MaterialProperty);
 					return false;
 				}
-				if (Resolved.bIsSubstrateMaterial || Resolved.OutputType == CMOT_MaterialAttributes)
+				if (Resolved.bIsSubstrateMaterial)
 				{
-					OutError = FString::Printf(TEXT("Backend=\"Instance\" does not support the '%s' output (Substrate/MaterialAttributes are translator-level)."), *Binding.MaterialProperty);
+					OutError = FString::Printf(TEXT("Backend=\"Instance\" does not support the '%s' output (Substrate is translator-level)."), *Binding.MaterialProperty);
 					return false;
+				}
+				if (Resolved.OutputType == CMOT_MaterialAttributes)
+				{
+					// Whole-attributes bind (Base.MaterialAttributes = Attrs): rewrite the shared Graph
+					// code's `Attrs.Field` accesses into flat `__Attrs_Field` locals, then bind each
+					// written field as its own pixel channel. Reuses the per-channel eval machinery with
+					// no dependency on the procedurally-generated FMaterialAttributes HLSL struct.
+					if (Definition.Outputs.Num() != 1)
+					{
+						OutError = TEXT("Backend=\"Instance\": a Base.MaterialAttributes bind must be the only output.");
+						return false;
+					}
+					if (OutModel.Domain != MD_Surface)
+					{
+						OutError = TEXT("Backend=\"Instance\": Base.MaterialAttributes is only supported in Domain=\"Surface\".");
+						return false;
+					}
+
+					const FString AttrsVar = Binding.SourceText.TrimStartAndEnd();
+					TArray<FString> ReferencedFields;
+					TSet<FString> WrittenFields;
+					RewriteMaterialAttributeAccesses(AttrsVar, OutModel.LoweredCode, ReferencedFields, WrittenFields);
+
+					if (WrittenFields.Num() == 0)
+					{
+						OutError = FString::Printf(TEXT("Backend=\"Instance\": Base.MaterialAttributes bind of '%s' writes no channels."), *AttrsVar);
+						return false;
+					}
+
+					// Declare every referenced field as a zero-initialized local so reads of unwritten
+					// channels compile (they yield 0); only WRITTEN channels become bound outputs, so
+					// unwritten ones fall through to the host default rather than shipping 0.
+					for (const FString& Field : ReferencedFields)
+					{
+						FResolvedMaterialProperty FieldResolved;
+						if (!ResolveMaterialProperty(Field, FieldResolved) || FieldResolved.bIsSubstrateMaterial || FieldResolved.OutputType == CMOT_MaterialAttributes)
+						{
+							OutError = FString::Printf(TEXT("Backend=\"Instance\": unknown MaterialAttributes field '%s.%s'."), *AttrsVar, *Field);
+							return false;
+						}
+						const FString HlslType = GetHlslTypeForCustomOutput(FieldResolved.OutputType);
+						OutModel.MaterialAttributeLocals += FString::Printf(TEXT("\t%s __%s_%s = (%s)0;\n"), *HlslType, *AttrsVar, *Field, *HlslType);
+					}
+
+					for (const FString& Field : ReferencedFields)
+					{
+						if (!WrittenFields.Contains(Field))
+						{
+							continue;
+						}
+						FResolvedMaterialProperty FieldResolved;
+						ResolveMaterialProperty(Field, FieldResolved);
+						if (FMaterialAttributeDefinitionMap::GetShaderFrequency(FieldResolved.Property) != SF_Pixel)
+						{
+							OutError = FString::Printf(TEXT("Backend=\"Instance\": MaterialAttributes field '%s' is vertex-frequency and not supported."), *Field);
+							return false;
+						}
+						FInstanceBackendOutput Output;
+						Output.Output.Property = FieldResolved.Property;
+						Output.Output.EvalFunctionName = FString::Printf(TEXT("DreamShaderEval_%s"), *Field);
+						Output.Output.OutputType = FieldResolved.OutputType;
+						Output.BindingSource = FString::Printf(TEXT("__%s_%s"), *AttrsVar, *Field);
+						OutModel.Outputs.Add(MoveTemp(Output));
+					}
+					continue;
 				}
 				if (FMaterialAttributeDefinitionMap::GetShaderFrequency(Resolved.Property) != SF_Pixel)
 				{
@@ -2426,16 +2734,71 @@ namespace UE::DreamShader::Editor
 					OutError = FString::Printf(TEXT("Backend=\"Instance\" only supports pixel-frequency outputs; '%s' is vertex-frequency."), *Binding.MaterialProperty);
 					return false;
 				}
+				if (!IsOutputPropertyValidForDomain(OutModel.Domain, Resolved.Property))
+				{
+					OutError = FString::Printf(
+						TEXT("Backend=\"Instance\" Domain=\"%s\" does not compile the '%s' output. UI supports EmissiveColor/Opacity/OpacityMask; PostProcess supports EmissiveColor/Opacity."),
+						OutModel.Domain == MD_UI ? TEXT("UI") : TEXT("PostProcess"), *Binding.MaterialProperty);
+					return false;
+				}
 
 				FInstanceBackendOutput Output;
 				Output.Output.Property = Resolved.Property;
 				Output.Output.EvalFunctionName = FString::Printf(TEXT("DreamShaderEval_%s"), *Binding.MaterialProperty);
 				Output.Output.OutputType = Resolved.OutputType;
-				if (!LowerInstanceBuiltins(Binding.SourceText, Output.BindingSource, OutModel.UsedTexCoordCount, OutModel.bUsesVertexColor, OutError))
+				if (!LowerInstanceBuiltins(Binding.SourceText, Output.BindingSource, OutModel.UsedTexCoordCount, OutModel.bUsesVertexColor, OutModel.SceneReads, OutError))
 				{
 					return false;
 				}
 				OutModel.Outputs.Add(MoveTemp(Output));
+			}
+
+			// Scene-buffer reads are invalid in the UI (Slate) pass — no scene color / depth buffer is
+			// bound. Checked here, after both Graph-code and output-binding scene reads are collected.
+			if (OutModel.Domain == MD_UI && OutModel.SceneReads.Num() > 0)
+			{
+				OutError = TEXT("Backend=\"Instance\" Domain=\"UI\" cannot read scene buffers (UE.SceneDepth/SceneColor/SceneTexture) — there is no scene buffer in the UI pass.");
+				return false;
+			}
+
+			// SceneTexture (post-process scene-buffer sampling) is only meaningful in a PostProcess
+			// material; on Surface the engine's post-process inputs are not bound.
+			{
+				bool bUsesSceneTexture = false;
+				for (const FDreamShaderSceneRead& SceneRead : OutModel.SceneReads)
+				{
+					bUsesSceneTexture |= (SceneRead.Kind == EDreamShaderSceneReadKind::SceneTexture);
+				}
+				if (bUsesSceneTexture && OutModel.Domain != MD_PostProcess)
+				{
+					OutError = TEXT("Backend=\"Instance\": UE.SceneTexture(...) is only supported in Domain=\"PostProcess\".");
+					return false;
+				}
+			}
+
+			// SceneColor is a translucent-only read (the engine's own static analysis errors otherwise:
+			// "Only translucent materials can use the scene color node"). Resolve the DSL's blend mode
+			// and pre-empt with a clearer message. SceneDepth has no such restriction.
+			{
+				bool bUsesSceneColor = false;
+				for (const FDreamShaderSceneRead& SceneRead : OutModel.SceneReads)
+				{
+					bUsesSceneColor |= (SceneRead.Kind == EDreamShaderSceneReadKind::SceneColor);
+				}
+				if (bUsesSceneColor)
+				{
+					EBlendMode BlendMode = BLEND_Opaque;
+					FString BlendValue;
+					if (Definition.TryGetSetting(TEXT("BlendMode"), BlendValue) || Definition.TryGetSetting(TEXT("RenderType"), BlendValue))
+					{
+						TryResolveBlendModeSetting(BlendValue, BlendMode);
+					}
+					if (!IsTranslucentBlendMode(BlendMode))
+					{
+						OutError = TEXT("Backend=\"Instance\": UE.SceneColor() requires a translucent blend mode (set Settings = { BlendMode = \"Translucent\" }). Only translucent materials can read scene color.");
+						return false;
+					}
+				}
 			}
 
 			if (OutModel.Outputs.IsEmpty())
@@ -2480,16 +2843,30 @@ namespace UE::DreamShader::Editor
 					break;
 				}
 			}
+			// Scene reads arrive as trailing typed arguments the resource fills with compiled scene
+			// chunks (index-aligned with the named Custom inputs baked below).
+			for (const FDreamShaderSceneRead& SceneRead : Model.SceneReads)
+			{
+				ParameterList += FString::Printf(TEXT(", %s %s"), SceneReadArgType(SceneRead.Kind), *SceneRead.ArgName.ToString());
+			}
 
 			FString Declarations;
 			for (const FTextShaderVariableDeclaration& Declaration : Definition.OutputDeclarations)
 			{
+				// A MaterialAttributes output variable is not a real HLSL local; its fields were flattened
+				// into the model's per-field locals (emitted below). Skip its declaration.
+				if (Declaration.Type.TrimStartAndEnd().Equals(TEXT("MaterialAttributes"), ESearchCase::IgnoreCase))
+				{
+					continue;
+				}
 				const FString HlslType = NormalizeShaderTypeToken(Declaration.Type);
 				const FString DefaultValue = Declaration.bHasDefaultValue
 					? NormalizeShaderLanguageText(Declaration.DefaultValueText)
 					: FString::Printf(TEXT("(%s)0"), *HlslType);
 				Declarations += FString::Printf(TEXT("	%s %s = %s;\n"), *HlslType, *Declaration.Name, *DefaultValue);
 			}
+			// The flattened MaterialAttributes field locals stand in for the skipped declaration.
+			Declarations += Model.MaterialAttributeLocals;
 
 			const uint32 PathHash = GetTypeHash(UE::DreamShader::NormalizeSourceFilePath(SourceFilePath));
 			const FString FileName = FString::Printf(TEXT("DSI_%s_%08x.ush"), *FPaths::GetBaseFilename(SourceFilePath), PathHash);
@@ -2602,9 +2979,62 @@ namespace UE::DreamShader::Editor
 			}
 		}
 
-		static UMaterial* EnsureInstanceHostMaterial(FString& OutError)
+		// Apply the domain-specific base settings on a freshly created host. Every host stays graphless.
+		static void ConfigureInstanceHostForDomain(UMaterial* Host, EMaterialDomain Domain)
 		{
-			const FString HostObjectPath = FString::Printf(TEXT("%s.M_DreamShaderHost"), GInstanceHostPackageName);
+			Host->MaterialDomain = Domain;
+			switch (Domain)
+			{
+			case MD_UI:
+				// UI is Unlit-equivalent; a translucent host keeps MP_Opacity active for UMG alpha.
+				Host->SetShadingModel(MSM_Unlit);
+				Host->BlendMode = BLEND_Translucent;
+				break;
+			case MD_PostProcess:
+				// Pin the blendable location so SceneTexture reads are NOT scaled by pre-exposure
+				// (that scale only applies before tonemapping), keeping identity/tint effects exact.
+				Host->SetShadingModel(MSM_Unlit);
+				Host->BlendableLocation = BL_SceneColorAfterTonemapping;
+				break;
+			default:
+				break;
+			}
+		}
+
+		// The whole Instance backend depends on graphless hosts collapsing to the LEGACY per-property
+		// translation path so our resource's per-property Custom drives each output. With Substrate on,
+		// that collapse holds only while the blendable-GBuffer path is enabled
+		// (r.Substrate.ProjectGBufferFormat=0). If a config/engine change disables it, the Substrate
+		// root node would bypass the per-property override and outputs would silently fall to defaults.
+		// Warn loudly once so the cause is obvious rather than a mysterious all-default material.
+		static void WarnIfInstanceLegacyCollapseAtRisk()
+		{
+			static bool bChecked = false;
+			if (bChecked)
+			{
+				return;
+			}
+			bChecked = true;
+
+			if (Substrate::IsSubstrateEnabled() && !Substrate::IsSubstrateBlendableGBufferEnabled(GMaxRHIShaderPlatform))
+			{
+				UE_LOG(LogDreamShader, Warning,
+					TEXT("DreamShader Instance backend relies on the Substrate blendable-GBuffer legacy collapse to drive per-property outputs on graphless hosts, but IsSubstrateBlendableGBufferEnabled is false (r.Substrate.ProjectGBufferFormat != 0). Instance materials may render with default outputs — set r.Substrate.ProjectGBufferFormat=0 or use the Graph backend."));
+			}
+		}
+
+		static UMaterial* EnsureInstanceHostMaterial(EMaterialDomain Domain, FString& OutError)
+		{
+			WarnIfInstanceLegacyCollapseAtRisk();
+
+			const FInstanceHostSpec* Spec = FindInstanceHostSpec(Domain);
+			if (!Spec)
+			{
+				OutError = TEXT("Backend=\"Instance\": no host material registered for the requested material domain.");
+				return nullptr;
+			}
+
+			const FString HostObjectPath = FString::Printf(TEXT("%s.%s"), Spec->PackageName, Spec->AssetName);
 			if (UMaterial* Existing = LoadObject<UMaterial>(nullptr, *HostObjectPath))
 			{
 				EnsureHostParameterVisibilityFlag(Existing);
@@ -2625,20 +3055,21 @@ namespace UE::DreamShader::Editor
 				FPackageName::RegisterMountPoint(TEXT("/DreamShader/"), ContentDirectory);
 			}
 
-			UPackage* HostPackage = CreatePackage(GInstanceHostPackageName);
+			UPackage* HostPackage = CreatePackage(Spec->PackageName);
 			if (!HostPackage)
 			{
-				OutError = FString::Printf(TEXT("Failed to create package '%s'."), GInstanceHostPackageName);
+				OutError = FString::Printf(TEXT("Failed to create package '%s'."), Spec->PackageName);
 				return nullptr;
 			}
 
-			UMaterial* Host = NewObject<UMaterial>(HostPackage, TEXT("M_DreamShaderHost"), RF_Public | RF_Standalone);
+			UMaterial* Host = NewObject<UMaterial>(HostPackage, Spec->AssetName, RF_Public | RF_Standalone);
 			if (!Host)
 			{
-				OutError = TEXT("Failed to create the DreamShader instance host material.");
+				OutError = FString::Printf(TEXT("Failed to create the DreamShader instance host material '%s'."), Spec->AssetName);
 				return nullptr;
 			}
 
+			ConfigureInstanceHostForDomain(Host, Domain);
 			Host->bEnableNewHLSLGenerator = true;
 			Host->PostEditChange();
 			FAssetRegistryModule::AssetCreated(Host);
@@ -2676,7 +3107,7 @@ namespace UE::DreamShader::Editor
 			}
 
 			FString HostError;
-			UMaterial* HostMaterial = EnsureInstanceHostMaterial(HostError);
+			UMaterial* HostMaterial = EnsureInstanceHostMaterial(Model.Domain, HostError);
 			if (!HostMaterial)
 			{
 				OutMessage = FString::Printf(TEXT("%s: %s"), *SourceFilePath, *HostError);
@@ -2707,6 +3138,7 @@ namespace UE::DreamShader::Editor
 			Instance->InstanceParameters = Model.Parameters;
 			Instance->UsedTexCoordCount = Model.UsedTexCoordCount;
 			Instance->bUsesVertexColorBuiltin = Model.bUsesVertexColor;
+			Instance->SceneReads = Model.SceneReads;
 			// Declaration order — the resource serves this array as the compile-time default-texture
 			// index space (GetMatDefaultTextureIdx does a Find), so it must contain every default
 			// exactly once.
@@ -2736,6 +3168,12 @@ namespace UE::DreamShader::Editor
 					? FString::Printf(TEXT(", %s, %sSampler"), *ParameterName, *ParameterName)
 					: FString::Printf(TEXT(", %s"), *ParameterName);
 			}
+			// Scene reads are forwarded by name (the dummy TexCoord/VertexColor inputs are NOT — their
+			// value is unused). Order matches the trailing eval-signature args and the named inputs below.
+			for (const FDreamShaderSceneRead& SceneRead : Model.SceneReads)
+			{
+				ArgumentList += FString::Printf(TEXT(", %s"), *SceneRead.ArgName.ToString());
+			}
 			for (const FInstanceBackendOutput& Output : Model.Outputs)
 			{
 				UMaterialExpressionCustom* EvalExpression = NewObject<UMaterialExpressionCustom>(Instance);
@@ -2758,6 +3196,14 @@ namespace UE::DreamShader::Editor
 				{
 					FCustomInput Input;
 					Input.InputName = TEXT("DreamShaderUnusedVertexColor");
+					EvalExpression->Inputs.Add(MoveTemp(Input));
+				}
+				// Scene-read inputs: REAL named inputs (unlike the dummies), forwarded to the eval fn.
+				// Index-aligned with the resource's scene chunks and the eval signature's trailing args.
+				for (const FDreamShaderSceneRead& SceneRead : Model.SceneReads)
+				{
+					FCustomInput Input;
+					Input.InputName = SceneRead.ArgName;
 					EvalExpression->Inputs.Add(MoveTemp(Input));
 				}
 				EvalExpression->OutputType = Output.Output.OutputType;

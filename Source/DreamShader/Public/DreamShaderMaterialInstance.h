@@ -52,6 +52,39 @@ struct FDreamShaderInstanceParameter
 	FString Description;
 };
 
+/** A translator-computed value (a scene-buffer read) fed into the eval functions as a named argument. */
+UENUM()
+enum class EDreamShaderSceneReadKind : uint8
+{
+	SceneDepth,   // Compiler->SceneDepth  -> float
+	SceneColor,   // Compiler->SceneColor  -> float4 (translucent Surface only)
+	SceneTexture, // Compiler->SceneTextureLookup(SceneTextureId) -> float4 (PostProcess domain)
+};
+
+/**
+ * A scene read the generated .ush references by name. Unlike the pure-read builtins (which inline a
+ * Parameters read), a scene read's value cannot be reconstructed in HLSL: the resource must compile
+ * the matching FMaterialCompiler call (which also registers the scene-texture usage / copy pass) and
+ * pass the result into the eval function as a typed argument. Instance-level and de-duplicated by
+ * (Kind, SceneTextureId): every UE.SceneColor()/SceneDepth()/SceneTexture(id) maps to one argument.
+ */
+USTRUCT()
+struct FDreamShaderSceneRead
+{
+	GENERATED_BODY()
+
+	UPROPERTY(VisibleAnywhere, Category = "DreamShader")
+	EDreamShaderSceneReadKind Kind = EDreamShaderSceneReadKind::SceneDepth;
+
+	/** ESceneTextureId for Kind==SceneTexture; ignored otherwise. */
+	UPROPERTY(VisibleAnywhere, Category = "DreamShader")
+	int32 SceneTextureId = 0;
+
+	/** Eval-function argument name the lowered HLSL references (e.g. DreamShaderSceneColor). */
+	UPROPERTY(VisibleAnywhere, Category = "DreamShader")
+	FName ArgName;
+};
+
 /** Binds one material property to an eval function inside the instance's generated .ush. */
 USTRUCT()
 struct FDreamShaderInstanceOutput
@@ -114,6 +147,14 @@ public:
 	/** The generated .ush reads Parameters.VertexColor; a dummy chunk sets bUsesVertexColor. */
 	UPROPERTY(VisibleAnywhere, Category = "DreamShader")
 	bool bUsesVertexColorBuiltin = false;
+
+	/**
+	 * Scene reads the eval functions consume as named arguments (instance-level, order = argument
+	 * order in every eval signature). The resource compiles one FMaterialCompiler scene call per
+	 * entry, in this order, after the parameter and dummy side-effect chunks.
+	 */
+	UPROPERTY(VisibleAnywhere, Category = "DreamShader")
+	TArray<FDreamShaderSceneRead> SceneReads;
 
 	/**
 	 * Compile-time default-texture index space for this instance. The translator resolves texture
