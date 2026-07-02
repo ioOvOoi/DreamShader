@@ -291,32 +291,32 @@ namespace UE::DreamShader::Editor::Private
 		}
 	}
 
-	bool FDreamShaderEditorBridge::IsVirtualMaterialModeEnabled()
+	bool FDreamShaderEditorBridge::IsInMemoryMaterialModeEnabled()
 	{
 		const UDreamShaderSettings* Settings = GetDefault<UDreamShaderSettings>();
-		return Settings && Settings->bVirtualMaterialMode;
+		return Settings && Settings->bInMemoryMaterialMode;
 	}
 
 	void FDreamShaderEditorBridge::HandlePostEngineInit()
 	{
-		if (IsVirtualMaterialModeEnabled())
+		if (IsInMemoryMaterialModeEnabled())
 		{
-			GenerateAllVirtualMaterials();
+			GenerateAllInMemoryMaterials();
 		}
 	}
 
 	void FDreamShaderEditorBridge::HandleSettingsPropertyChanged(UObject* Object, FPropertyChangedEvent& Event)
 	{
 		if (!Object || !Object->IsA<UDreamShaderSettings>()
-			|| Event.GetPropertyName() != GET_MEMBER_NAME_CHECKED(UDreamShaderSettings, bVirtualMaterialMode))
+			|| Event.GetPropertyName() != GET_MEMBER_NAME_CHECKED(UDreamShaderSettings, bInMemoryMaterialMode))
 		{
 			return;
 		}
 
-		if (IsVirtualMaterialModeEnabled())
+		if (IsInMemoryMaterialModeEnabled())
 		{
-			UE_LOG(LogDreamShader, Display, TEXT("DreamShader virtual material mode enabled; regenerating all source files in memory."));
-			GenerateAllVirtualMaterials();
+			UE_LOG(LogDreamShader, Display, TEXT("DreamShader in-memory material mode enabled; regenerating all source files in memory."));
+			GenerateAllInMemoryMaterials();
 
 			// Stale persisted assets shadow the in-memory versions; point the user at the cleanup.
 			TArray<UObject*> ShadowingAssets;
@@ -324,18 +324,18 @@ namespace UE::DreamShader::Editor::Private
 			{
 				ShowDreamShaderNotification(
 					FText::Format(
-						LOCTEXT("DreamShaderVirtualModeShadowed", "{0} previously generated asset(s) are still saved on disk and shadow virtual material mode. Run Tools > DreamShader > Clean Persisted Generated Assets to remove them."),
+						LOCTEXT("DreamShaderInMemoryModeShadowed", "{0} previously generated asset(s) are still saved on disk and shadow in-memory material mode. Run Tools > DreamShader > Clean Persisted Generated Assets to remove them."),
 						FText::AsNumber(ShadowingAssets.Num())),
 					SNotificationItem::CS_Fail);
 			}
 		}
 		else
 		{
-			UE_LOG(LogDreamShader, Display, TEXT("DreamShader virtual material mode disabled; future compiles will persist assets. In-memory materials from this session remain until they are recompiled or the editor restarts."));
+			UE_LOG(LogDreamShader, Display, TEXT("DreamShader in-memory material mode disabled; future compiles will persist assets. In-memory materials from this session remain until they are recompiled or the editor restarts."));
 		}
 	}
 
-	void FDreamShaderEditorBridge::GenerateAllVirtualMaterials()
+	void FDreamShaderEditorBridge::GenerateAllInMemoryMaterials()
 	{
 		TArray<FString> SourceFiles;
 		FDreamShaderSourceFileUtils::FindProjectDreamShaderSourceFiles(SourceFiles);
@@ -345,7 +345,7 @@ namespace UE::DreamShader::Editor::Private
 			return;
 		}
 
-		UE_LOG(LogDreamShader, Display, TEXT("DreamShader virtual material mode: generating %d source file(s) in memory..."), SourceFiles.Num());
+		UE_LOG(LogDreamShader, Display, TEXT("DreamShader in-memory material mode: generating %d source file(s) in memory..."), SourceFiles.Num());
 
 		int32 SuccessCount = 0;
 		int32 FailCount = 0;
@@ -362,16 +362,16 @@ namespace UE::DreamShader::Editor::Private
 			if (bSuccess)
 			{
 				++SuccessCount;
-				UE_LOG(LogDreamShader, Display, TEXT("  [Virtual] %s"), *Message);
+				UE_LOG(LogDreamShader, Display, TEXT("  [In-Memory] %s"), *Message);
 			}
 			else
 			{
 				++FailCount;
-				UE_LOG(LogDreamShader, Warning, TEXT("  [Virtual] Failed: %s"), *Message);
+				UE_LOG(LogDreamShader, Warning, TEXT("  [In-Memory] Failed: %s"), *Message);
 			}
 		}
 
-		UE_LOG(LogDreamShader, Display, TEXT("DreamShader virtual material generation complete: %d succeeded, %d failed."), SuccessCount, FailCount);
+		UE_LOG(LogDreamShader, Display, TEXT("DreamShader in-memory material generation complete: %d succeeded, %d failed."), SuccessCount, FailCount);
 	}
 
 	void FDreamShaderEditorBridge::QueueSourceFile(const FString& SourceFilePath)
@@ -620,7 +620,7 @@ namespace UE::DreamShader::Editor::Private
 	void FDreamShaderEditorBridge::ProcessSourceFile(const FString& SourceFilePath)
 	{
 		UE::DreamShader::Compiler::FDreamShaderCompileService CompileService(UE::DreamShader::Editor::GetEditorCompileAdapter());
-		const UE::DreamShader::Compiler::FDreamShaderCompileResult Result = CompileService.CompileAssets(SourceFilePath, false, IsVirtualMaterialModeEnabled());
+		const UE::DreamShader::Compiler::FDreamShaderCompileResult Result = CompileService.CompileAssets(SourceFilePath, false, IsInMemoryMaterialModeEnabled());
 		if (Result.bSucceeded)
 		{
 			ClearDiagnosticsForSourceAndDependencies(SourceFilePath);
@@ -776,20 +776,20 @@ namespace UE::DreamShader::Editor::Private
 			Section.AddMenuEntry(
 				TEXT("DreamShader.CleanPersistedGeneratedAssets"),
 				LOCTEXT("DreamShaderCleanPersistedGeneratedAssetsLabel", "Clean Persisted Generated Assets"),
-				LOCTEXT("DreamShaderCleanPersistedGeneratedAssetsTooltip", "Delete DreamShader-generated material assets that are saved on disk (they shadow virtual material mode). Shows a confirmation with the full list; source files are untouched and regenerate in memory."),
+				LOCTEXT("DreamShaderCleanPersistedGeneratedAssetsTooltip", "Delete DreamShader-generated material assets that are saved on disk (they shadow in-memory material mode). Shows a confirmation with the full list; source files are untouched and regenerate in memory."),
 				FSlateIcon(FAppStyle::GetAppStyleSetName(), TEXT("Icons.Delete")),
 				FUIAction(FExecuteAction::CreateSP(AsShared(), &FDreamShaderEditorBridge::RequestCleanPersistedGeneratedAssets)));
 			Section.AddMenuEntry(
-				TEXT("DreamShader.ToggleShowVirtualMaterials"),
-				LOCTEXT("DreamShaderToggleShowVirtualMaterialsLabel", "Show Virtual Materials"),
-				LOCTEXT("DreamShaderToggleShowVirtualMaterialsTooltip", "Show memory-only DreamShader materials in the Content Browser and asset pickers — needed when picking one as a material instance Parent or referencing it from a detail panel. While shown, an explicit Save on one would persist it to disk (the shadow warning and Clean command cover recovery)."),
+				TEXT("DreamShader.ToggleShowInMemoryMaterials"),
+				LOCTEXT("DreamShaderToggleShowInMemoryMaterialsLabel", "Show In-Memory Materials"),
+				LOCTEXT("DreamShaderToggleShowInMemoryMaterialsTooltip", "Show memory-only DreamShader materials in the Content Browser and asset pickers — needed when picking one as a material instance Parent or referencing it from a detail panel. While shown, an explicit Save on one would persist it to disk (the shadow warning and Clean command cover recovery)."),
 				FSlateIcon(),
 				FUIAction(
-					FExecuteAction::CreateSP(AsShared(), &FDreamShaderEditorBridge::ToggleShowVirtualMaterialsInContentBrowser),
+					FExecuteAction::CreateSP(AsShared(), &FDreamShaderEditorBridge::ToggleShowInMemoryMaterialsInContentBrowser),
 					FCanExecuteAction(),
 					FIsActionChecked::CreateLambda([]()
 					{
-						return GetDefault<UDreamShaderSettings>()->bShowVirtualMaterialsInContentBrowser;
+						return GetDefault<UDreamShaderSettings>()->bShowInMemoryMaterialsInContentBrowser;
 					})),
 				EUserInterfaceActionType::ToggleButton);
 			Section.AddMenuEntry(
@@ -1106,7 +1106,7 @@ namespace UE::DreamShader::Editor::Private
 
 		for (const FAssetData& AssetData : AssetDataList)
 		{
-			// Only assets that actually live on disk qualify; in-memory virtual assets are the
+			// Only assets that actually live on disk qualify; in-memory assets are the
 			// desired end state. The provenance metadata gate means hand-authored materials are
 			// never touched — only assets DreamShader itself generated (including orphans whose
 			// source file has since been deleted or renamed).
@@ -1125,7 +1125,7 @@ namespace UE::DreamShader::Editor::Private
 		return OutAssets.Num();
 	}
 
-	void FDreamShaderEditorBridge::ToggleShowVirtualMaterialsInContentBrowser()
+	void FDreamShaderEditorBridge::ToggleShowInMemoryMaterialsInContentBrowser()
 	{
 		if (bIsShuttingDown || IsEngineExitRequested() || GExitPurge)
 		{
@@ -1133,9 +1133,9 @@ namespace UE::DreamShader::Editor::Private
 		}
 
 		UDreamShaderSettings* Settings = GetMutableDefault<UDreamShaderSettings>();
-		Settings->bShowVirtualMaterialsInContentBrowser = !Settings->bShowVirtualMaterialsInContentBrowser;
+		Settings->bShowInMemoryMaterialsInContentBrowser = !Settings->bShowInMemoryMaterialsInContentBrowser;
 		Settings->TryUpdateDefaultConfigFile();
-		const bool bShow = Settings->bShowVirtualMaterialsInContentBrowser;
+		const bool bShow = Settings->bShowInMemoryMaterialsInContentBrowser;
 
 		// IsAsset() reads the setting live; broadcast per-instance registry events so the Content
 		// Browser (and open asset pickers) add/remove the tiles immediately instead of on the next
@@ -1163,8 +1163,8 @@ namespace UE::DreamShader::Editor::Private
 		ShowDreamShaderNotification(
 			FText::Format(
 				bShow
-					? LOCTEXT("DreamShaderVirtualMaterialsShown", "Showing {0} virtual material(s) in the Content Browser and asset pickers.")
-					: LOCTEXT("DreamShaderVirtualMaterialsHidden", "Hidden {0} virtual material(s) from the Content Browser and asset pickers."),
+					? LOCTEXT("DreamShaderInMemoryMaterialsShown", "Showing {0} in-memory material(s) in the Content Browser and asset pickers.")
+					: LOCTEXT("DreamShaderInMemoryMaterialsHidden", "Hidden {0} in-memory material(s) from the Content Browser and asset pickers."),
 				FText::AsNumber(ToggledCount)),
 			SNotificationItem::CS_Success);
 	}
@@ -1190,10 +1190,10 @@ namespace UE::DreamShader::Editor::Private
 		const int32 DeletedCount = ObjectTools::DeleteObjects(AssetsToDelete, /*bShowConfirmation*/ true);
 		UE_LOG(LogDreamShader, Display, TEXT("DreamShader deleted %d of %d persisted generated asset(s)."), DeletedCount, AssetsToDelete.Num());
 
-		if (DeletedCount > 0 && IsVirtualMaterialModeEnabled())
+		if (DeletedCount > 0 && IsInMemoryMaterialModeEnabled())
 		{
 			// Recreate the deleted assets in memory right away so references resolve without a restart.
-			GenerateAllVirtualMaterials();
+			GenerateAllInMemoryMaterials();
 		}
 
 		ShowDreamShaderNotification(

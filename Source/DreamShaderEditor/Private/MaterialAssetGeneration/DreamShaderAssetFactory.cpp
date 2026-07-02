@@ -293,15 +293,15 @@ namespace UE::DreamShader::Editor::Private
 		return true;
 	}
 
-	// In virtual material mode a stale saved asset at the target path wins over in-memory
+	// In in-memory material mode a stale saved asset at the target path wins over in-memory
 	// regeneration (the reuse path below loads and mutates it, unsaved). Surface that loudly so
-	// users understand why a "virtual" material still shows up as an on-disk asset.
-	static void WarnIfVirtualModeShadowedByDiskAsset(const bool bTransient, const FString& PackageName, const FString& ObjectPath)
+	// users understand why an "in-memory" material still shows up as an on-disk asset.
+	static void WarnIfInMemoryModeShadowedByDiskAsset(const bool bTransient, const FString& PackageName, const FString& ObjectPath)
 	{
 		if (bTransient && FPackageName::DoesPackageExist(PackageName))
 		{
 			UE_LOG(LogDreamShader, Warning,
-				TEXT("Virtual material mode: '%s' already exists as a saved asset, which shadows in-memory regeneration. Delete the saved asset to make it fully virtual."),
+				TEXT("In-memory material mode: '%s' already exists as a saved asset, which shadows in-memory regeneration. Delete the saved asset to make it fully in-memory."),
 				*ObjectPath);
 		}
 	}
@@ -325,7 +325,7 @@ namespace UE::DreamShader::Editor::Private
 				return false;
 			}
 
-			WarnIfVirtualModeShadowedByDiskAsset(bTransient, PackageName, ObjectPath);
+			WarnIfInMemoryModeShadowedByDiskAsset(bTransient, PackageName, ObjectPath);
 			return true;
 		}
 
@@ -387,7 +387,7 @@ namespace UE::DreamShader::Editor::Private
 				return false;
 			}
 
-			WarnIfVirtualModeShadowedByDiskAsset(bTransient, PackageName, ObjectPath);
+			WarnIfInMemoryModeShadowedByDiskAsset(bTransient, PackageName, ObjectPath);
 			return true;
 		}
 
@@ -462,7 +462,7 @@ namespace UE::DreamShader::Editor::Private
 				return false;
 			}
 
-			WarnIfVirtualModeShadowedByDiskAsset(bTransient, PackageName, ObjectPath);
+			WarnIfInMemoryModeShadowedByDiskAsset(bTransient, PackageName, ObjectPath);
 			return true;
 		}
 

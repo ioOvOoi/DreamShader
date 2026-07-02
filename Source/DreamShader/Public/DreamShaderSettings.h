@@ -58,15 +58,15 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category="Paths", meta=(RelativeToGameDir))
 	FDirectoryPath GeneratedShaderDirectory;
 
-	UPROPERTY(Config, EditAnywhere, Category="Virtual Materials",
-		meta=(DisplayName="Enable Virtual Material Mode",
+	UPROPERTY(Config, EditAnywhere, Category="In-Memory Materials",
+		meta=(DisplayName="Enable In-Memory Material Mode",
 			ToolTip="When enabled, DreamShader generates materials as transient in-memory assets at editor startup instead of saving .uasset files. DreamShader source files become the single asset source. Materials are automatically generated as persistent assets during cooking for packaging."))
-	bool bVirtualMaterialMode = false;
+	bool bInMemoryMaterialMode = false;
 
-	UPROPERTY(Config, EditAnywhere, Category="Virtual Materials",
-		meta=(DisplayName="Show Virtual Materials In Content Browser",
+	UPROPERTY(Config, EditAnywhere, Category="In-Memory Materials",
+		meta=(DisplayName="Show In-Memory Materials In Content Browser",
 			ToolTip="When enabled, memory-only DreamShader instance materials appear in the Content Browser like unsaved assets. Disabled by default: the source files are the intended authoring surface, and hiding the instances also prevents accidental Save actions from materializing them to disk."))
-	bool bShowVirtualMaterialsInContentBrowser = false;
+	bool bShowInMemoryMaterialsInContentBrowser = false;
 
 	UPROPERTY(Config, EditAnywhere, Category="Compiler",
 		meta=(DisplayName="Default Backend",

@@ -1226,10 +1226,10 @@ bool FDreamShaderGenerateInstanceBackendVirtualTest::RunTest(const FString& Para
 		FPackageName::DoesPackageExist(Instance->GetPackage()->GetName(), &ExistingDiskPackage));
 
 	// Memory-only instances hide from asset enumeration (Content Browser, save pickers) unless the
-	// user opts in via bShowVirtualMaterialsInContentBrowser; object-path references still resolve.
-	if (!GetDefault<UDreamShaderSettings>()->bShowVirtualMaterialsInContentBrowser)
+	// user opts in via bShowInMemoryMaterialsInContentBrowser; object-path references still resolve.
+	if (!GetDefault<UDreamShaderSettings>()->bShowInMemoryMaterialsInContentBrowser)
 	{
-		TestFalse(TEXT("Virtual instance is not an enumerable asset (hidden from the Content Browser)."), Instance->IsAsset());
+		TestFalse(TEXT("In-memory instance is not an enumerable asset (hidden from the Content Browser)."), Instance->IsAsset());
 	}
 
 	return true;
@@ -1468,6 +1468,99 @@ bool FDreamShaderGenerateInstanceBackendTextureTest::RunTest(const FString& Para
 		TMap<FMaterialParameterInfo, FMaterialParameterMetadata> ChildScalarParameters;
 		Child->GetAllParametersOfType(EMaterialParameterType::Scalar, ChildScalarParameters);
 		TestTrue(TEXT("Child MIC inherits the synthesized parameter enumeration."), ChildScalarParameters.Contains(FMaterialParameterInfo(TEXT("Intensity"))));
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderGenerateInstanceBackendStateReadsTest,
+	"DreamShader.Compiler.Generate.InstanceBackendStateReads",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FDreamShaderGenerateInstanceBackendStateReadsTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_AutoInstanceStateReads"));
+	const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+	Artifacts.AddObjectPath(ObjectPath);
+	AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
+	AddExpectedAutomationCleanupWarnings(*this);
+
+	// A spread across the three pure-read shapes: LWC-demoted world/object position, external-code
+	// reflection vector, and Get*(Parameters) helpers (screen UV, per-instance random).
+	const FString Source = FString::Printf(TEXT(R"(Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
+{
+    Settings = {
+        Backend = "Instance";
+        ShadingModel = "Unlit";
+    }
+
+    Outputs = {
+        vec3 Color;
+        Base.EmissiveColor = Color;
+    }
+
+    Graph = {
+        float3 wp = UE.WorldPosition();
+        float3 op = UE.ObjectPosition();
+        float3 refl = UE.ReflectionVector();
+        float2 vp = UE.ScreenPosition();
+        float rnd = UE.PerInstanceRandom();
+        Color = frac(wp * 0.001) * 0.5 + refl * 0.25 + float3(vp * rnd, op.z * 0.0);
+    }
+}
+)"), *AssetName);
+
+	FString SourceFilePath;
+	if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), Source, SourceFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(SourceFilePath);
+
+	FString Message;
+	const bool bGenerated = FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ true);
+	if (!TestTrue(FString::Printf(TEXT("State-read instance generation succeeds: %s"), *Message), bGenerated))
+	{
+		return false;
+	}
+
+	UDreamShaderMaterialInstance* Instance = FindObject<UDreamShaderMaterialInstance>(nullptr, *ObjectPath);
+	if (!TestNotNull(TEXT("State-read instance exists in memory."), Instance))
+	{
+		return false;
+	}
+
+	// Pure reads need no compiled chunk and no eval argument: no texcoord slots, no vertex color,
+	// no parameters, and therefore zero Custom inputs.
+	TestEqual(TEXT("No texcoord slots requested."), Instance->UsedTexCoordCount, 0);
+	TestFalse(TEXT("VertexColor builtin not used."), Instance->bUsesVertexColorBuiltin);
+	TestEqual(TEXT("No synthesized parameters."), Instance->InstanceParameters.Num(), 0);
+#if WITH_EDITORONLY_DATA
+	if (TestEqual(TEXT("One eval expression."), Instance->EvalExpressions.Num(), 1) && Instance->EvalExpressions[0])
+	{
+		TestEqual(TEXT("Pure-read builtins add zero Custom inputs."), Instance->EvalExpressions[0]->Inputs.Num(), 0);
+	}
+#endif
+
+	// The generated include lowers each UE.* state read to its DreamShaderBuiltins.ush macro.
+	{
+		const FString FileName = FPaths::GetCleanFilename(Instance->GeneratedIncludeVirtualPath);
+		const FString DiskPath = UE::DreamShader::GetGeneratedShaderDirectory() / FileName;
+		FString IncludeContent;
+		if (TestTrue(TEXT("Generated instance .ush exists on disk."), FFileHelper::LoadFileToString(IncludeContent, *DiskPath)))
+		{
+			TestTrue(TEXT("UE.WorldPosition lowers to DS_WorldPosition."), IncludeContent.Contains(TEXT("DS_WorldPosition(Parameters)")));
+			TestTrue(TEXT("UE.ObjectPosition lowers to DS_ObjectPosition."), IncludeContent.Contains(TEXT("DS_ObjectPosition(Parameters)")));
+			TestTrue(TEXT("UE.ReflectionVector lowers to DS_ReflectionVector."), IncludeContent.Contains(TEXT("DS_ReflectionVector(Parameters)")));
+			TestTrue(TEXT("UE.ScreenPosition lowers to DS_ViewportUV."), IncludeContent.Contains(TEXT("DS_ViewportUV(Parameters)")));
+			TestTrue(TEXT("UE.PerInstanceRandom lowers to DS_PerInstanceRandom."), IncludeContent.Contains(TEXT("DS_PerInstanceRandom(Parameters)")));
+			TestFalse(TEXT("No unlowered UE.* remains."), IncludeContent.Contains(TEXT("UE.")));
+		}
 	}
 
 	return true;

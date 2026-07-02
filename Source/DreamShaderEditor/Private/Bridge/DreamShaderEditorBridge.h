@@ -32,8 +32,8 @@ namespace UE::DreamShader::Editor::Private
 		void QueueFullScan();
 		void HandlePostEngineInit();
 		void HandleSettingsPropertyChanged(UObject* Object, struct FPropertyChangedEvent& Event);
-		void GenerateAllVirtualMaterials();
-		static bool IsVirtualMaterialModeEnabled();
+		void GenerateAllInMemoryMaterials();
+		static bool IsInMemoryMaterialModeEnabled();
 		void QueueSourceFile(const FString& SourceFilePath);
 		void QueueDependentSourcesForImport(const FString& ImportFilePath);
 		void OnDirectoryChanged(const TArray<FFileChangeData>& FileChanges);
@@ -58,7 +58,7 @@ namespace UE::DreamShader::Editor::Private
 		void RequestCleanGeneratedShaders();
 		void RequestCleanPersistedGeneratedAssets();
 		int32 CollectPersistedGeneratedAssets(TArray<UObject*>& OutAssets);
-		void ToggleShowVirtualMaterialsInContentBrowser();
+		void ToggleShowInMemoryMaterialsInContentBrowser();
 		void OpenDreamShaderWorkspace();
 		void ExportMaterialToDreamShaderFile(TWeakObjectPtr<UMaterial> Material);
 		void ExportMaterialFunctionToDreamShaderFile(TWeakObjectPtr<UMaterialFunction> MaterialFunction);

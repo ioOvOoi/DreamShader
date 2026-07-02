@@ -544,9 +544,9 @@ namespace UE::DreamShader::Editor::Private
 		OutResult.AssetPath = ObjectPath;
 
 		UE::DreamShader::Compiler::FDreamShaderCompileService CompileService(UE::DreamShader::Editor::GetEditorCompileAdapter());
-		// Honor virtual material mode (read live): a preview compile must not silently persist assets.
+		// Honor in-memory material mode (read live): a preview compile must not silently persist assets.
 		const UDreamShaderSettings* Settings = GetDefault<UDreamShaderSettings>();
-		const bool bTransient = Settings && Settings->bVirtualMaterialMode;
+		const bool bTransient = Settings && Settings->bInMemoryMaterialMode;
 		const UE::DreamShader::Compiler::FDreamShaderCompileResult CompileResult = CompileService.CompileMaterial(SourceFilePath, true, bTransient);
 		if (!CompileResult.bSucceeded)
 		{

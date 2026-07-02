@@ -1811,7 +1811,7 @@ namespace UE::DreamShader::Editor
 			{
 				FunctionSlowTask.EnterProgressFrame(1.0f);
 				// Modify()/PostEditChange dirtied the in-memory package; clear it so no save-all or
-				// exit prompt can silently persist a virtual material function.
+				// exit prompt can silently persist an in-memory material function.
 				MaterialFunction->GetPackage()->SetDirtyFlag(false);
 			}
 			else
@@ -1992,6 +1992,43 @@ namespace UE::DreamShader::Editor
 			bool bUsesVertexColor = false;
 		};
 
+		// No-argument pure-read builtins: each reads straight off FMaterialPixelParameters (or a
+		// Get*(Parameters) helper) at pixel frequency, populated unconditionally at pixel entry, so it
+		// needs no compiled chunk and no eval-function argument — lowering is a textual substitution to
+		// the matching DreamShaderBuiltins.ush macro. Only builtins feasible on an opaque Surface pixel
+		// eval are listed (verified against Config/BaseMaterialExpressions.ini + MaterialTemplate.ush);
+		// vertex-only (PreSkinned*) and domain-gated (LightVector) reads are intentionally absent.
+		static const TCHAR* FindNoArgInstanceBuiltin(const FString& MemberName)
+		{
+			struct FBuiltinEntry { const TCHAR* Name; const TCHAR* Replacement; };
+			static const FBuiltinEntry Entries[] = {
+				{ TEXT("WorldPosition"),            TEXT("DS_WorldPosition(Parameters)") },
+				{ TEXT("TranslatedWorldPosition"),  TEXT("DS_TranslatedWorldPosition(Parameters)") },
+				{ TEXT("ObjectPosition"),           TEXT("DS_ObjectPosition(Parameters)") },
+				{ TEXT("ObjectRadius"),             TEXT("DS_ObjectRadius(Parameters)") },
+				{ TEXT("ObjectBounds"),             TEXT("DS_ObjectBounds(Parameters)") },
+				{ TEXT("CameraVector"),             TEXT("DS_CameraVector(Parameters)") },
+				{ TEXT("CameraPosition"),           TEXT("DS_CameraPosition(Parameters)") },
+				{ TEXT("ReflectionVector"),         TEXT("DS_ReflectionVector(Parameters)") },
+				{ TEXT("ScreenPosition"),           TEXT("DS_ViewportUV(Parameters)") },
+				{ TEXT("ViewportUV"),               TEXT("DS_ViewportUV(Parameters)") },
+				{ TEXT("PixelDepth"),               TEXT("DS_PixelDepth(Parameters)") },
+				{ TEXT("PixelNormalWS"),            TEXT("DS_PixelNormalWS(Parameters)") },
+				{ TEXT("VertexNormalWS"),           TEXT("DS_VertexNormalWS(Parameters)") },
+				{ TEXT("TwoSidedSign"),             TEXT("DS_TwoSidedSign(Parameters)") },
+				{ TEXT("PerInstanceRandom"),        TEXT("DS_PerInstanceRandom(Parameters)") },
+				{ TEXT("PerInstanceFadeAmount"),    TEXT("DS_PerInstanceFadeAmount(Parameters)") },
+			};
+			for (const FBuiltinEntry& Entry : Entries)
+			{
+				if (MemberName.Equals(Entry.Name, ESearchCase::IgnoreCase))
+				{
+					return Entry.Replacement;
+				}
+			}
+			return nullptr;
+		}
+
 		// Rewrite the UE.* builtins the instance backend supports into their DS_* HLSL equivalents
 		// (see Shaders/DreamShaderBuiltins.ush), recording which translator side effects the resource
 		// must trigger. Unsupported UE.*/Substrate.* calls are left in place for the residual check.
@@ -2113,6 +2150,18 @@ namespace UE::DreamShader::Editor
 				{
 					bInOutUsesVertexColor = true;
 					Replacement = TEXT("DS_VertexColor(Parameters)");
+				}
+				else if (const TCHAR* BuiltinReplacement = FindNoArgInstanceBuiltin(MemberName))
+				{
+					// Pure Parameters reads: the value comes straight off FMaterialPixelParameters (or
+					// a Get*(Parameters) helper) with no compiled chunk, so lowering is a plain textual
+					// substitution — nothing is threaded through the resource or the Custom inputs.
+					if (!Arguments.IsEmpty())
+					{
+						OutError = FString::Printf(TEXT("Backend=\"Instance\": UE.%s(...) takes no arguments."), *MemberName);
+						return false;
+					}
+					Replacement = BuiltinReplacement;
 				}
 				else
 				{
@@ -3418,7 +3467,7 @@ namespace UE::DreamShader::Editor
 		{
 			MaterialSlowTask.EnterProgressFrame(1.0f);
 			// Modify()/PostEditChange dirtied the in-memory package; clear it so no save-all or
-			// exit prompt can silently persist a virtual material and fork the source of truth.
+			// exit prompt can silently persist an in-memory material and fork the source of truth.
 			Material->GetPackage()->SetDirtyFlag(false);
 		}
 		else
