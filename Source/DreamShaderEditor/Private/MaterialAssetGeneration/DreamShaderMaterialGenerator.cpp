@@ -14,6 +14,7 @@
 
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "CoreGlobals.h"
+#include "Engine/Texture.h"
 #include "HAL/FileManager.h"
 #include "Interfaces/IPluginManager.h"
 #include "MaterialShared.h"
@@ -2126,6 +2127,45 @@ namespace UE::DreamShader::Editor
 				Index = CloseIndex + 1;
 			}
 
+			// The DSL surface exposes the sampling intrinsics without the DS_ namespace prefix;
+			// lower them here so the generated include only references the namespaced macros from
+			// DreamShaderBuiltins.ush. An already-prefixed spelling passes through untouched.
+			{
+				static const TCHAR* IntrinsicStem = TEXT("SampleTexture2D");
+				const int32 StemLength = FCString::Strlen(IntrinsicStem);
+				FString Prefixed;
+				Prefixed.Reserve(OutCode.Len());
+				int32 ScanIndex = 0;
+				while (ScanIndex < OutCode.Len())
+				{
+					const int32 FoundIndex = OutCode.Find(IntrinsicStem, ESearchCase::CaseSensitive, ESearchDir::FromStart, ScanIndex);
+					if (FoundIndex == INDEX_NONE)
+					{
+						Prefixed += OutCode.Mid(ScanIndex);
+						break;
+					}
+					Prefixed += OutCode.Mid(ScanIndex, FoundIndex - ScanIndex);
+					int32 IdentifierEnd = FoundIndex + StemLength;
+					while (IdentifierEnd < OutCode.Len() && (FChar::IsAlnum(OutCode[IdentifierEnd]) || OutCode[IdentifierEnd] == TCHAR('_')))
+					{
+						++IdentifierEnd;
+					}
+					const FString Identifier = OutCode.Mid(FoundIndex, IdentifierEnd - FoundIndex);
+					const bool bAtTokenStart = FoundIndex == 0
+						|| !(FChar::IsAlnum(OutCode[FoundIndex - 1]) || OutCode[FoundIndex - 1] == TCHAR('_'));
+					const bool bKnownIntrinsic = Identifier.Equals(TEXT("SampleTexture2D"), ESearchCase::CaseSensitive)
+						|| Identifier.Equals(TEXT("SampleTexture2DLod"), ESearchCase::CaseSensitive)
+						|| Identifier.Equals(TEXT("SampleTexture2DBias"), ESearchCase::CaseSensitive);
+					if (bAtTokenStart && bKnownIntrinsic)
+					{
+						Prefixed += TEXT("DS_");
+					}
+					Prefixed += Identifier;
+					ScanIndex = IdentifierEnd;
+				}
+				OutCode = MoveTemp(Prefixed);
+			}
+
 			return true;
 		}
 
@@ -2204,6 +2244,31 @@ namespace UE::DreamShader::Editor
 					return false;
 				}
 
+				// Only parameter node types with faithful instance-backend semantics pass; everything
+				// else (static switches, sample parameters, fonts, dynamic/particle parameters, ...)
+				// is translator- or vertex-factory-coupled and must use the Graph backend.
+				const FString& NodeType = Property.ParameterNodeType;
+				const bool bSupportedNodeType = NodeType.IsEmpty()
+					|| NodeType.Equals(TEXT("ScalarParameter"), ESearchCase::IgnoreCase)
+					|| NodeType.Equals(TEXT("VectorParameter"), ESearchCase::IgnoreCase)
+					|| NodeType.Equals(TEXT("TextureObjectParameter"), ESearchCase::IgnoreCase);
+				if (!bSupportedNodeType)
+				{
+					OutError = FString::Printf(
+						TEXT("Backend=\"Instance\" does not support the '%s' parameter type of '%s' (use Scalar/Vector/TextureObjectParameter, or the Graph backend)."),
+						*NodeType, *Property.Name);
+					return false;
+				}
+
+				// Editor-facing metadata (group/sort/tooltip) rides along so the material instance
+				// editor arranges synthesized parameters the same way the Graph backend would.
+				const auto ApplyParameterMetadata = [&Property](FDreamShaderInstanceParameter& Parameter)
+				{
+					Parameter.Group = FName(*Property.Metadata.Group);
+					Parameter.SortPriority = Property.Metadata.bHasSortPriority ? Property.Metadata.SortPriority : 32;
+					Parameter.Description = Property.Metadata.Description;
+				};
+
 				switch (Property.Type)
 				{
 				case ETextShaderPropertyType::Scalar:
@@ -2217,6 +2282,7 @@ namespace UE::DreamShader::Editor
 						Parameter.Name = FName(*Property.Name);
 						Parameter.Type = EDreamShaderInstanceParameterType::Scalar;
 						Parameter.ScalarDefault = static_cast<float>(Property.ScalarDefaultValue);
+						ApplyParameterMetadata(Parameter);
 						OutModel.Parameters.Add(MoveTemp(Parameter));
 					}
 					break;
@@ -2235,12 +2301,52 @@ namespace UE::DreamShader::Editor
 						Parameter.Name = FName(*Property.Name);
 						Parameter.Type = EDreamShaderInstanceParameterType::Vector;
 						Parameter.VectorDefault = Property.VectorDefaultValue;
+						ApplyParameterMetadata(Parameter);
 						OutModel.Parameters.Add(MoveTemp(Parameter));
 					}
 					break;
 
+				case ETextShaderPropertyType::Texture2D:
+				{
+					if (Property.TextureType != ETextShaderTextureType::Texture2D)
+					{
+						OutError = FString::Printf(TEXT("Backend=\"Instance\" only supports 2D texture parameters yet; '%s' is not a Texture2D."), *Property.Name);
+						return false;
+					}
+					if (Property.bConst)
+					{
+						OutError = FString::Printf(TEXT("Backend=\"Instance\" does not support const texture property '%s'."), *Property.Name);
+						return false;
+					}
+
+					// Translation dereferences the default texture unconditionally, so one is mandatory.
+					const FString DefaultPath = Property.TextureDefaultObjectPath.IsEmpty()
+						? TEXT("/Engine/EngineResources/DefaultTexture.DefaultTexture")
+						: Property.TextureDefaultObjectPath;
+					UTexture* DefaultTexture = Cast<UTexture>(StaticLoadObject(UTexture::StaticClass(), nullptr, *DefaultPath));
+					if (!DefaultTexture)
+					{
+						OutError = FString::Printf(TEXT("Texture parameter '%s': default texture '%s' could not be loaded."), *Property.Name, *DefaultPath);
+						return false;
+					}
+					if (DefaultTexture->VirtualTextureStreaming)
+					{
+						// A VT default yields an MCT_TextureVirtual chunk, which Custom inputs reject.
+						OutError = FString::Printf(TEXT("Texture parameter '%s': virtual-streaming textures are not supported by Backend=\"Instance\"."), *Property.Name);
+						return false;
+					}
+
+					FDreamShaderInstanceParameter Parameter;
+					Parameter.Name = FName(*Property.Name);
+					Parameter.Type = EDreamShaderInstanceParameterType::Texture;
+					Parameter.TextureDefault = DefaultTexture;
+					ApplyParameterMetadata(Parameter);
+					OutModel.Parameters.Add(MoveTemp(Parameter));
+					break;
+				}
+
 				default:
-					OutError = FString::Printf(TEXT("Backend=\"Instance\" does not support texture property '%s' yet."), *Property.Name);
+					OutError = FString::Printf(TEXT("Backend=\"Instance\" does not support the property type of '%s'."), *Property.Name);
 					return false;
 				}
 			}
@@ -2305,14 +2411,25 @@ namespace UE::DreamShader::Editor
 			const FString NormalizedCode = NormalizeShaderLanguageText(Model.LoweredCode);
 
 			// Every eval function receives the translator's pixel parameters first (the injected
-			// Custom body forwards its own 'Parameters'), then the DSL parameters.
+			// Custom body forwards its own 'Parameters'), then the DSL parameters. A texture
+			// parameter arrives as the same Texture2D + SamplerState pair the translator emits on
+			// the custom function itself.
 			FString ParameterList = TEXT("FMaterialPixelParameters Parameters");
 			for (const FDreamShaderInstanceParameter& Parameter : Model.Parameters)
 			{
-				ParameterList += FString::Printf(
-					TEXT(", %s %s"),
-					Parameter.Type == EDreamShaderInstanceParameterType::Scalar ? TEXT("float") : TEXT("float4"),
-					*Parameter.Name.ToString());
+				const FString ParameterName = Parameter.Name.ToString();
+				switch (Parameter.Type)
+				{
+				case EDreamShaderInstanceParameterType::Scalar:
+					ParameterList += FString::Printf(TEXT(", float %s"), *ParameterName);
+					break;
+				case EDreamShaderInstanceParameterType::Vector:
+					ParameterList += FString::Printf(TEXT(", float4 %s"), *ParameterName);
+					break;
+				case EDreamShaderInstanceParameterType::Texture:
+					ParameterList += FString::Printf(TEXT(", Texture2D %s, SamplerState %sSampler"), *ParameterName, *ParameterName);
+					break;
+				}
 			}
 
 			FString Declarations;
@@ -2416,11 +2533,32 @@ namespace UE::DreamShader::Editor
 		// The single committed parent material every instance material derives from. Created on first
 		// use and saved into the plugin's Content mount; its graph stays empty because the instance
 		// resource overrides property compilation for every DSL-bound output.
+		// Parameter rows in the material instance editor are only marked visible when the parent
+		// material opts into the new HLSL generator (GetVisibleMaterialParameters trusts the
+		// enumerated parameter list instead of walking the — here nonexistent — expression graph).
+		// Actual translation stays on the legacy path: FDreamShaderInstanceResource overrides
+		// IsUsingNewHLSLGenerator to false. Requires r.Material.Translator.EnableNew=1.
+		static void EnsureHostParameterVisibilityFlag(UMaterial* Host)
+		{
+			if (!Host->bEnableNewHLSLGenerator)
+			{
+				Host->bEnableNewHLSLGenerator = true;
+				Host->MarkPackageDirty();
+				FString SaveError;
+				if (!SaveAssetPackage(Host, SaveError))
+				{
+					UE_LOG(LogDreamShader, Warning,
+						TEXT("Failed to persist the parameter-visibility flag on the instance host material: %s"), *SaveError);
+				}
+			}
+		}
+
 		static UMaterial* EnsureInstanceHostMaterial(FString& OutError)
 		{
 			const FString HostObjectPath = FString::Printf(TEXT("%s.M_DreamShaderHost"), GInstanceHostPackageName);
 			if (UMaterial* Existing = LoadObject<UMaterial>(nullptr, *HostObjectPath))
 			{
+				EnsureHostParameterVisibilityFlag(Existing);
 				return Existing;
 			}
 
@@ -2452,6 +2590,7 @@ namespace UE::DreamShader::Editor
 				return nullptr;
 			}
 
+			Host->bEnableNewHLSLGenerator = true;
 			Host->PostEditChange();
 			FAssetRegistryModule::AssetCreated(Host);
 
@@ -2519,6 +2658,17 @@ namespace UE::DreamShader::Editor
 			Instance->InstanceParameters = Model.Parameters;
 			Instance->UsedTexCoordCount = Model.UsedTexCoordCount;
 			Instance->bUsesVertexColorBuiltin = Model.bUsesVertexColor;
+			// Declaration order — the resource serves this array as the compile-time default-texture
+			// index space (GetMatDefaultTextureIdx does a Find), so it must contain every default
+			// exactly once.
+			Instance->InstanceDefaultTextures.Reset();
+			for (const FDreamShaderInstanceParameter& Parameter : Model.Parameters)
+			{
+				if (Parameter.Type == EDreamShaderInstanceParameterType::Texture)
+				{
+					Instance->InstanceDefaultTextures.AddUnique(Parameter.TextureDefault);
+				}
+			}
 			Instance->InstanceOutputs.Reset(Model.Outputs.Num());
 			for (const FInstanceBackendOutput& Output : Model.Outputs)
 			{
@@ -2528,12 +2678,14 @@ namespace UE::DreamShader::Editor
 #if WITH_EDITORONLY_DATA
 			Instance->EvalExpressions.Reset(Model.Outputs.Num());
 			// The Custom body forwards its own 'Parameters' (in scope inside CustomExpressionN)
-			// followed by the DSL parameters by name.
+			// followed by the DSL parameters by name; texture inputs forward their sampler too.
 			FString ArgumentList = TEXT("Parameters");
 			for (const FDreamShaderInstanceParameter& Parameter : Model.Parameters)
 			{
-				ArgumentList += TEXT(", ");
-				ArgumentList += Parameter.Name.ToString();
+				const FString ParameterName = Parameter.Name.ToString();
+				ArgumentList += Parameter.Type == EDreamShaderInstanceParameterType::Texture
+					? FString::Printf(TEXT(", %s, %sSampler"), *ParameterName, *ParameterName)
+					: FString::Printf(TEXT(", %s"), *ParameterName);
 			}
 			for (const FInstanceBackendOutput& Output : Model.Outputs)
 			{
@@ -2569,15 +2721,27 @@ namespace UE::DreamShader::Editor
 
 			for (const FDreamShaderInstanceParameter& Parameter : Model.Parameters)
 			{
-				if (Parameter.Type == EDreamShaderInstanceParameterType::Scalar)
+				switch (Parameter.Type)
 				{
+				case EDreamShaderInstanceParameterType::Scalar:
 					Instance->SetScalarParameterValueEditorOnly(FMaterialParameterInfo(Parameter.Name), Parameter.ScalarDefault);
-				}
-				else
-				{
+					break;
+				case EDreamShaderInstanceParameterType::Vector:
 					Instance->SetVectorParameterValueEditorOnly(FMaterialParameterInfo(Parameter.Name), Parameter.VectorDefault);
+					break;
+				case EDreamShaderInstanceParameterType::Texture:
+					// Always set an explicit value: the cook's used-texture gather walks parameter
+					// values against the cached texture list and an unset parameter falls back to a
+					// host-material index space that does not exist (TryGetUsedTexturesInCookCache).
+					Instance->SetTextureParameterValueEditorOnly(FMaterialParameterInfo(Parameter.Name), Parameter.TextureDefault);
+					break;
 				}
 			}
+
+			// The material instance editor and every parameter query resolve against the chain's
+			// cached expression data; rebuild it now that InstanceParameters is final (must precede
+			// UpdateStaticPermutation, which re-reads the chain).
+			Instance->RebuildSynthesizedParameterData();
 
 			FString SettingValue;
 			if (Definition.TryGetSetting(TEXT("BlendMode"), SettingValue) || Definition.TryGetSetting(TEXT("RenderType"), SettingValue))

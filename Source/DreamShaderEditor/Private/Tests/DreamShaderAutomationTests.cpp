@@ -8,8 +8,10 @@
 #include "DreamShaderVersionCompat.h"
 #include "MaterialAssetGeneration/DreamShaderMaterialGenerator.h"
 
+#include "Engine/Texture.h"
 #include "HAL/FileManager.h"
 #include "Materials/Material.h"
+#include "Materials/MaterialParameters.h"
 #include "Materials/MaterialFunction.h"
 #include "Materials/MaterialExpressionIf.h"
 #include "Materials/MaterialExpressionAdd.h"
@@ -1320,6 +1322,152 @@ bool FDreamShaderGenerateInstanceBackendBuiltinsTest::RunTest(const FString& Par
 			TestTrue(TEXT("Eval functions receive FMaterialPixelParameters."), IncludeContent.Contains(TEXT("FMaterialPixelParameters Parameters")));
 			TestFalse(TEXT("No unlowered UE.* remains."), IncludeContent.Contains(TEXT("UE.")));
 		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderGenerateInstanceBackendTextureTest,
+	"DreamShader.Compiler.Generate.InstanceBackendTexture",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FDreamShaderGenerateInstanceBackendTextureTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_AutoInstanceTexture"));
+	const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+	Artifacts.AddObjectPath(ObjectPath);
+	AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
+	AddExpectedAutomationCleanupWarnings(*this);
+
+	const FString Source = FString::Printf(TEXT(R"(Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
+{
+    Properties = {
+        TextureObjectParameter BaseMap = "/Engine/EngineResources/DefaultTexture";
+        ScalarParameter Intensity = 1.0;
+    }
+
+    Settings = {
+        Backend = "Instance";
+        ShadingModel = "Unlit";
+    }
+
+    Outputs = {
+        vec3 Color;
+        Base.EmissiveColor = Color;
+    }
+
+    Graph = {
+        float2 uv = UE.TexCoord(Index=0);
+        float4 texel = SampleTexture2D(BaseMap, uv);
+        Color = texel.rgb * Intensity;
+    }
+}
+)"), *AssetName);
+
+	FString SourceFilePath;
+	if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), Source, SourceFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(SourceFilePath);
+
+	FString Message;
+	const bool bGenerated = FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ true);
+	if (!TestTrue(FString::Printf(TEXT("Texture instance generation succeeds: %s"), *Message), bGenerated))
+	{
+		return false;
+	}
+
+	UDreamShaderMaterialInstance* Instance = FindObject<UDreamShaderMaterialInstance>(nullptr, *ObjectPath);
+	if (!TestNotNull(TEXT("Texture instance exists in memory."), Instance))
+	{
+		return false;
+	}
+
+	// The texture parameter model: declaration-ordered, typed, with a resolved non-null default.
+	if (TestEqual(TEXT("Two instance parameters."), Instance->InstanceParameters.Num(), 2))
+	{
+		const FDreamShaderInstanceParameter& TextureParameter = Instance->InstanceParameters[0];
+		TestEqual(TEXT("First parameter is BaseMap."), TextureParameter.Name, FName(TEXT("BaseMap")));
+		TestTrue(TEXT("BaseMap is a texture parameter."), TextureParameter.Type == EDreamShaderInstanceParameterType::Texture);
+		TestNotNull(TEXT("BaseMap default texture resolved."), TextureParameter.TextureDefault.Get());
+	}
+
+	// The compile-time default-texture index space the resource serves to the translator.
+	if (TestEqual(TEXT("One default texture registered."), Instance->InstanceDefaultTextures.Num(), 1))
+	{
+		TestTrue(
+			TEXT("Registered default matches the parameter default."),
+			Instance->InstanceDefaultTextures[0] == Instance->InstanceParameters[0].TextureDefault);
+	}
+
+	// The explicit parameter value keeps the cook's used-texture gather inside the instance's index space.
+	{
+		UTexture* ParameterValue = nullptr;
+		if (TestTrue(
+			TEXT("BaseMap texture parameter value is set."),
+			Instance->GetTextureParameterValue(FMaterialParameterInfo(TEXT("BaseMap")), ParameterValue)))
+		{
+			TestTrue(TEXT("Parameter value equals the default texture."), ParameterValue == Instance->InstanceParameters[0].TextureDefault);
+		}
+	}
+
+#if WITH_EDITORONLY_DATA
+	if (TestEqual(TEXT("One eval expression."), Instance->EvalExpressions.Num(), 1) && Instance->EvalExpressions[0])
+	{
+		const UMaterialExpressionCustom* EvalExpression = Instance->EvalExpressions[0];
+		// Inputs: BaseMap + Intensity + the dummy texcoord side-effect input (one input per compiled
+		// chunk — a texture chunk is a single input even though it expands to a texture/sampler pair).
+		TestEqual(TEXT("Eval inputs = DSL parameters + dummy texcoord."), EvalExpression->Inputs.Num(), 3);
+		TestTrue(
+			TEXT("Eval code forwards the texture together with its sampler."),
+			EvalExpression->Code.Contains(TEXT("(Parameters, BaseMap, BaseMapSampler, Intensity)")));
+	}
+#endif
+
+	// The generated eval function signature carries the translator-shaped texture/sampler pair.
+	{
+		const FString FileName = FPaths::GetCleanFilename(Instance->GeneratedIncludeVirtualPath);
+		const FString DiskPath = UE::DreamShader::GetGeneratedShaderDirectory() / FileName;
+		FString IncludeContent;
+		if (TestTrue(TEXT("Generated instance .ush exists on disk."), FFileHelper::LoadFileToString(IncludeContent, *DiskPath)))
+		{
+			TestTrue(
+				TEXT(".ush declares the texture/sampler parameter pair."),
+				IncludeContent.Contains(TEXT("Texture2D BaseMap, SamplerState BaseMapSampler")));
+			// The DSL surface writes SampleTexture2D; lowering namespaces it to the DS_ macro.
+			TestTrue(TEXT("SampleTexture2D lowers to DS_SampleTexture2D."), IncludeContent.Contains(TEXT("DS_SampleTexture2D(BaseMap, uv)")));
+		}
+	}
+
+	// Synthesized parameters enumerate through the standard chain APIs — the exact calls the
+	// material instance editor makes to build its rows — both on the instance and on a plain
+	// child MIC parented to it.
+	{
+		TMap<FMaterialParameterInfo, FMaterialParameterMetadata> ScalarParameters;
+		Instance->GetAllParametersOfType(EMaterialParameterType::Scalar, ScalarParameters);
+		TestTrue(TEXT("Scalar enumeration contains Intensity."), ScalarParameters.Contains(FMaterialParameterInfo(TEXT("Intensity"))));
+
+		TMap<FMaterialParameterInfo, FMaterialParameterMetadata> TextureParameters;
+		Instance->GetAllParametersOfType(EMaterialParameterType::Texture, TextureParameters);
+		TestTrue(TEXT("Texture enumeration contains BaseMap."), TextureParameters.Contains(FMaterialParameterInfo(TEXT("BaseMap"))));
+
+		float DefaultIntensity = 0.0f;
+		if (TestTrue(TEXT("Scalar default resolves through the chain."), Instance->GetScalarParameterDefaultValue(FHashedMaterialParameterInfo(TEXT("Intensity")), DefaultIntensity)))
+		{
+			TestEqual(TEXT("Scalar default matches the DSL default."), DefaultIntensity, 1.0f);
+		}
+
+		UMaterialInstanceConstant* Child = NewObject<UMaterialInstanceConstant>(GetTransientPackage());
+		Child->SetParentEditorOnly(Instance, /*RecacheShader*/ false);
+		TMap<FMaterialParameterInfo, FMaterialParameterMetadata> ChildScalarParameters;
+		Child->GetAllParametersOfType(EMaterialParameterType::Scalar, ChildScalarParameters);
+		TestTrue(TEXT("Child MIC inherits the synthesized parameter enumeration."), ChildScalarParameters.Contains(FMaterialParameterInfo(TEXT("Intensity"))));
 	}
 
 	return true;

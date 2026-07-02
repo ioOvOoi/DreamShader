@@ -53,4 +53,13 @@ float2 DS_Panner(float2 UV, float Time, float2 Speed)
 	return UV + float2(frac(Time * Speed.x), frac(Time * Speed.y));
 }
 
+// Texture parameter sampling sugar. A texture parameter arrives in the eval function as the pair
+// `Texture2D Tex, SamplerState TexSampler` (the shape the translator gives Custom expression
+// texture inputs), so the sampler is derivable from the texture identifier via token pasting.
+// DSL sources write the unprefixed spelling (SampleTexture2D/...Lod/...Bias); the generator
+// lowers it to these namespaced macros. Texture2DSample handles the ES3.1 sampler fallback.
+#define DS_SampleTexture2D(Tex, UV) Texture2DSample(Tex, Tex##Sampler, UV)
+#define DS_SampleTexture2DLod(Tex, UV, Lod) Texture2DSampleLevel(Tex, Tex##Sampler, UV, Lod)
+#define DS_SampleTexture2DBias(Tex, UV, Bias) Texture2DSampleBias(Tex, Tex##Sampler, UV, Bias)
+
 #endif // DREAMSHADER_BUILTINS_USH
