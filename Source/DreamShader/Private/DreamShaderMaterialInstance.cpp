@@ -85,12 +85,25 @@ namespace UE::DreamShader::Private
 			Compiler->SetMaterialProperty(Property, OverrideShaderFrequency, bUsePreviousFrameTime);
 
 			TArray<int32> CompiledInputs;
-			CompiledInputs.Reserve(Instance->InstanceParameters.Num());
+			CompiledInputs.Reserve(Instance->InstanceParameters.Num() + Instance->UsedTexCoordCount + 1);
 			for (const FDreamShaderInstanceParameter& Parameter : Instance->InstanceParameters)
 			{
 				CompiledInputs.Add(Parameter.Type == EDreamShaderInstanceParameterType::Scalar
 					? Compiler->ScalarParameter(Parameter.Name, Parameter.ScalarDefault)
 					: Compiler->VectorParameter(Parameter.Name, Parameter.VectorDefault));
+			}
+
+			// Dummy side-effect inputs (values unused by the eval code): compiling the chunk is what
+			// allocates TexCoords interpolator slots / sets bUsesVertexColor, without which the
+			// Parameters reads inside the generated .ush are dead. Mirrors the engine's own
+			// SceneTexture-in-Custom protocol of compiling a pin purely for its registration effect.
+			for (int32 CoordinateIndex = 0; CoordinateIndex < Instance->UsedTexCoordCount; ++CoordinateIndex)
+			{
+				CompiledInputs.Add(Compiler->TextureCoordinate(CoordinateIndex, false, false));
+			}
+			if (Instance->bUsesVertexColorBuiltin)
+			{
+				CompiledInputs.Add(Compiler->VertexColor());
 			}
 
 			const int32 Result = Compiler->CustomExpression(EvalExpression, 0, CompiledInputs);

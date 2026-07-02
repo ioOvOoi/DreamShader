@@ -1,0 +1,56 @@
+// DreamShader instance-backend builtin support.
+//
+// Included by generated DSI_*.ush files inside the material translation unit, at the
+// %{uniform_material_expressions} slot of MaterialTemplate.ush -- after FMaterialPixelParameters
+// and every Get*(Parameters) helper, so Parameters fields, View.* uniforms, and Common.ush
+// functions are all in scope. Each helper mirrors the HLSL the material translator emits for the
+// corresponding UMaterialExpression (see Engine/Config/BaseMaterialExpressions.ini for Epic's own
+// node->HLSL snippet table).
+//
+// Reads that depend on translator side effects (interpolator slot allocation, usage flags) only
+// work because FDreamShaderInstanceResource compiles matching dummy input chunks during
+// translation: DS_TexCoord needs an allocated TexCoords slot (NUM_TEX_COORD_INTERPOLATORS),
+// DS_VertexColor needs bUsesVertexColor (INTERPOLATE_VERTEX_COLOR).
+
+#ifndef DREAMSHADER_BUILTINS_USH
+#define DREAMSHADER_BUILTINS_USH
+
+// UE.Time -- UMaterialExpressionTime (HLSLMaterialTranslator GameTime/PeriodicHint).
+#define DS_TIME (View.GameTime)
+#define DS_REAL_TIME (View.RealTime)
+#define DS_DELTA_TIME (View.DeltaTime)
+#define DS_PERIODIC_TIME(Period) (fmod(View.GameTime, (Period)))
+
+// UE.TexCoord -- UMaterialExpressionTextureCoordinate: Parameters.TexCoords[n].xy. The array only
+// exists when at least one interpolator slot was allocated during translation.
+float2 DS_TexCoord(FMaterialPixelParameters Parameters, uint CoordinateIndex)
+{
+#if NUM_TEX_COORD_INTERPOLATORS
+	return Parameters.TexCoords[CoordinateIndex].xy;
+#else
+	return float2(0.0f, 0.0f);
+#endif
+}
+
+// UE.VertexColor -- UMaterialExpressionVertexColor. The interpolant is only fed when
+// bUsesVertexColor was set during translation.
+float4 DS_VertexColor(FMaterialPixelParameters Parameters)
+{
+	return Parameters.VertexColor;
+}
+
+// Side-effect-free Parameters reads (no dummy chunk needed).
+#define DS_CameraVector(Parameters) ((Parameters).CameraVector)
+#define DS_PixelNormalWS(Parameters) ((Parameters).WorldNormal)
+#define DS_VertexNormalWS(Parameters) ((Parameters).TangentToWorld[2])
+#define DS_TwoSidedSign(Parameters) ((Parameters).TwoSidedSign)
+#define DS_ViewportUV(Parameters) (GetViewportUV(Parameters))
+#define DS_PixelDepth(Parameters) (GetPixelDepth(Parameters))
+
+// UE.Panner -- UMaterialExpressionPanner composition: UV + frac(Time * Speed).
+float2 DS_Panner(float2 UV, float Time, float2 Speed)
+{
+	return UV + float2(frac(Time * Speed.x), frac(Time * Speed.y));
+}
+
+#endif // DREAMSHADER_BUILTINS_USH

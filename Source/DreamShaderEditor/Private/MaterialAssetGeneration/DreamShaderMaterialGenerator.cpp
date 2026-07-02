@@ -16,6 +16,7 @@
 #include "CoreGlobals.h"
 #include "HAL/FileManager.h"
 #include "Interfaces/IPluginManager.h"
+#include "MaterialShared.h"
 #include "Misc/PackageName.h"
 #include "MaterialEditingLibrary.h"
 #include "Materials/Material.h"
@@ -1980,6 +1981,154 @@ namespace UE::DreamShader::Editor
 			FString BindingSource;
 		};
 
+		struct FInstanceBackendModel
+		{
+			TArray<FDreamShaderInstanceParameter> Parameters;
+			FString ConstDeclarations;
+			TArray<FInstanceBackendOutput> Outputs;
+			FString LoweredCode;
+			int32 UsedTexCoordCount = 0;
+			bool bUsesVertexColor = false;
+		};
+
+		// Rewrite the UE.* builtins the instance backend supports into their DS_* HLSL equivalents
+		// (see Shaders/DreamShaderBuiltins.ush), recording which translator side effects the resource
+		// must trigger. Unsupported UE.*/Substrate.* calls are left in place for the residual check.
+		static bool LowerInstanceBuiltins(
+			const FString& InCode,
+			FString& OutCode,
+			int32& InOutUsedTexCoordCount,
+			bool& bInOutUsesVertexColor,
+			FString& OutError)
+		{
+			OutCode.Reset(InCode.Len());
+			int32 Index = 0;
+			while (Index < InCode.Len())
+			{
+				const int32 CallIndex = InCode.Find(TEXT("UE."), ESearchCase::CaseSensitive, ESearchDir::FromStart, Index);
+				if (CallIndex == INDEX_NONE)
+				{
+					OutCode += InCode.Mid(Index);
+					break;
+				}
+
+				// Token boundary: "UE" must not be the tail of a longer identifier (e.g. VALUE.x).
+				if (CallIndex > 0 && (FChar::IsAlnum(InCode[CallIndex - 1]) || InCode[CallIndex - 1] == TCHAR('_')))
+				{
+					OutCode += InCode.Mid(Index, CallIndex + 3 - Index);
+					Index = CallIndex + 3;
+					continue;
+				}
+
+				// Read the member name and the balanced argument list.
+				int32 Cursor = CallIndex + 3;
+				FString MemberName;
+				while (Cursor < InCode.Len() && (FChar::IsAlnum(InCode[Cursor]) || InCode[Cursor] == TCHAR('_')))
+				{
+					MemberName.AppendChar(InCode[Cursor]);
+					++Cursor;
+				}
+				while (Cursor < InCode.Len() && FChar::IsWhitespace(InCode[Cursor]))
+				{
+					++Cursor;
+				}
+				if (MemberName.IsEmpty() || Cursor >= InCode.Len() || InCode[Cursor] != TCHAR('('))
+				{
+					OutCode += InCode.Mid(Index, Cursor - Index);
+					Index = Cursor;
+					continue;
+				}
+
+				int32 Depth = 0;
+				int32 CloseIndex = INDEX_NONE;
+				for (int32 Scan = Cursor; Scan < InCode.Len(); ++Scan)
+				{
+					const TCHAR Char = InCode[Scan];
+					if (Char == TCHAR('('))
+					{
+						++Depth;
+					}
+					else if (Char == TCHAR(')'))
+					{
+						--Depth;
+						if (Depth == 0)
+						{
+							CloseIndex = Scan;
+							break;
+						}
+					}
+				}
+				if (CloseIndex == INDEX_NONE)
+				{
+					OutError = FString::Printf(TEXT("Unbalanced parentheses in UE.%s(...) call."), *MemberName);
+					return false;
+				}
+
+				FString Arguments = InCode.Mid(Cursor + 1, CloseIndex - Cursor - 1).TrimStartAndEnd();
+				const auto StripNamedArgument = [&Arguments](const TCHAR* ArgumentName)
+				{
+					const int32 NameLength = FCString::Strlen(ArgumentName);
+					if (Arguments.StartsWith(ArgumentName, ESearchCase::IgnoreCase)
+						&& (Arguments.Len() == NameLength || !FChar::IsAlnum(Arguments[NameLength])))
+					{
+						const int32 EqualsIndex = Arguments.Find(TEXT("="));
+						if (EqualsIndex != INDEX_NONE)
+						{
+							Arguments = Arguments.Mid(EqualsIndex + 1).TrimStartAndEnd();
+						}
+					}
+				};
+
+				FString Replacement;
+				if (MemberName.Equals(TEXT("Time"), ESearchCase::IgnoreCase))
+				{
+					if (Arguments.IsEmpty())
+					{
+						Replacement = TEXT("DS_TIME");
+					}
+					else
+					{
+						StripNamedArgument(TEXT("Period"));
+						Replacement = FString::Printf(TEXT("DS_PERIODIC_TIME(%s)"), *Arguments);
+					}
+				}
+				else if (MemberName.Equals(TEXT("TexCoord"), ESearchCase::IgnoreCase))
+				{
+					StripNamedArgument(TEXT("Index"));
+					int32 CoordinateIndex = 0;
+					if (!Arguments.IsEmpty())
+					{
+						if (!Arguments.IsNumeric())
+						{
+							OutError = FString::Printf(TEXT("Backend=\"Instance\" requires a literal integer index in UE.TexCoord(...); got '%s'."), *Arguments);
+							return false;
+						}
+						CoordinateIndex = FCString::Atoi(*Arguments);
+					}
+					InOutUsedTexCoordCount = FMath::Max(InOutUsedTexCoordCount, CoordinateIndex + 1);
+					Replacement = FString::Printf(TEXT("DS_TexCoord(Parameters, %d)"), CoordinateIndex);
+				}
+				else if (MemberName.Equals(TEXT("VertexColor"), ESearchCase::IgnoreCase))
+				{
+					bInOutUsesVertexColor = true;
+					Replacement = TEXT("DS_VertexColor(Parameters)");
+				}
+				else
+				{
+					// Not a supported builtin — copy through; the residual UE.* check reports it.
+					OutCode += InCode.Mid(Index, CloseIndex + 1 - Index);
+					Index = CloseIndex + 1;
+					continue;
+				}
+
+				OutCode += InCode.Mid(Index, CallIndex - Index);
+				OutCode += Replacement;
+				Index = CloseIndex + 1;
+			}
+
+			return true;
+		}
+
 		// Decide whether the file should use the instance backend: an explicit
 		// Settings = { Backend = "..." } wins; otherwise the project's DefaultBackend applies
 		// (with automatic Graph fallback for files the instance backend can't express).
@@ -2016,9 +2165,7 @@ namespace UE::DreamShader::Editor
 		// direct Base.<Property> bindings. Everything translator-level is rejected with a clear error.
 		static bool BuildInstanceBackendModel(
 			const FTextShaderDefinition& Definition,
-			TArray<FDreamShaderInstanceParameter>& OutParameters,
-			FString& OutConstDeclarations,
-			TArray<FInstanceBackendOutput>& OutOutputs,
+			FInstanceBackendModel& OutModel,
 			FString& OutError)
 		{
 			if (!Definition.GraphFunctions.IsEmpty() || !Definition.MaterialFunctions.IsEmpty() || !Definition.VirtualFunctions.IsEmpty())
@@ -2027,11 +2174,15 @@ namespace UE::DreamShader::Editor
 				return false;
 			}
 
-			// The Graph body is raw HLSL in this backend; translator-level graph nodes cannot appear.
-			const FString NormalizedCode = NormalizeShaderLanguageText(Definition.Code);
-			if (NormalizedCode.Contains(TEXT("UE.")) || NormalizedCode.Contains(TEXT("Substrate.")))
+			// Lower supported UE.* builtins to their DS_* equivalents first; whatever survives is a
+			// translator-level graph node the raw-HLSL backend genuinely cannot express.
+			if (!LowerInstanceBuiltins(Definition.Code, OutModel.LoweredCode, OutModel.UsedTexCoordCount, OutModel.bUsesVertexColor, OutError))
 			{
-				OutError = TEXT("Backend=\"Instance\" Graph code must be pure HLSL; UE.*/Substrate.* graph nodes are not available in this backend.");
+				return false;
+			}
+			if (OutModel.LoweredCode.Contains(TEXT("UE.")) || OutModel.LoweredCode.Contains(TEXT("Substrate.")))
+			{
+				OutError = TEXT("Backend=\"Instance\" Graph code must be pure HLSL; only the UE.Time/UE.TexCoord/UE.VertexColor builtins are lowered — other UE.*/Substrate.* graph nodes need the Graph backend.");
 				return false;
 			}
 
@@ -2058,7 +2209,7 @@ namespace UE::DreamShader::Editor
 				case ETextShaderPropertyType::Scalar:
 					if (Property.bConst)
 					{
-						OutConstDeclarations += FString::Printf(TEXT("static const float %s = %f;\n"), *Property.Name, Property.ScalarDefaultValue);
+						OutModel.ConstDeclarations += FString::Printf(TEXT("static const float %s = %f;\n"), *Property.Name, Property.ScalarDefaultValue);
 					}
 					else
 					{
@@ -2066,7 +2217,7 @@ namespace UE::DreamShader::Editor
 						Parameter.Name = FName(*Property.Name);
 						Parameter.Type = EDreamShaderInstanceParameterType::Scalar;
 						Parameter.ScalarDefault = static_cast<float>(Property.ScalarDefaultValue);
-						OutParameters.Add(MoveTemp(Parameter));
+						OutModel.Parameters.Add(MoveTemp(Parameter));
 					}
 					break;
 
@@ -2074,7 +2225,7 @@ namespace UE::DreamShader::Editor
 					if (Property.bConst)
 					{
 						const FLinearColor& Value = Property.VectorDefaultValue;
-						OutConstDeclarations += FString::Printf(
+						OutModel.ConstDeclarations += FString::Printf(
 							TEXT("static const float4 %s = float4(%f, %f, %f, %f);\n"),
 							*Property.Name, Value.R, Value.G, Value.B, Value.A);
 					}
@@ -2084,7 +2235,7 @@ namespace UE::DreamShader::Editor
 						Parameter.Name = FName(*Property.Name);
 						Parameter.Type = EDreamShaderInstanceParameterType::Vector;
 						Parameter.VectorDefault = Property.VectorDefaultValue;
-						OutParameters.Add(MoveTemp(Parameter));
+						OutModel.Parameters.Add(MoveTemp(Parameter));
 					}
 					break;
 
@@ -2113,16 +2264,26 @@ namespace UE::DreamShader::Editor
 					OutError = FString::Printf(TEXT("Backend=\"Instance\" does not support the '%s' output (Substrate/MaterialAttributes are translator-level)."), *Binding.MaterialProperty);
 					return false;
 				}
+				if (FMaterialAttributeDefinitionMap::GetShaderFrequency(Resolved.Property) != SF_Pixel)
+				{
+					// The eval functions receive FMaterialPixelParameters; vertex-frequency outputs
+					// (WorldPositionOffset) would be emitted into an FMaterialVertexParameters custom.
+					OutError = FString::Printf(TEXT("Backend=\"Instance\" only supports pixel-frequency outputs; '%s' is vertex-frequency."), *Binding.MaterialProperty);
+					return false;
+				}
 
 				FInstanceBackendOutput Output;
 				Output.Output.Property = Resolved.Property;
 				Output.Output.EvalFunctionName = FString::Printf(TEXT("DreamShaderEval_%s"), *Binding.MaterialProperty);
 				Output.Output.OutputType = Resolved.OutputType;
-				Output.BindingSource = Binding.SourceText;
-				OutOutputs.Add(MoveTemp(Output));
+				if (!LowerInstanceBuiltins(Binding.SourceText, Output.BindingSource, OutModel.UsedTexCoordCount, OutModel.bUsesVertexColor, OutError))
+				{
+					return false;
+				}
+				OutModel.Outputs.Add(MoveTemp(Output));
 			}
 
-			if (OutOutputs.IsEmpty())
+			if (OutModel.Outputs.IsEmpty())
 			{
 				OutError = TEXT("Backend=\"Instance\" requires at least one Base.<Property> output binding.");
 				return false;
@@ -2137,23 +2298,19 @@ namespace UE::DreamShader::Editor
 		static bool WriteInstanceGeneratedInclude(
 			const FString& SourceFilePath,
 			const FTextShaderDefinition& Definition,
-			const TArray<FDreamShaderInstanceParameter>& Parameters,
-			const FString& ConstDeclarations,
-			const TArray<FInstanceBackendOutput>& Outputs,
+			const FInstanceBackendModel& Model,
 			FString& OutVirtualPath,
 			FString& OutError)
 		{
-			const FString NormalizedCode = NormalizeShaderLanguageText(Definition.Code);
+			const FString NormalizedCode = NormalizeShaderLanguageText(Model.LoweredCode);
 
-			FString ParameterList;
-			for (const FDreamShaderInstanceParameter& Parameter : Parameters)
+			// Every eval function receives the translator's pixel parameters first (the injected
+			// Custom body forwards its own 'Parameters'), then the DSL parameters.
+			FString ParameterList = TEXT("FMaterialPixelParameters Parameters");
+			for (const FDreamShaderInstanceParameter& Parameter : Model.Parameters)
 			{
-				if (!ParameterList.IsEmpty())
-				{
-					ParameterList += TEXT(", ");
-				}
 				ParameterList += FString::Printf(
-					TEXT("%s %s"),
+					TEXT(", %s %s"),
 					Parameter.Type == EDreamShaderInstanceParameterType::Scalar ? TEXT("float") : TEXT("float4"),
 					*Parameter.Name.ToString());
 			}
@@ -2176,12 +2333,12 @@ namespace UE::DreamShader::Editor
 			// their DSL names to the collision-safe generated symbols so Graph code can call them
 			// naturally. The defines are scoped inside this file's guard and undefined at the end so
 			// they cannot leak into the rest of the material translation unit.
-			FString FunctionIncludes;
+			FString FunctionIncludes = TEXT("#include \"/Plugin/DreamShader/DreamShaderBuiltins.ush\"\n");
 			FString FunctionAliases;
 			FString FunctionAliasUndefs;
 			if (!Definition.Functions.IsEmpty())
 			{
-				FunctionIncludes = FString::Printf(TEXT("#include \"%s\"\n"), *BuildGeneratedIncludeVirtualPath(SourceFilePath));
+				FunctionIncludes += FString::Printf(TEXT("#include \"%s\"\n"), *BuildGeneratedIncludeVirtualPath(SourceFilePath));
 
 				const auto IsPlainIdentifier = [](const FString& Name)
 				{
@@ -2225,13 +2382,13 @@ namespace UE::DreamShader::Editor
 			{
 				Content += TEXT("\n");
 			}
-			if (!ConstDeclarations.IsEmpty())
+			if (!Model.ConstDeclarations.IsEmpty())
 			{
-				Content += ConstDeclarations;
+				Content += Model.ConstDeclarations;
 				Content += TEXT("\n");
 			}
 
-			for (const FInstanceBackendOutput& Output : Outputs)
+			for (const FInstanceBackendOutput& Output : Model.Outputs)
 			{
 				Content += FString::Printf(
 					TEXT("%s %s(%s)\n{\n%s%s\n	return (%s);\n}\n\n"),
@@ -2317,16 +2474,14 @@ namespace UE::DreamShader::Editor
 			const FString& SourceFilePath,
 			const FString& SourceHash,
 			const FTextShaderDefinition& Definition,
-			const TArray<FDreamShaderInstanceParameter>& Parameters,
-			const FString& ConstDeclarations,
-			const TArray<FInstanceBackendOutput>& Outputs,
+			const FInstanceBackendModel& Model,
 			FString& OutMessage,
 			const bool bForce,
 			const bool bTransient)
 		{
 			FString IncludeVirtualPath;
 			FString IncludeError;
-			if (!WriteInstanceGeneratedInclude(SourceFilePath, Definition, Parameters, ConstDeclarations, Outputs, IncludeVirtualPath, IncludeError))
+			if (!WriteInstanceGeneratedInclude(SourceFilePath, Definition, Model, IncludeVirtualPath, IncludeError))
 			{
 				OutMessage = FString::Printf(TEXT("%s: %s"), *SourceFilePath, *IncludeError);
 				return false;
@@ -2361,32 +2516,47 @@ namespace UE::DreamShader::Editor
 			Instance->SourceFilePath = SourceFilePath;
 			Instance->SourceHash = SourceHash;
 			Instance->GeneratedIncludeVirtualPath = IncludeVirtualPath;
-			Instance->InstanceParameters = Parameters;
-			Instance->InstanceOutputs.Reset(Outputs.Num());
-			for (const FInstanceBackendOutput& Output : Outputs)
+			Instance->InstanceParameters = Model.Parameters;
+			Instance->UsedTexCoordCount = Model.UsedTexCoordCount;
+			Instance->bUsesVertexColorBuiltin = Model.bUsesVertexColor;
+			Instance->InstanceOutputs.Reset(Model.Outputs.Num());
+			for (const FInstanceBackendOutput& Output : Model.Outputs)
 			{
 				Instance->InstanceOutputs.Add(Output.Output);
 			}
 
 #if WITH_EDITORONLY_DATA
-			Instance->EvalExpressions.Reset(Outputs.Num());
-			FString ArgumentList;
-			for (const FDreamShaderInstanceParameter& Parameter : Parameters)
+			Instance->EvalExpressions.Reset(Model.Outputs.Num());
+			// The Custom body forwards its own 'Parameters' (in scope inside CustomExpressionN)
+			// followed by the DSL parameters by name.
+			FString ArgumentList = TEXT("Parameters");
+			for (const FDreamShaderInstanceParameter& Parameter : Model.Parameters)
 			{
-				if (!ArgumentList.IsEmpty())
-				{
-					ArgumentList += TEXT(", ");
-				}
+				ArgumentList += TEXT(", ");
 				ArgumentList += Parameter.Name.ToString();
 			}
-			for (const FInstanceBackendOutput& Output : Outputs)
+			for (const FInstanceBackendOutput& Output : Model.Outputs)
 			{
 				UMaterialExpressionCustom* EvalExpression = NewObject<UMaterialExpressionCustom>(Instance);
 				EvalExpression->Inputs.Reset();
-				for (const FDreamShaderInstanceParameter& Parameter : Parameters)
+				for (const FDreamShaderInstanceParameter& Parameter : Model.Parameters)
 				{
 					FCustomInput Input;
 					Input.InputName = Parameter.Name;
+					EvalExpression->Inputs.Add(MoveTemp(Input));
+				}
+				// Dummy side-effect inputs, index-aligned with the chunks the resource compiles
+				// (translator checks Inputs.Num() == CompiledInputs.Num()); their values are unused.
+				for (int32 CoordinateIndex = 0; CoordinateIndex < Model.UsedTexCoordCount; ++CoordinateIndex)
+				{
+					FCustomInput Input;
+					Input.InputName = FName(*FString::Printf(TEXT("DreamShaderUnusedTexCoord%d"), CoordinateIndex));
+					EvalExpression->Inputs.Add(MoveTemp(Input));
+				}
+				if (Model.bUsesVertexColor)
+				{
+					FCustomInput Input;
+					Input.InputName = TEXT("DreamShaderUnusedVertexColor");
 					EvalExpression->Inputs.Add(MoveTemp(Input));
 				}
 				EvalExpression->OutputType = Output.Output.OutputType;
@@ -2397,7 +2567,7 @@ namespace UE::DreamShader::Editor
 			}
 #endif
 
-			for (const FDreamShaderInstanceParameter& Parameter : Parameters)
+			for (const FDreamShaderInstanceParameter& Parameter : Model.Parameters)
 			{
 				if (Parameter.Type == EDreamShaderInstanceParameterType::Scalar)
 				{
@@ -2456,8 +2626,8 @@ namespace UE::DreamShader::Editor
 			OutMessage = FString::Printf(
 				TEXT("Generated DreamShader instance material %s from %s (%d output%s, %d parameter%s)."),
 				*Instance->GetPathName(), *SourceFilePath,
-				Outputs.Num(), Outputs.Num() == 1 ? TEXT("") : TEXT("s"),
-				Parameters.Num(), Parameters.Num() == 1 ? TEXT("") : TEXT("s"));
+				Model.Outputs.Num(), Model.Outputs.Num() == 1 ? TEXT("") : TEXT("s"),
+				Model.Parameters.Num(), Model.Parameters.Num() == 1 ? TEXT("") : TEXT("s"));
 			return true;
 		}
 	}
@@ -2569,9 +2739,7 @@ namespace UE::DreamShader::Editor
 		}
 		if (bInstanceBackend)
 		{
-			TArray<FDreamShaderInstanceParameter> InstanceParameters;
-			FString InstanceConstDeclarations;
-			TArray<Private::FInstanceBackendOutput> InstanceOutputs;
+			Private::FInstanceBackendModel InstanceModel;
 			FString CapabilityError;
 			bool bCapable = !bUsesReturn;
 			if (!bCapable)
@@ -2580,15 +2748,14 @@ namespace UE::DreamShader::Editor
 			}
 			else
 			{
-				bCapable = Private::BuildInstanceBackendModel(Definition, InstanceParameters, InstanceConstDeclarations, InstanceOutputs, CapabilityError);
+				bCapable = Private::BuildInstanceBackendModel(Definition, InstanceModel, CapabilityError);
 			}
 
 			if (bCapable)
 			{
 				MaterialSlowTask.EnterProgressFrame(8.0f, FText::FromString(FString::Printf(TEXT("Generating instance material for '%s'..."), *Definition.Name)));
 				return Private::GenerateInstanceMaterialFromDefinition(
-					SourceFilePath, SourceHash, Definition,
-					InstanceParameters, InstanceConstDeclarations, InstanceOutputs,
+					SourceFilePath, SourceHash, Definition, InstanceModel,
 					OutMessage, bForce, bTransient);
 			}
 

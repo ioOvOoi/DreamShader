@@ -83,6 +83,18 @@ public:
 	UPROPERTY(VisibleAnywhere, Category = "DreamShader")
 	TArray<FDreamShaderInstanceOutput> InstanceOutputs;
 
+	/**
+	 * Texture coordinate slots the generated .ush reads (max used index + 1). The resource compiles
+	 * a dummy TextureCoordinate chunk per slot during translation — reading Parameters.TexCoords
+	 * only works when the translator allocated the interpolator slots.
+	 */
+	UPROPERTY(VisibleAnywhere, Category = "DreamShader")
+	int32 UsedTexCoordCount = 0;
+
+	/** The generated .ush reads Parameters.VertexColor; a dummy chunk sets bUsesVertexColor. */
+	UPROPERTY(VisibleAnywhere, Category = "DreamShader")
+	bool bUsesVertexColorBuiltin = false;
+
 #if WITH_EDITORONLY_DATA
 	/** One Custom expression per InstanceOutputs entry (index-aligned); consumed as a value bag during translation. */
 	UPROPERTY()

@@ -4,6 +4,7 @@
 
 #include "HAL/FileManager.h"
 #include "CoreGlobals.h"
+#include "Interfaces/IPluginManager.h"
 #include "Misc/Char.h"
 #include "Misc/Paths.h"
 #include "ShaderCore.h"
@@ -199,6 +200,16 @@ void FDreamShaderModule::StartupModule()
 	if (!AllShaderSourceDirectoryMappings().Contains(VirtualDirectory))
 	{
 		AddShaderSourceDirectoryMapping(VirtualDirectory, GeneratedShaderDirectory);
+	}
+
+	// Static plugin shaders (instance-backend builtin support header).
+	if (const TSharedPtr<IPlugin> Plugin = IPluginManager::Get().FindPlugin(TEXT("DreamShader")))
+	{
+		const FString PluginShaderVirtualDirectory = TEXT("/Plugin/DreamShader");
+		if (!AllShaderSourceDirectoryMappings().Contains(PluginShaderVirtualDirectory))
+		{
+			AddShaderSourceDirectoryMapping(PluginShaderVirtualDirectory, FPaths::Combine(Plugin->GetBaseDir(), TEXT("Shaders")));
+		}
 	}
 }
 

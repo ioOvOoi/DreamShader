@@ -3,6 +3,7 @@
 #include "DreamShaderModule.h"
 #include "DreamShaderParser.h"
 #include "DreamShaderSettings.h"
+#include "DreamShaderTestCommon.h"
 #include "DreamShaderTypes.h"
 #include "DreamShaderVersionCompat.h"
 #include "MaterialAssetGeneration/DreamShaderMaterialGenerator.h"
@@ -574,6 +575,9 @@ bool FDreamShaderRoundTripMaterialTest::RunTest(const FString& Parameters)
 	using namespace UE::DreamShader::Editor::Private;
 	using namespace UE::DreamShader::Editor::Private::Tests;
 
+	// These assertions describe graph-backend node shapes; pin the backend against reroutes.
+	FScopedDreamShaderGraphBackendPin BackendPin;
+
 	FScopedDreamShaderAutomationArtifacts Artifacts;
 	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_RoundTrip"));
 	const FString ObjectPath = MakeAutomationObjectPath(AssetName);
@@ -857,6 +861,9 @@ bool FDreamShaderParameterNodeGenerationTest::RunTest(const FString& Parameters)
 {
 	using namespace UE::DreamShader::Editor::Private::Tests;
 
+	// These assertions describe graph-backend node shapes; pin the backend against reroutes.
+	FScopedDreamShaderGraphBackendPin BackendPin;
+
 	FScopedDreamShaderAutomationArtifacts Artifacts;
 	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_Params"));
 	// Scal and Vec are declared WITHOUT `= value` on purpose (optional-default contract); Dyn carries
@@ -915,6 +922,9 @@ IMPLEMENT_CUSTOM_SIMPLE_AUTOMATION_TEST(
 bool FDreamShaderOtherParameterNodeGenerationTest::RunTest(const FString& Parameters)
 {
 	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	// These assertions describe graph-backend node shapes; pin the backend against reroutes.
+	FScopedDreamShaderGraphBackendPin BackendPin;
 
 	struct FOtherParameterCase
 	{
@@ -977,6 +987,9 @@ IMPLEMENT_CUSTOM_SIMPLE_AUTOMATION_TEST(
 bool FDreamShaderParameterInputWiringTest::RunTest(const FString& Parameters)
 {
 	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	// These assertions describe graph-backend node shapes; pin the backend against reroutes.
+	FScopedDreamShaderGraphBackendPin BackendPin;
 
 	FScopedDreamShaderAutomationArtifacts Artifacts;
 	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_ParamInputs"));
@@ -1215,6 +1228,98 @@ bool FDreamShaderGenerateInstanceBackendVirtualTest::RunTest(const FString& Para
 	if (!GetDefault<UDreamShaderSettings>()->bShowVirtualMaterialsInContentBrowser)
 	{
 		TestFalse(TEXT("Virtual instance is not an enumerable asset (hidden from the Content Browser)."), Instance->IsAsset());
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderGenerateInstanceBackendBuiltinsTest,
+	"DreamShader.Compiler.Generate.InstanceBackendBuiltins",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FDreamShaderGenerateInstanceBackendBuiltinsTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_AutoInstanceBuiltins"));
+	const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+	Artifacts.AddObjectPath(ObjectPath);
+	AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
+	AddExpectedAutomationCleanupWarnings(*this);
+
+	const FString Source = FString::Printf(TEXT(R"(Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
+{
+    Properties = {
+        ScalarParameter Speed = 0.5;
+    }
+
+    Settings = {
+        Backend = "Instance";
+        ShadingModel = "Unlit";
+    }
+
+    Outputs = {
+        vec3 Color;
+        Base.EmissiveColor = Color;
+    }
+
+    Graph = {
+        float2 uv = UE.TexCoord(Index=0);
+        float pulse = UE.Time(Period=2.0) * Speed;
+        Color = vec3(uv.x, uv.y, pulse);
+    }
+}
+)"), *AssetName);
+
+	FString SourceFilePath;
+	if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), Source, SourceFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(SourceFilePath);
+
+	FString Message;
+	const bool bGenerated = FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ true);
+	if (!TestTrue(FString::Printf(TEXT("Builtin instance generation succeeds: %s"), *Message), bGenerated))
+	{
+		return false;
+	}
+
+	UDreamShaderMaterialInstance* Instance = FindObject<UDreamShaderMaterialInstance>(nullptr, *ObjectPath);
+	if (!TestNotNull(TEXT("Builtin instance exists in memory."), Instance))
+	{
+		return false;
+	}
+
+	TestEqual(TEXT("UE.TexCoord(Index=0) records one used texcoord slot."), Instance->UsedTexCoordCount, 1);
+	TestFalse(TEXT("VertexColor builtin not used."), Instance->bUsesVertexColorBuiltin);
+
+#if WITH_EDITORONLY_DATA
+	if (TestEqual(TEXT("One eval expression."), Instance->EvalExpressions.Num(), 1) && Instance->EvalExpressions[0])
+	{
+		const UMaterialExpressionCustom* EvalExpression = Instance->EvalExpressions[0];
+		// Inputs: Speed + the dummy texcoord side-effect input, index-aligned with the resource.
+		TestEqual(TEXT("Eval inputs = DSL parameters + dummy texcoord."), EvalExpression->Inputs.Num(), 2);
+		TestTrue(TEXT("Eval code forwards Parameters."), EvalExpression->Code.Contains(TEXT("(Parameters, Speed)")));
+	}
+#endif
+
+	// The generated include lowers UE.* builtins to DS_* equivalents and pulls in the support header.
+	{
+		const FString FileName = FPaths::GetCleanFilename(Instance->GeneratedIncludeVirtualPath);
+		const FString DiskPath = UE::DreamShader::GetGeneratedShaderDirectory() / FileName;
+		FString IncludeContent;
+		if (TestTrue(TEXT("Generated instance .ush exists on disk."), FFileHelper::LoadFileToString(IncludeContent, *DiskPath)))
+		{
+			TestTrue(TEXT(".ush includes DreamShaderBuiltins."), IncludeContent.Contains(TEXT("/Plugin/DreamShader/DreamShaderBuiltins.ush")));
+			TestTrue(TEXT("UE.TexCoord lowers to DS_TexCoord."), IncludeContent.Contains(TEXT("DS_TexCoord(Parameters, 0)")));
+			TestTrue(TEXT("UE.Time(Period=..) lowers to DS_PERIODIC_TIME."), IncludeContent.Contains(TEXT("DS_PERIODIC_TIME(2.0)")));
+			TestTrue(TEXT("Eval functions receive FMaterialPixelParameters."), IncludeContent.Contains(TEXT("FMaterialPixelParameters Parameters")));
+			TestFalse(TEXT("No unlowered UE.* remains."), IncludeContent.Contains(TEXT("UE.")));
+		}
 	}
 
 	return true;
