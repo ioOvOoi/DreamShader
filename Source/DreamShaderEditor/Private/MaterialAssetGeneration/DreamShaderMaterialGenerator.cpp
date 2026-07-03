@@ -2517,6 +2517,11 @@ namespace UE::DreamShader::Editor
 			{
 				return false;
 			}
+			// Reconcile imported-Function call sites with the generated-include signatures: an out-param
+			// call `Fn(a, b)` becomes `b = Fn(a)` (single-out functions are emitted as return-value), and
+			// the DSL name resolves to the DreamShaderFn_* symbol. Without this the eval body would call
+			// a 2-arg out-param form against a 1-arg return-value definition (HLSL signature mismatch).
+			OutModel.LoweredCode = RewriteImportedFunctionCallsForInclude(Definition, OutModel.LoweredCode);
 			if (OutModel.LoweredCode.Contains(TEXT("UE.")) || OutModel.LoweredCode.Contains(TEXT("Substrate.")))
 			{
 				OutError = TEXT("Backend=\"Instance\" Graph code must be pure HLSL; only the UE.Time/UE.TexCoord/UE.VertexColor/UE.SceneDepth/UE.SceneColor and state-read builtins are lowered — other UE.*/Substrate.* graph nodes need the Graph backend.");
@@ -2750,6 +2755,8 @@ namespace UE::DreamShader::Editor
 				{
 					return false;
 				}
+				// An output expression may itself be a value call: Base.X = Fn(a). Reconcile it too.
+				Output.BindingSource = RewriteImportedFunctionCallsForInclude(Definition, Output.BindingSource);
 				OutModel.Outputs.Add(MoveTemp(Output));
 			}
 

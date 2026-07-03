@@ -2022,4 +2022,93 @@ bool FDreamShaderGenerateInstanceBackendMaterialAttributesTest::RunTest(const FS
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderGenerateInstanceBackendImportedFunctionTest,
+	"DreamShader.Compiler.Generate.InstanceBackendImportedFunction",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FDreamShaderGenerateInstanceBackendImportedFunctionTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	// An out-param imported function (ApplyAutomationTint: in,in,out) called out-param style from an
+	// Instance material. The generated functions-include emits it as a single-out RETURN-VALUE function,
+	// so the eval call site must be rewritten from `Fn(a, b, out)` to `out = Fn(a, b)` — otherwise the
+	// 3-arg out-param call would not match the 2-arg return-value definition (the live shader-compile bug).
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_AutoInstanceImport"));
+	const FString HeaderFileName = AssetName + TEXT("_Shared.dsh");
+	const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+	Artifacts.AddObjectPath(ObjectPath);
+	AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
+	AddExpectedAutomationCleanupWarnings(*this);
+
+	FString HeaderFilePath;
+	if (!WriteAutomationSourceFile(*this, HeaderFileName, MakeSharedHeaderSource(), HeaderFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(HeaderFilePath);
+
+	const FString Source = FString::Printf(TEXT(R"(import "%s";
+
+Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
+{
+    Properties = {
+        VectorParameter InColor = (0.5, 0.5, 0.5, 1.0);
+        VectorParameter InTint = (1.0, 0.8, 0.6, 1.0);
+    }
+
+    Settings = { Backend = "Instance"; ShadingModel = "Unlit"; }
+
+    Outputs = {
+        vec3 Color;
+        Base.EmissiveColor = Color;
+    }
+
+    Graph = {
+        ApplyAutomationTint(InColor.rgb, InTint.rgb, Color);
+    }
+}
+)"), *HeaderFileName, *AssetName);
+
+	FString SourceFilePath;
+	if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), Source, SourceFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(SourceFilePath);
+
+	FString Message;
+	const bool bGenerated = FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ true);
+	if (!TestTrue(FString::Printf(TEXT("Imported-function instance generation succeeds: %s"), *Message), bGenerated))
+	{
+		return false;
+	}
+
+	UDreamShaderMaterialInstance* Instance = FindObject<UDreamShaderMaterialInstance>(nullptr, *ObjectPath);
+	if (!TestNotNull(TEXT("Imported-function instance exists in memory."), Instance))
+	{
+		return false;
+	}
+
+	const FString FileName = FPaths::GetCleanFilename(Instance->GeneratedIncludeVirtualPath);
+	const FString DiskPath = UE::DreamShader::GetGeneratedShaderDirectory() / FileName;
+	FString IncludeContent;
+	if (TestTrue(TEXT("Generated instance .ush exists on disk."), FFileHelper::LoadFileToString(IncludeContent, *DiskPath)))
+	{
+		// The out-param call was reconciled into a return-value assignment against the DreamShaderFn_ symbol.
+		TestTrue(
+			TEXT("Out-param call rewritten to `Color = DreamShaderFn_ApplyAutomationTint(...)`."),
+			IncludeContent.Contains(TEXT("= DreamShaderFn_ApplyAutomationTint(")));
+		// The un-rewritten 3-arg out-param form (…, Color) must NOT survive.
+		TestFalse(
+			TEXT("No un-rewritten 3-arg out-param call remains."),
+			IncludeContent.Contains(TEXT(", Color)")));
+	}
+
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS
