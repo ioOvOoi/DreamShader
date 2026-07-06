@@ -2111,4 +2111,85 @@ Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
 	return true;
 }
 
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderGenerateInstanceBackendBaseOverridesTest,
+	"DreamShader.Compiler.Generate.InstanceBackendBaseOverrides",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FDreamShaderGenerateInstanceBackendBaseOverridesTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_AutoInstanceOverrides"));
+	const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+	Artifacts.AddObjectPath(ObjectPath);
+	AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
+	AddExpectedAutomationCleanupWarnings(*this);
+
+	const FString Source = FString::Printf(TEXT(R"(Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
+{
+    Settings = {
+        Backend = "Instance";
+        ShadingModel = "Unlit";
+        BlendMode = "Masked";
+        TwoSided = true;
+        OpacityMaskClipValue = 0.7;
+    }
+
+    Outputs = {
+        vec3 Color;
+        float Mask;
+        Base.EmissiveColor = Color;
+        Base.OpacityMask = Mask;
+    }
+
+    Graph = {
+        Color = vec3(1.0, 1.0, 1.0);
+        Mask = 1.0;
+    }
+}
+)"), *AssetName);
+
+	FString SourceFilePath;
+	if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), Source, SourceFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(SourceFilePath);
+
+	FString Message;
+	const bool bGenerated = FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ true);
+	if (!TestTrue(FString::Printf(TEXT("Base-override generation succeeds: %s"), *Message), bGenerated))
+	{
+		return false;
+	}
+
+	UDreamShaderMaterialInstance* Instance = FindObject<UDreamShaderMaterialInstance>(nullptr, *ObjectPath);
+	if (!TestNotNull(TEXT("Override instance exists in memory."), Instance))
+	{
+		return false;
+	}
+
+	// Reflected long-tail base overrides applied with their bOverride_ companions.
+	TestTrue(TEXT("TwoSided override enabled + set."), Instance->BasePropertyOverrides.bOverride_TwoSided && Instance->BasePropertyOverrides.TwoSided);
+	TestTrue(TEXT("OpacityMaskClipValue override enabled."), Instance->BasePropertyOverrides.bOverride_OpacityMaskClipValue);
+	TestEqual(TEXT("OpacityMaskClipValue value set."), Instance->BasePropertyOverrides.OpacityMaskClipValue, 0.7f);
+
+	// Root/child shader-map ownership: the generated instance is a ROOT — its immediate parent is the
+	// host UMaterial — so it unconditionally forces its own permutation (its shading logic lives in the
+	// injected .ush, which base-property comparison can't see). A child instance's parent is another
+	// instance (not a UMaterial), so it does NOT hit the root gate and delegates to the stock
+	// comparison-against-parent, which lets a no-new-override variant share the root's map.
+	TestTrue(TEXT("Root instance (parent = host material) forces its own permutation."), Instance->HasOverridenBaseProperties());
+
+	UDreamShaderMaterialInstance* Child = NewObject<UDreamShaderMaterialInstance>(GetTransientPackage());
+	Child->SetParentEditorOnly(Instance, /*RecacheShader*/ false);
+	TestNull(TEXT("Child instance's parent is another instance, so it bypasses the root ownership gate."),
+		Cast<UMaterial>(Child->Parent));
+
+	return true;
+}
+
 #endif // WITH_DEV_AUTOMATION_TESTS

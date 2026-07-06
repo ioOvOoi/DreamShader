@@ -30,7 +30,9 @@
 #include "Materials/MaterialExpressionMakeMaterialAttributes.h"
 #include "Materials/MaterialFunction.h"
 #include "Materials/MaterialFunctionMaterialLayerBlend.h"
+#include "Materials/MaterialInstanceBasePropertyOverrides.h"
 #include "MaterialSceneTextureId.h"
+#include "UObject/UnrealType.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Misc/ScopedSlowTask.h"
@@ -3096,6 +3098,95 @@ namespace UE::DreamShader::Editor
 			return Host;
 		}
 
+		// Coerce a string DSL value into a reflected property (bool / float / int / TEnumAsByte / enum
+		// class) inside Container. Mirrors UShaderLab's reflected settings coercion.
+		static bool CoerceReflectedProperty(void* Container, FProperty* Prop, const FString& Value, FString& OutReason)
+		{
+			void* ValuePtr = Prop->ContainerPtrToValuePtr<void>(Container);
+			const FString Trimmed = Value.TrimStartAndEnd().TrimQuotes();
+
+			if (FBoolProperty* BoolProp = CastField<FBoolProperty>(Prop))
+			{
+				bool bVal = false;
+				if (Trimmed.Equals(TEXT("true"), ESearchCase::IgnoreCase) || Trimmed == TEXT("1")) { bVal = true; }
+				else if (Trimmed.Equals(TEXT("false"), ESearchCase::IgnoreCase) || Trimmed == TEXT("0")) { bVal = false; }
+				else { OutReason = TEXT("expected true/false"); return false; }
+				BoolProp->SetPropertyValue_InContainer(Container, bVal);
+				return true;
+			}
+			if (FFloatProperty* FloatProp = CastField<FFloatProperty>(Prop)) { FloatProp->SetPropertyValue(ValuePtr, FCString::Atof(*Trimmed)); return true; }
+			if (FDoubleProperty* DoubleProp = CastField<FDoubleProperty>(Prop)) { DoubleProp->SetPropertyValue(ValuePtr, FCString::Atod(*Trimmed)); return true; }
+			if (FIntProperty* IntProp = CastField<FIntProperty>(Prop)) { IntProp->SetPropertyValue(ValuePtr, FCString::Atoi(*Trimmed)); return true; }
+			if (FByteProperty* ByteProp = CastField<FByteProperty>(Prop))
+			{
+				if (UEnum* Enum = ByteProp->Enum)
+				{
+					const int64 EnumVal = Enum->GetValueByNameString(Trimmed);
+					if (EnumVal == INDEX_NONE) { OutReason = FString::Printf(TEXT("unknown enum value '%s' for %s"), *Trimmed, *Enum->GetName()); return false; }
+					ByteProp->SetPropertyValue(ValuePtr, static_cast<uint8>(EnumVal));
+					return true;
+				}
+				ByteProp->SetPropertyValue(ValuePtr, static_cast<uint8>(FCString::Atoi(*Trimmed)));
+				return true;
+			}
+			if (FEnumProperty* EnumProp = CastField<FEnumProperty>(Prop))
+			{
+				UEnum* Enum = EnumProp->GetEnum();
+				const int64 EnumVal = Enum ? Enum->GetValueByNameString(Trimmed) : INDEX_NONE;
+				if (EnumVal == INDEX_NONE) { OutReason = FString::Printf(TEXT("unknown enum value '%s'"), *Trimmed); return false; }
+				EnumProp->GetUnderlyingProperty()->SetIntPropertyValue(ValuePtr, EnumVal);
+				return true;
+			}
+			OutReason = FString::Printf(TEXT("unsupported property type '%s'"), *Prop->GetClass()->GetName());
+			return false;
+		}
+
+		// Apply the long-tail base-material settings a DSL Settings block may set, onto the instance's
+		// FMaterialInstanceBasePropertyOverrides by reflection. Mirrors UShaderLab's reflected settings
+		// applier, but targets the per-instance override struct because our host UMaterial is SHARED
+		// across instances (per-material UMaterial props can't live on it). Only per-instance-overridable
+		// fields are exposed; each is paired with its bOverride_<Field> companion. Adding a setting is one
+		// line in the allowlist. BlendMode/ShadingModel are applied separately (they need DSL name resolution).
+		static void ApplyInstanceBasePropertyOverrides(const FTextShaderDefinition& Definition, UDreamShaderMaterialInstance* Instance)
+		{
+			static const TCHAR* AllowedFields[] = {
+				TEXT("OpacityMaskClipValue"),
+				TEXT("TwoSided"),
+				TEXT("bIsThinSurface"),
+				TEXT("DitheredLODTransition"),
+				TEXT("OutputTranslucentVelocity"),
+				TEXT("CastDynamicShadowAsMasked"),
+				TEXT("bHasPixelAnimation"),
+			};
+
+			UScriptStruct* Struct = FMaterialInstanceBasePropertyOverrides::StaticStruct();
+			void* Container = &Instance->BasePropertyOverrides;
+			for (const TCHAR* FieldName : AllowedFields)
+			{
+				FString Value;
+				if (!Definition.TryGetSetting(FieldName, Value))
+				{
+					continue;
+				}
+				FProperty* Prop = Struct->FindPropertyByName(FName(FieldName));
+				if (!Prop)
+				{
+					continue;
+				}
+				FString Reason;
+				if (!CoerceReflectedProperty(Container, Prop, Value, Reason))
+				{
+					UE_LOG(LogDreamShader, Warning, TEXT("Backend=\"Instance\": setting '%s' = '%s' ignored: %s"), FieldName, *Value, *Reason);
+					continue;
+				}
+				// Enable the paired override flag so the value actually takes effect on the instance.
+				if (FBoolProperty* OverrideProp = CastField<FBoolProperty>(Struct->FindPropertyByName(FName(*(FString(TEXT("bOverride_")) + FieldName)))))
+				{
+					OverrideProp->SetPropertyValue_InContainer(Container, true);
+				}
+			}
+		}
+
 		static bool GenerateInstanceMaterialFromDefinition(
 			const FString& SourceFilePath,
 			const FString& SourceHash,
@@ -3264,6 +3355,10 @@ namespace UE::DreamShader::Editor
 					Instance->BasePropertyOverrides.ShadingModel = ShadingModel;
 				}
 			}
+
+			// Long-tail overridable base properties (OpacityMaskClipValue/TwoSided/bIsThinSurface/...)
+			// applied by reflection from the Settings block.
+			ApplyInstanceBasePropertyOverrides(Definition, Instance);
 
 			Instance->UpdateStaticPermutation();
 			Instance->PostEditChange();

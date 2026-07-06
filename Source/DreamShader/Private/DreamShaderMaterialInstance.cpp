@@ -392,10 +392,15 @@ void UDreamShaderMaterialInstance::PostLoad()
 
 bool UDreamShaderMaterialInstance::HasOverridenBaseProperties() const
 {
-	// Force a static permutation (an own shader map) whenever parented — the entire point of this
-	// class. InitStaticPermutation recomputes bHasStaticPermutationResource from this on every load,
-	// so it must not depend on transient state (mirrors ULandscapeMaterialInstanceConstant).
-	if (Parent)
+	// Force a self-contained static permutation (an own shader map) only at the ROOT instance — the one
+	// whose immediate parent is the graphless host UMaterial (which has no usable serialized shader map).
+	// A child MIC parented to a DreamShader instance falls through to stock behavior so it DEFERS to and
+	// SHARES the root's shader map: many parameter/color variants off one root reuse a single compiled
+	// map instead of each compiling its own (bounds the shader-map count). InitStaticPermutation
+	// recomputes bHasStaticPermutationResource from this on every load, so the test must be durable —
+	// Cast<UMaterial>(Parent) is (a base material is the parent ⟺ this is a root), not transient state.
+	// Mirrors ULandscapeMaterialInstanceConstant and UShaderLab's root-vs-child ownership scheme.
+	if (Cast<UMaterial>(Parent) != nullptr)
 	{
 		return true;
 	}
