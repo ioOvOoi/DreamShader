@@ -291,47 +291,35 @@ namespace UE::DreamShader::Editor::Private
 		}
 	}
 
-	bool FDreamShaderEditorBridge::IsInMemoryMaterialModeEnabled()
-	{
-		const UDreamShaderSettings* Settings = GetDefault<UDreamShaderSettings>();
-		return Settings && Settings->bInMemoryMaterialMode;
-	}
-
 	void FDreamShaderEditorBridge::HandlePostEngineInit()
 	{
-		if (IsInMemoryMaterialModeEnabled())
-		{
-			GenerateAllInMemoryMaterials();
-		}
+		// In-memory generation is the editor's always-on behavior (source files are the authoring
+		// surface; the editor never writes per-material .uasset files).
+		GenerateAllInMemoryMaterials();
 	}
 
 	void FDreamShaderEditorBridge::HandleSettingsPropertyChanged(UObject* Object, FPropertyChangedEvent& Event)
 	{
+		// Switching the default compiler backend changes how every backend-less source materializes, so
+		// regenerate everything in memory to reflect the new choice.
 		if (!Object || !Object->IsA<UDreamShaderSettings>()
-			|| Event.GetPropertyName() != GET_MEMBER_NAME_CHECKED(UDreamShaderSettings, bInMemoryMaterialMode))
+			|| Event.GetPropertyName() != GET_MEMBER_NAME_CHECKED(UDreamShaderSettings, DefaultBackend))
 		{
 			return;
 		}
 
-		if (IsInMemoryMaterialModeEnabled())
-		{
-			UE_LOG(LogDreamShader, Display, TEXT("DreamShader in-memory material mode enabled; regenerating all source files in memory."));
-			GenerateAllInMemoryMaterials();
+		UE_LOG(LogDreamShader, Display, TEXT("DreamShader default compiler backend changed; regenerating all source files in memory."));
+		GenerateAllInMemoryMaterials();
 
-			// Stale persisted assets shadow the in-memory versions; point the user at the cleanup.
-			TArray<UObject*> ShadowingAssets;
-			if (CollectPersistedGeneratedAssets(ShadowingAssets) > 0)
-			{
-				ShowDreamShaderNotification(
-					FText::Format(
-						LOCTEXT("DreamShaderInMemoryModeShadowed", "{0} previously generated asset(s) are still saved on disk and shadow in-memory material mode. Run Tools > DreamShader > Clean Persisted Generated Assets to remove them."),
-						FText::AsNumber(ShadowingAssets.Num())),
-					SNotificationItem::CS_Fail);
-			}
-		}
-		else
+		// Stale persisted assets shadow the in-memory versions; point the user at the cleanup.
+		TArray<UObject*> ShadowingAssets;
+		if (CollectPersistedGeneratedAssets(ShadowingAssets) > 0)
 		{
-			UE_LOG(LogDreamShader, Display, TEXT("DreamShader in-memory material mode disabled; future compiles will persist assets. In-memory materials from this session remain until they are recompiled or the editor restarts."));
+			ShowDreamShaderNotification(
+				FText::Format(
+					LOCTEXT("DreamShaderInMemoryModeShadowed", "{0} previously generated asset(s) are still saved on disk and shadow the in-memory materials. Run Tools > DreamShader > Clean Persisted Generated Assets to remove them."),
+					FText::AsNumber(ShadowingAssets.Num())),
+				SNotificationItem::CS_Fail);
 		}
 	}
 
@@ -620,7 +608,7 @@ namespace UE::DreamShader::Editor::Private
 	void FDreamShaderEditorBridge::ProcessSourceFile(const FString& SourceFilePath)
 	{
 		UE::DreamShader::Compiler::FDreamShaderCompileService CompileService(UE::DreamShader::Editor::GetEditorCompileAdapter());
-		const UE::DreamShader::Compiler::FDreamShaderCompileResult Result = CompileService.CompileAssets(SourceFilePath, false, IsInMemoryMaterialModeEnabled());
+		const UE::DreamShader::Compiler::FDreamShaderCompileResult Result = CompileService.CompileAssets(SourceFilePath, false, /*bInMemory*/ true);
 		if (Result.bSucceeded)
 		{
 			ClearDiagnosticsForSourceAndDependencies(SourceFilePath);
@@ -1190,7 +1178,7 @@ namespace UE::DreamShader::Editor::Private
 		const int32 DeletedCount = ObjectTools::DeleteObjects(AssetsToDelete, /*bShowConfirmation*/ true);
 		UE_LOG(LogDreamShader, Display, TEXT("DreamShader deleted %d of %d persisted generated asset(s)."), DeletedCount, AssetsToDelete.Num());
 
-		if (DeletedCount > 0 && IsInMemoryMaterialModeEnabled())
+		if (DeletedCount > 0)
 		{
 			// Recreate the deleted assets in memory right away so references resolve without a restart.
 			GenerateAllInMemoryMaterials();

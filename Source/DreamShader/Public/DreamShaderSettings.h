@@ -58,20 +58,18 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category="Paths", meta=(RelativeToGameDir))
 	FDirectoryPath GeneratedShaderDirectory;
 
-	UPROPERTY(Config, EditAnywhere, Category="In-Memory Materials",
-		meta=(DisplayName="Enable In-Memory Material Mode",
-			ToolTip="When enabled, DreamShader generates materials as transient in-memory assets at editor startup instead of saving .uasset files. DreamShader source files become the single asset source. Materials are automatically generated as persistent assets during cooking for packaging."))
-	bool bInMemoryMaterialMode = false;
-
-	UPROPERTY(Config, EditAnywhere, Category="In-Memory Materials",
-		meta=(DisplayName="Show In-Memory Materials In Content Browser",
-			ToolTip="When enabled, memory-only DreamShader instance materials appear in the Content Browser like unsaved assets. Disabled by default: the source files are the intended authoring surface, and hiding the instances also prevents accidental Save actions from materializing them to disk."))
-	bool bShowInMemoryMaterialsInContentBrowser = false;
+	// The single compiler knob. DreamShader always generates materials in memory in the editor
+	// (source files are the authoring surface; the editor never writes per-material .uasset files) and
+	// materializes them as persistent assets during cooking — so there is no in-memory on/off toggle.
+	UPROPERTY(Config, EditAnywhere, Category="Compiler",
+		meta=(DisplayName="Default Compiler Backend",
+			ToolTip="How DreamShader materializes a source file that does not specify Settings = { Backend = \"...\" }. Instance compiles the shading logic into a generated .ush and emits a lightweight, memory-only material instance (no per-material node graph). Graph builds a full UMaterial node graph. Files that need graph-only features (Substrate, static switches, graph/virtual functions) automatically fall back to Graph."))
+	EDreamShaderDefaultBackend DefaultBackend = EDreamShaderDefaultBackend::Instance;
 
 	UPROPERTY(Config, EditAnywhere, Category="Compiler",
-		meta=(DisplayName="Default Backend",
-			ToolTip="Backend used when a source file does not specify Settings = { Backend = \"...\" }. Graph builds a UMaterial node graph. Instance compiles the shading logic into a generated .ush and emits a lightweight material instance of the shared host material (no node graph); files that need graph-only features (UE.*/Substrate nodes, textures, graph functions) automatically fall back to Graph."))
-	EDreamShaderDefaultBackend DefaultBackend = EDreamShaderDefaultBackend::Graph;
+		meta=(DisplayName="Show In-Memory Materials In Content Browser",
+			ToolTip="When enabled, the memory-only DreamShader materials appear in the Content Browser like unsaved assets. Disabled by default: the source files are the intended authoring surface, and hiding the materials also prevents accidental Save actions from materializing them to disk."))
+	bool bShowInMemoryMaterialsInContentBrowser = false;
 
 	UPROPERTY(Config, EditAnywhere, Category="Compiler")
 	bool bAutoCompileOnSave = true;

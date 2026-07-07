@@ -33,7 +33,6 @@ namespace UE::DreamShader::Editor::Private
 		void HandlePostEngineInit();
 		void HandleSettingsPropertyChanged(UObject* Object, struct FPropertyChangedEvent& Event);
 		void GenerateAllInMemoryMaterials();
-		static bool IsInMemoryMaterialModeEnabled();
 		void QueueSourceFile(const FString& SourceFilePath);
 		void QueueDependentSourcesForImport(const FString& ImportFilePath);
 		void OnDirectoryChanged(const TArray<FFileChangeData>& FileChanges);

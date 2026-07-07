@@ -32,11 +32,9 @@ public:
 		{
 			if (IsCookCommandlet())
 			{
-				const UDreamShaderSettings* Settings = GetDefault<UDreamShaderSettings>();
-				if (Settings && Settings->bInMemoryMaterialMode)
-				{
-					GenerateAllAssetsForCook();
-				}
+				// Materials are always memory-only in the editor, so the cook must materialize every
+				// source file as a persistent asset for packaging.
+				GenerateAllAssetsForCook();
 			}
 			return;
 		}
