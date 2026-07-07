@@ -30,7 +30,10 @@ namespace UE::DreamShader::Editor::Private
 		static FString GetSourceFileMetadata(UObject* Asset);
 
 		void QueueFullScan();
-		void GenerateAllVirtualMaterials();
+		void HandlePostEngineInit();
+		void HandleSettingsPropertyChanged(UObject* Object, struct FPropertyChangedEvent& Event);
+		void GenerateAllInMemoryMaterials();
+		static bool IsInMemoryMaterialModeEnabled();
 		void QueueSourceFile(const FString& SourceFilePath);
 		void QueueDependentSourcesForImport(const FString& ImportFilePath);
 		void OnDirectoryChanged(const TArray<FFileChangeData>& FileChanges);
@@ -53,6 +56,9 @@ namespace UE::DreamShader::Editor::Private
 		void PopulateMaterialFunctionDreamShaderMenu(UToolMenu* InMenu, TWeakObjectPtr<UMaterialFunction> MaterialFunction);
 		void RequestRecompileAll();
 		void RequestCleanGeneratedShaders();
+		void RequestCleanPersistedGeneratedAssets();
+		int32 CollectPersistedGeneratedAssets(TArray<UObject*>& OutAssets);
+		void ToggleShowInMemoryMaterialsInContentBrowser();
 		void OpenDreamShaderWorkspace();
 		void ExportMaterialToDreamShaderFile(TWeakObjectPtr<UMaterial> Material);
 		void ExportMaterialFunctionToDreamShaderFile(TWeakObjectPtr<UMaterialFunction> MaterialFunction);
@@ -81,8 +87,8 @@ namespace UE::DreamShader::Editor::Private
 		FDelegateHandle MaterialCompilationFinishedHandle;
 		FDelegateHandle ToolMenusStartupCallbackHandle;
 		FDelegateHandle PostEngineInitHandle;
+		FDelegateHandle SettingsChangedHandle;
 		bool bIsShuttingDown = false;
 		bool bMenusRegistered = false;
-		bool bVirtualMaterialMode = false;
 	};
 }

@@ -33,7 +33,7 @@ public:
 			if (IsCookCommandlet())
 			{
 				const UDreamShaderSettings* Settings = GetDefault<UDreamShaderSettings>();
-				if (Settings && Settings->bVirtualMaterialMode)
+				if (Settings && Settings->bInMemoryMaterialMode)
 				{
 					GenerateAllAssetsForCook();
 				}

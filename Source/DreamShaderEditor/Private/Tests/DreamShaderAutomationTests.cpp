@@ -1,12 +1,18 @@
 #include "Commandlet/DreamShaderCommandletRunner.h"
+#include "DreamShaderMaterialInstance.h"
 #include "DreamShaderModule.h"
 #include "DreamShaderParser.h"
+#include "DreamShaderSettings.h"
+#include "DreamShaderTestCommon.h"
 #include "DreamShaderTypes.h"
 #include "DreamShaderVersionCompat.h"
 #include "MaterialAssetGeneration/DreamShaderMaterialGenerator.h"
 
+#include "Engine/Texture.h"
 #include "HAL/FileManager.h"
+#include "MaterialShared.h"
 #include "Materials/Material.h"
+#include "Materials/MaterialParameters.h"
 #include "Materials/MaterialFunction.h"
 #include "Materials/MaterialExpressionIf.h"
 #include "Materials/MaterialExpressionAdd.h"
@@ -477,6 +483,9 @@ bool FDreamShaderTruthyConditionWiringTest::RunTest(const FString& Parameters)
 	using namespace UE::DreamShader::Editor;
 	using namespace UE::DreamShader::Editor::Private::Tests;
 
+	// Asserts Graph-backend node shape (UMaterialExpressionIf), so pin the Graph backend — the
+	// if/else source is expressible in the Instance backend and would otherwise route there.
+	FScopedDreamShaderGraphBackendPin BackendPin;
 	FScopedDreamShaderAutomationArtifacts Artifacts;
 	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_Truthy"));
 	const FString ObjectPath = MakeAutomationObjectPath(AssetName);
@@ -571,6 +580,9 @@ bool FDreamShaderRoundTripMaterialTest::RunTest(const FString& Parameters)
 	using namespace UE::DreamShader::Editor;
 	using namespace UE::DreamShader::Editor::Private;
 	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	// These assertions describe graph-backend node shapes; pin the backend against reroutes.
+	FScopedDreamShaderGraphBackendPin BackendPin;
 
 	FScopedDreamShaderAutomationArtifacts Artifacts;
 	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_RoundTrip"));
@@ -727,6 +739,11 @@ namespace UE::DreamShader::Editor::Private::Tests
 		const FString& Source,
 		UMaterial*& OutMaterial)
 	{
+		// This helper loads the result as a UMaterial, which only the Graph backend produces. Pin it so
+		// graph-shape tests do not depend on a source's domain/content happening to be inexpressible in
+		// the Instance backend (which would route it to a UMaterialInstance and return null here).
+		FScopedDreamShaderGraphBackendPin GraphPin;
+
 		const FString ObjectPath = MakeAutomationObjectPath(AssetName);
 		Artifacts.AddObjectPath(ObjectPath);
 		AddExpectedNewAssetProbeWarnings(Test, ObjectPath);
@@ -855,6 +872,9 @@ bool FDreamShaderParameterNodeGenerationTest::RunTest(const FString& Parameters)
 {
 	using namespace UE::DreamShader::Editor::Private::Tests;
 
+	// These assertions describe graph-backend node shapes; pin the backend against reroutes.
+	FScopedDreamShaderGraphBackendPin BackendPin;
+
 	FScopedDreamShaderAutomationArtifacts Artifacts;
 	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_Params"));
 	// Scal and Vec are declared WITHOUT `= value` on purpose (optional-default contract); Dyn carries
@@ -913,6 +933,9 @@ IMPLEMENT_CUSTOM_SIMPLE_AUTOMATION_TEST(
 bool FDreamShaderOtherParameterNodeGenerationTest::RunTest(const FString& Parameters)
 {
 	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	// These assertions describe graph-backend node shapes; pin the backend against reroutes.
+	FScopedDreamShaderGraphBackendPin BackendPin;
 
 	struct FOtherParameterCase
 	{
@@ -976,6 +999,9 @@ bool FDreamShaderParameterInputWiringTest::RunTest(const FString& Parameters)
 {
 	using namespace UE::DreamShader::Editor::Private::Tests;
 
+	// These assertions describe graph-backend node shapes; pin the backend against reroutes.
+	FScopedDreamShaderGraphBackendPin BackendPin;
+
 	FScopedDreamShaderAutomationArtifacts Artifacts;
 	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_ParamInputs"));
 	const FString Source = FString::Printf(TEXT(R"(
@@ -1005,6 +1031,1164 @@ Shader(Name="DreamShaderTests/Automation/%s")
 		IsNamedInputConnected(Material, TEXT("MaterialExpressionChannelMaskParameter"), TEXT("Input")));
 	TestTrue(TEXT("TextureSampleParameterCube Coordinates pin is wired by TexCube(Coordinates=...)"),
 		IsNamedInputConnected(Material, TEXT("MaterialExpressionTextureSampleParameterCube"), TEXT("Coordinates")));
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderGenerateInstanceBackendTest,
+	"DreamShader.Compiler.Generate.InstanceBackend",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FDreamShaderGenerateInstanceBackendTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_AutoInstance"));
+	const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+	Artifacts.AddObjectPath(ObjectPath);
+	AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
+	AddExpectedAutomationCleanupWarnings(*this);
+
+	const FString Source = FString::Printf(TEXT(R"(Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
+{
+    Properties = {
+        ScalarParameter Boost = 0.5;
+        VectorParameter Tint = float4(1.0, 0.5, 0.25, 1.0);
+        const float K = 2.0;
+    }
+
+    Settings = {
+        Backend = "Instance";
+        ShadingModel = "Unlit";
+        BlendMode = "Opaque";
+    }
+
+    Outputs = {
+        vec3 Color;
+        Base.EmissiveColor = Color;
+    }
+
+    Graph = {
+        Color = Tint.rgb * Boost * K;
+    }
+}
+)"), *AssetName);
+
+	FString SourceFilePath;
+	if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), Source, SourceFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(SourceFilePath);
+
+	FString Message;
+	const bool bGenerated = FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, true);
+	if (!TestTrue(FString::Printf(TEXT("Instance material generation succeeds: %s"), *Message), bGenerated))
+	{
+		return false;
+	}
+
+	UDreamShaderMaterialInstance* Instance = LoadObject<UDreamShaderMaterialInstance>(nullptr, *ObjectPath);
+	if (!TestNotNull(FString::Printf(TEXT("Generated instance material loads from '%s'."), *ObjectPath), Instance))
+	{
+		return false;
+	}
+
+	TestNotNull(TEXT("Instance is parented to the shared host material."), Instance->Parent.Get());
+	if (Instance->Parent)
+	{
+		TestEqual(TEXT("Parent is M_DreamShaderHost."), Instance->Parent->GetName(), FString(TEXT("M_DreamShaderHost")));
+	}
+
+	TestTrue(TEXT("Instance forces a static permutation."), Instance->HasOverridenBaseProperties());
+	TestEqual(TEXT("Const property does not become a parameter."), Instance->InstanceParameters.Num(), 2);
+	TestEqual(TEXT("One bound output."), Instance->InstanceOutputs.Num(), 1);
+	if (Instance->InstanceOutputs.Num() == 1)
+	{
+		TestEqual(TEXT("Output binds EmissiveColor."), Instance->InstanceOutputs[0].Property.GetValue(), MP_EmissiveColor);
+		TestEqual(TEXT("Eval function name."), Instance->InstanceOutputs[0].EvalFunctionName, FString(TEXT("DreamShaderEval_EmissiveColor")));
+	}
+
+#if WITH_EDITORONLY_DATA
+	if (TestEqual(TEXT("One eval expression per output."), Instance->EvalExpressions.Num(), 1) && Instance->EvalExpressions[0])
+	{
+		const UMaterialExpressionCustom* EvalExpression = Instance->EvalExpressions[0];
+		TestTrue(TEXT("Eval code calls the eval function."), EvalExpression->Code.Contains(TEXT("DreamShaderEval_EmissiveColor")));
+		TestEqual(TEXT("Eval expression inputs match the parameters."), EvalExpression->Inputs.Num(), 2);
+		TestTrue(TEXT("Eval expression includes the generated .ush."),
+			EvalExpression->IncludeFilePaths.Num() == 1 && EvalExpression->IncludeFilePaths[0] == Instance->GeneratedIncludeVirtualPath);
+	}
+#endif
+
+	// The generated include exists on disk and holds the eval function + const fold.
+	{
+		const FString FileName = FPaths::GetCleanFilename(Instance->GeneratedIncludeVirtualPath);
+		const FString DiskPath = UE::DreamShader::GetGeneratedShaderDirectory() / FileName;
+		FString IncludeContent;
+		if (TestTrue(TEXT("Generated instance .ush exists on disk."), FFileHelper::LoadFileToString(IncludeContent, *DiskPath)))
+		{
+			TestTrue(TEXT(".ush defines the eval function."), IncludeContent.Contains(TEXT("DreamShaderEval_EmissiveColor")));
+			TestTrue(TEXT(".ush inlines the const property."), IncludeContent.Contains(TEXT("static const float K")));
+		}
+	}
+
+	float BoostValue = 0.0f;
+	TestTrue(TEXT("Scalar parameter default is set on the instance."),
+		Instance->GetScalarParameterValue(FMaterialParameterInfo(TEXT("Boost")), BoostValue) && FMath::IsNearlyEqual(BoostValue, 0.5f));
+
+	TestTrue(TEXT("ShadingModel setting lands in BasePropertyOverrides."),
+		Instance->BasePropertyOverrides.bOverride_ShadingModel && Instance->BasePropertyOverrides.ShadingModel == MSM_Unlit);
+
+	// Distinct source hashes must yield distinct shader map ids (DDC keys) — the generated include is
+	// injected during translation and invisible to the material's own include hashing.
+	{
+		UMaterial* BaseMaterial = Instance->GetMaterial();
+		const FString OriginalSourceHash = Instance->SourceHash;
+
+		TUniquePtr<FMaterialResource> ResourceA(Instance->AllocatePermutationResource());
+		ResourceA->SetMaterial(BaseMaterial, Instance, GMaxRHIShaderPlatform);
+		FMaterialShaderMapId IdA;
+		ResourceA->BuildShaderMapId(IdA, nullptr);
+
+		Instance->SourceHash = OriginalSourceHash + TEXT("_changed");
+		TUniquePtr<FMaterialResource> ResourceB(Instance->AllocatePermutationResource());
+		ResourceB->SetMaterial(BaseMaterial, Instance, GMaxRHIShaderPlatform);
+		FMaterialShaderMapId IdB;
+		ResourceB->BuildShaderMapId(IdB, nullptr);
+		Instance->SourceHash = OriginalSourceHash;
+
+		TestNotEqual(TEXT("SourceHash salts the shader map id (ExpressionIncludesHash)."),
+			IdA.ExpressionIncludesHash, IdB.ExpressionIncludesHash);
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderGenerateInstanceBackendVirtualTest,
+	"DreamShader.Compiler.Generate.InstanceBackendVirtual",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FDreamShaderGenerateInstanceBackendVirtualTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_AutoInstanceVirtual"));
+	const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+	Artifacts.AddObjectPath(ObjectPath);
+	AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
+	AddExpectedAutomationCleanupWarnings(*this);
+
+	const FString Source = FString::Printf(TEXT(R"(Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
+{
+    Properties = {
+        ScalarParameter Boost = 0.25;
+    }
+
+    Settings = {
+        Backend = "Instance";
+        ShadingModel = "Unlit";
+    }
+
+    Outputs = {
+        vec3 Color;
+        Base.EmissiveColor = Color;
+    }
+
+    Graph = {
+        Color = vec3(Boost, Boost, Boost);
+    }
+}
+)"), *AssetName);
+
+	FString SourceFilePath;
+	if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), Source, SourceFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(SourceFilePath);
+
+	FString Message;
+	const bool bGenerated = FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ true);
+	if (!TestTrue(FString::Printf(TEXT("Virtual instance generation succeeds: %s"), *Message), bGenerated))
+	{
+		return false;
+	}
+
+	UDreamShaderMaterialInstance* Instance = FindObject<UDreamShaderMaterialInstance>(nullptr, *ObjectPath);
+	if (!TestNotNull(TEXT("Virtual instance exists in memory."), Instance))
+	{
+		return false;
+	}
+
+	// The whole point of virtual mode: nothing reaches disk and nothing can be nagged into saving.
+	TestFalse(TEXT("Virtual instance package is not dirty (no save-prompt materialization)."),
+		Instance->GetPackage()->IsDirty());
+	TestTrue(TEXT("Virtual instance package is flagged newly-created (in-memory import resolution)."),
+		Instance->GetPackage()->HasAnyPackageFlags(PKG_NewlyCreated));
+	FString ExistingDiskPackage;
+	TestFalse(TEXT("Virtual instance has no package file on disk."),
+		FPackageName::DoesPackageExist(Instance->GetPackage()->GetName(), &ExistingDiskPackage));
+
+	// Memory-only instances hide from asset enumeration (Content Browser, save pickers) unless the
+	// user opts in via bShowInMemoryMaterialsInContentBrowser; object-path references still resolve.
+	if (!GetDefault<UDreamShaderSettings>()->bShowInMemoryMaterialsInContentBrowser)
+	{
+		TestFalse(TEXT("In-memory instance is not an enumerable asset (hidden from the Content Browser)."), Instance->IsAsset());
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderGenerateInstanceBackendBuiltinsTest,
+	"DreamShader.Compiler.Generate.InstanceBackendBuiltins",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FDreamShaderGenerateInstanceBackendBuiltinsTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_AutoInstanceBuiltins"));
+	const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+	Artifacts.AddObjectPath(ObjectPath);
+	AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
+	AddExpectedAutomationCleanupWarnings(*this);
+
+	const FString Source = FString::Printf(TEXT(R"(Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
+{
+    Properties = {
+        ScalarParameter Speed = 0.5;
+    }
+
+    Settings = {
+        Backend = "Instance";
+        ShadingModel = "Unlit";
+    }
+
+    Outputs = {
+        vec3 Color;
+        Base.EmissiveColor = Color;
+    }
+
+    Graph = {
+        float2 uv = UE.TexCoord(Index=0);
+        float pulse = UE.Time(Period=2.0) * Speed;
+        Color = vec3(uv.x, uv.y, pulse);
+    }
+}
+)"), *AssetName);
+
+	FString SourceFilePath;
+	if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), Source, SourceFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(SourceFilePath);
+
+	FString Message;
+	const bool bGenerated = FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ true);
+	if (!TestTrue(FString::Printf(TEXT("Builtin instance generation succeeds: %s"), *Message), bGenerated))
+	{
+		return false;
+	}
+
+	UDreamShaderMaterialInstance* Instance = FindObject<UDreamShaderMaterialInstance>(nullptr, *ObjectPath);
+	if (!TestNotNull(TEXT("Builtin instance exists in memory."), Instance))
+	{
+		return false;
+	}
+
+	TestEqual(TEXT("UE.TexCoord(Index=0) records one used texcoord slot."), Instance->UsedTexCoordCount, 1);
+	TestFalse(TEXT("VertexColor builtin not used."), Instance->bUsesVertexColorBuiltin);
+
+#if WITH_EDITORONLY_DATA
+	if (TestEqual(TEXT("One eval expression."), Instance->EvalExpressions.Num(), 1) && Instance->EvalExpressions[0])
+	{
+		const UMaterialExpressionCustom* EvalExpression = Instance->EvalExpressions[0];
+		// Inputs: Speed + the dummy texcoord side-effect input, index-aligned with the resource.
+		TestEqual(TEXT("Eval inputs = DSL parameters + dummy texcoord."), EvalExpression->Inputs.Num(), 2);
+		TestTrue(TEXT("Eval code forwards Parameters."), EvalExpression->Code.Contains(TEXT("(Parameters, Speed)")));
+	}
+#endif
+
+	// The generated include lowers UE.* builtins to DS_* equivalents and pulls in the support header.
+	{
+		const FString FileName = FPaths::GetCleanFilename(Instance->GeneratedIncludeVirtualPath);
+		const FString DiskPath = UE::DreamShader::GetGeneratedShaderDirectory() / FileName;
+		FString IncludeContent;
+		if (TestTrue(TEXT("Generated instance .ush exists on disk."), FFileHelper::LoadFileToString(IncludeContent, *DiskPath)))
+		{
+			TestTrue(TEXT(".ush includes DreamShaderBuiltins."), IncludeContent.Contains(TEXT("/Plugin/DreamShader/DreamShaderBuiltins.ush")));
+			TestTrue(TEXT("UE.TexCoord lowers to DS_TexCoord."), IncludeContent.Contains(TEXT("DS_TexCoord(Parameters, 0)")));
+			TestTrue(TEXT("UE.Time(Period=..) lowers to DS_PERIODIC_TIME."), IncludeContent.Contains(TEXT("DS_PERIODIC_TIME(2.0)")));
+			TestTrue(TEXT("Eval functions receive FMaterialPixelParameters."), IncludeContent.Contains(TEXT("FMaterialPixelParameters Parameters")));
+			TestFalse(TEXT("No unlowered UE.* remains."), IncludeContent.Contains(TEXT("UE.")));
+		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderGenerateInstanceBackendTextureTest,
+	"DreamShader.Compiler.Generate.InstanceBackendTexture",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FDreamShaderGenerateInstanceBackendTextureTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_AutoInstanceTexture"));
+	const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+	Artifacts.AddObjectPath(ObjectPath);
+	AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
+	AddExpectedAutomationCleanupWarnings(*this);
+
+	const FString Source = FString::Printf(TEXT(R"(Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
+{
+    Properties = {
+        TextureObjectParameter BaseMap = "/Engine/EngineResources/DefaultTexture";
+        ScalarParameter Intensity = 1.0;
+    }
+
+    Settings = {
+        Backend = "Instance";
+        ShadingModel = "Unlit";
+    }
+
+    Outputs = {
+        vec3 Color;
+        Base.EmissiveColor = Color;
+    }
+
+    Graph = {
+        float2 uv = UE.TexCoord(Index=0);
+        float4 texel = SampleTexture2D(BaseMap, uv);
+        Color = texel.rgb * Intensity;
+    }
+}
+)"), *AssetName);
+
+	FString SourceFilePath;
+	if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), Source, SourceFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(SourceFilePath);
+
+	FString Message;
+	const bool bGenerated = FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ true);
+	if (!TestTrue(FString::Printf(TEXT("Texture instance generation succeeds: %s"), *Message), bGenerated))
+	{
+		return false;
+	}
+
+	UDreamShaderMaterialInstance* Instance = FindObject<UDreamShaderMaterialInstance>(nullptr, *ObjectPath);
+	if (!TestNotNull(TEXT("Texture instance exists in memory."), Instance))
+	{
+		return false;
+	}
+
+	// The texture parameter model: declaration-ordered, typed, with a resolved non-null default.
+	if (TestEqual(TEXT("Two instance parameters."), Instance->InstanceParameters.Num(), 2))
+	{
+		const FDreamShaderInstanceParameter& TextureParameter = Instance->InstanceParameters[0];
+		TestEqual(TEXT("First parameter is BaseMap."), TextureParameter.Name, FName(TEXT("BaseMap")));
+		TestTrue(TEXT("BaseMap is a texture parameter."), TextureParameter.Type == EDreamShaderInstanceParameterType::Texture);
+		TestNotNull(TEXT("BaseMap default texture resolved."), TextureParameter.TextureDefault.Get());
+	}
+
+	// The compile-time default-texture index space the resource serves to the translator.
+	if (TestEqual(TEXT("One default texture registered."), Instance->InstanceDefaultTextures.Num(), 1))
+	{
+		TestTrue(
+			TEXT("Registered default matches the parameter default."),
+			Instance->InstanceDefaultTextures[0] == Instance->InstanceParameters[0].TextureDefault);
+	}
+
+	// The explicit parameter value keeps the cook's used-texture gather inside the instance's index space.
+	{
+		UTexture* ParameterValue = nullptr;
+		if (TestTrue(
+			TEXT("BaseMap texture parameter value is set."),
+			Instance->GetTextureParameterValue(FMaterialParameterInfo(TEXT("BaseMap")), ParameterValue)))
+		{
+			TestTrue(TEXT("Parameter value equals the default texture."), ParameterValue == Instance->InstanceParameters[0].TextureDefault);
+		}
+	}
+
+#if WITH_EDITORONLY_DATA
+	if (TestEqual(TEXT("One eval expression."), Instance->EvalExpressions.Num(), 1) && Instance->EvalExpressions[0])
+	{
+		const UMaterialExpressionCustom* EvalExpression = Instance->EvalExpressions[0];
+		// Inputs: BaseMap + Intensity + the dummy texcoord side-effect input (one input per compiled
+		// chunk — a texture chunk is a single input even though it expands to a texture/sampler pair).
+		TestEqual(TEXT("Eval inputs = DSL parameters + dummy texcoord."), EvalExpression->Inputs.Num(), 3);
+		TestTrue(
+			TEXT("Eval code forwards the texture together with its sampler."),
+			EvalExpression->Code.Contains(TEXT("(Parameters, BaseMap, BaseMapSampler, Intensity)")));
+	}
+#endif
+
+	// The generated eval function signature carries the translator-shaped texture/sampler pair.
+	{
+		const FString FileName = FPaths::GetCleanFilename(Instance->GeneratedIncludeVirtualPath);
+		const FString DiskPath = UE::DreamShader::GetGeneratedShaderDirectory() / FileName;
+		FString IncludeContent;
+		if (TestTrue(TEXT("Generated instance .ush exists on disk."), FFileHelper::LoadFileToString(IncludeContent, *DiskPath)))
+		{
+			TestTrue(
+				TEXT(".ush declares the texture/sampler parameter pair."),
+				IncludeContent.Contains(TEXT("Texture2D BaseMap, SamplerState BaseMapSampler")));
+			// The DSL surface writes SampleTexture2D; lowering namespaces it to the DS_ macro.
+			TestTrue(TEXT("SampleTexture2D lowers to DS_SampleTexture2D."), IncludeContent.Contains(TEXT("DS_SampleTexture2D(BaseMap, uv)")));
+		}
+	}
+
+	// Synthesized parameters enumerate through the standard chain APIs — the exact calls the
+	// material instance editor makes to build its rows — both on the instance and on a plain
+	// child MIC parented to it.
+	{
+		TMap<FMaterialParameterInfo, FMaterialParameterMetadata> ScalarParameters;
+		Instance->GetAllParametersOfType(EMaterialParameterType::Scalar, ScalarParameters);
+		TestTrue(TEXT("Scalar enumeration contains Intensity."), ScalarParameters.Contains(FMaterialParameterInfo(TEXT("Intensity"))));
+
+		TMap<FMaterialParameterInfo, FMaterialParameterMetadata> TextureParameters;
+		Instance->GetAllParametersOfType(EMaterialParameterType::Texture, TextureParameters);
+		TestTrue(TEXT("Texture enumeration contains BaseMap."), TextureParameters.Contains(FMaterialParameterInfo(TEXT("BaseMap"))));
+
+		float DefaultIntensity = 0.0f;
+		if (TestTrue(TEXT("Scalar default resolves through the chain."), Instance->GetScalarParameterDefaultValue(FHashedMaterialParameterInfo(TEXT("Intensity")), DefaultIntensity)))
+		{
+			TestEqual(TEXT("Scalar default matches the DSL default."), DefaultIntensity, 1.0f);
+		}
+
+		UMaterialInstanceConstant* Child = NewObject<UMaterialInstanceConstant>(GetTransientPackage());
+		Child->SetParentEditorOnly(Instance, /*RecacheShader*/ false);
+		TMap<FMaterialParameterInfo, FMaterialParameterMetadata> ChildScalarParameters;
+		Child->GetAllParametersOfType(EMaterialParameterType::Scalar, ChildScalarParameters);
+		TestTrue(TEXT("Child MIC inherits the synthesized parameter enumeration."), ChildScalarParameters.Contains(FMaterialParameterInfo(TEXT("Intensity"))));
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderGenerateInstanceBackendStateReadsTest,
+	"DreamShader.Compiler.Generate.InstanceBackendStateReads",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FDreamShaderGenerateInstanceBackendStateReadsTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_AutoInstanceStateReads"));
+	const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+	Artifacts.AddObjectPath(ObjectPath);
+	AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
+	AddExpectedAutomationCleanupWarnings(*this);
+
+	// A spread across the three pure-read shapes: LWC-demoted world/object position, external-code
+	// reflection vector, and Get*(Parameters) helpers (screen UV, per-instance random).
+	const FString Source = FString::Printf(TEXT(R"(Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
+{
+    Settings = {
+        Backend = "Instance";
+        ShadingModel = "Unlit";
+    }
+
+    Outputs = {
+        vec3 Color;
+        Base.EmissiveColor = Color;
+    }
+
+    Graph = {
+        float3 wp = UE.WorldPosition();
+        float3 op = UE.ObjectPosition();
+        float3 refl = UE.ReflectionVector();
+        float2 vp = UE.ScreenPosition();
+        float rnd = UE.PerInstanceRandom();
+        Color = frac(wp * 0.001) * 0.5 + refl * 0.25 + float3(vp * rnd, op.z * 0.0);
+    }
+}
+)"), *AssetName);
+
+	FString SourceFilePath;
+	if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), Source, SourceFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(SourceFilePath);
+
+	FString Message;
+	const bool bGenerated = FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ true);
+	if (!TestTrue(FString::Printf(TEXT("State-read instance generation succeeds: %s"), *Message), bGenerated))
+	{
+		return false;
+	}
+
+	UDreamShaderMaterialInstance* Instance = FindObject<UDreamShaderMaterialInstance>(nullptr, *ObjectPath);
+	if (!TestNotNull(TEXT("State-read instance exists in memory."), Instance))
+	{
+		return false;
+	}
+
+	// Pure reads need no compiled chunk and no eval argument: no texcoord slots, no vertex color,
+	// no parameters, and therefore zero Custom inputs.
+	TestEqual(TEXT("No texcoord slots requested."), Instance->UsedTexCoordCount, 0);
+	TestFalse(TEXT("VertexColor builtin not used."), Instance->bUsesVertexColorBuiltin);
+	TestEqual(TEXT("No synthesized parameters."), Instance->InstanceParameters.Num(), 0);
+#if WITH_EDITORONLY_DATA
+	if (TestEqual(TEXT("One eval expression."), Instance->EvalExpressions.Num(), 1) && Instance->EvalExpressions[0])
+	{
+		TestEqual(TEXT("Pure-read builtins add zero Custom inputs."), Instance->EvalExpressions[0]->Inputs.Num(), 0);
+	}
+#endif
+
+	// The generated include lowers each UE.* state read to its DreamShaderBuiltins.ush macro.
+	{
+		const FString FileName = FPaths::GetCleanFilename(Instance->GeneratedIncludeVirtualPath);
+		const FString DiskPath = UE::DreamShader::GetGeneratedShaderDirectory() / FileName;
+		FString IncludeContent;
+		if (TestTrue(TEXT("Generated instance .ush exists on disk."), FFileHelper::LoadFileToString(IncludeContent, *DiskPath)))
+		{
+			TestTrue(TEXT("UE.WorldPosition lowers to DS_WorldPosition."), IncludeContent.Contains(TEXT("DS_WorldPosition(Parameters)")));
+			TestTrue(TEXT("UE.ObjectPosition lowers to DS_ObjectPosition."), IncludeContent.Contains(TEXT("DS_ObjectPosition(Parameters)")));
+			TestTrue(TEXT("UE.ReflectionVector lowers to DS_ReflectionVector."), IncludeContent.Contains(TEXT("DS_ReflectionVector(Parameters)")));
+			TestTrue(TEXT("UE.ScreenPosition lowers to DS_ViewportUV."), IncludeContent.Contains(TEXT("DS_ViewportUV(Parameters)")));
+			TestTrue(TEXT("UE.PerInstanceRandom lowers to DS_PerInstanceRandom."), IncludeContent.Contains(TEXT("DS_PerInstanceRandom(Parameters)")));
+			TestFalse(TEXT("No unlowered UE.* remains."), IncludeContent.Contains(TEXT("UE.")));
+		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderGenerateInstanceBackendSceneReadsTest,
+	"DreamShader.Compiler.Generate.InstanceBackendSceneReads",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FDreamShaderGenerateInstanceBackendSceneReadsTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	// --- Positive: a translucent instance reading scene depth (soft fade) + scene color (tint). ---
+	{
+		FScopedDreamShaderAutomationArtifacts Artifacts;
+		const FString AssetName = MakeUniqueTestAssetName(TEXT("M_AutoInstanceSceneReads"));
+		const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+		Artifacts.AddObjectPath(ObjectPath);
+		AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
+		AddExpectedAutomationCleanupWarnings(*this);
+
+		const FString Source = FString::Printf(TEXT(R"(Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
+{
+    Settings = {
+        Backend = "Instance";
+        ShadingModel = "Unlit";
+        BlendMode = "Translucent";
+    }
+
+    Outputs = {
+        vec3 Color;
+        float Alpha;
+        Base.EmissiveColor = Color;
+        Base.Opacity = Alpha;
+    }
+
+    Graph = {
+        float sceneD = UE.SceneDepth();
+        float pixelD = UE.PixelDepth();
+        float4 sceneC = UE.SceneColor();
+        float fade = saturate((sceneD - pixelD) * 0.02);
+        Color = sceneC.rgb * 0.5;
+        Alpha = fade;
+    }
+}
+)"), *AssetName);
+
+		FString SourceFilePath;
+		if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), Source, SourceFilePath))
+		{
+			return false;
+		}
+		Artifacts.AddSourceFile(SourceFilePath);
+
+		FString Message;
+		const bool bGenerated = FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ true);
+		if (!TestTrue(FString::Printf(TEXT("Translucent scene-read generation succeeds: %s"), *Message), bGenerated))
+		{
+			return false;
+		}
+
+		UDreamShaderMaterialInstance* Instance = FindObject<UDreamShaderMaterialInstance>(nullptr, *ObjectPath);
+		if (!TestNotNull(TEXT("Scene-read instance exists in memory."), Instance))
+		{
+			return false;
+		}
+
+		TestTrue(TEXT("Translucent blend override applied."),
+			Instance->BasePropertyOverrides.bOverride_BlendMode && IsTranslucentBlendMode(Instance->BasePropertyOverrides.BlendMode.GetValue()));
+
+		// Two deduped scene reads: SceneDepth (scalar) + SceneColor (float4). PixelDepth is a pure
+		// read (inline macro), so it is NOT a scene value-input.
+		if (TestEqual(TEXT("Two scene reads recorded."), Instance->SceneReads.Num(), 2))
+		{
+			bool bHasDepth = false, bHasColor = false;
+			for (const FDreamShaderSceneRead& SceneRead : Instance->SceneReads)
+			{
+				bHasDepth |= (SceneRead.Kind == EDreamShaderSceneReadKind::SceneDepth);
+				bHasColor |= (SceneRead.Kind == EDreamShaderSceneReadKind::SceneColor);
+			}
+			TestTrue(TEXT("SceneDepth recorded."), bHasDepth);
+			TestTrue(TEXT("SceneColor recorded."), bHasColor);
+		}
+
+#if WITH_EDITORONLY_DATA
+		if (TestEqual(TEXT("Two eval expressions (Emissive + Opacity)."), Instance->EvalExpressions.Num(), 2) && Instance->EvalExpressions[0])
+		{
+			// Each eval's Custom carries the two REAL named scene inputs (forwarded to the eval fn).
+			const UMaterialExpressionCustom* Eval = Instance->EvalExpressions[0];
+			bool bInputDepth = false, bInputColor = false;
+			for (const FCustomInput& Input : Eval->Inputs)
+			{
+				bInputDepth |= (Input.InputName == FName(TEXT("DreamShaderSceneDepth")));
+				bInputColor |= (Input.InputName == FName(TEXT("DreamShaderSceneColor")));
+			}
+			TestTrue(TEXT("Custom carries the SceneDepth named input."), bInputDepth);
+			TestTrue(TEXT("Custom carries the SceneColor named input."), bInputColor);
+			TestTrue(TEXT("Eval code forwards the scene args."), Eval->Code.Contains(TEXT("DreamShaderSceneColor")));
+		}
+#endif
+
+		// The generated eval signature carries the trailing scene args with the right types.
+		{
+			const FString FileName = FPaths::GetCleanFilename(Instance->GeneratedIncludeVirtualPath);
+			const FString DiskPath = UE::DreamShader::GetGeneratedShaderDirectory() / FileName;
+			FString IncludeContent;
+			if (TestTrue(TEXT("Generated instance .ush exists on disk."), FFileHelper::LoadFileToString(IncludeContent, *DiskPath)))
+			{
+				TestTrue(TEXT(".ush eval signature has float DreamShaderSceneDepth."), IncludeContent.Contains(TEXT("float DreamShaderSceneDepth")));
+				TestTrue(TEXT(".ush eval signature has float4 DreamShaderSceneColor."), IncludeContent.Contains(TEXT("float4 DreamShaderSceneColor")));
+				TestFalse(TEXT("No unlowered UE.* remains."), IncludeContent.Contains(TEXT("UE.")));
+			}
+		}
+	}
+
+	// --- Negative: UE.SceneColor() on an opaque instance is rejected with a translucent hint. ---
+	{
+		FScopedDreamShaderAutomationArtifacts Artifacts;
+		const FString AssetName = MakeUniqueTestAssetName(TEXT("M_AutoInstanceSceneColorOpaque"));
+		const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+		Artifacts.AddObjectPath(ObjectPath);
+
+		const FString Source = FString::Printf(TEXT(R"(Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
+{
+    Settings = { Backend = "Instance"; ShadingModel = "Unlit"; }
+    Outputs = { vec3 Color; Base.EmissiveColor = Color; }
+    Graph = { Color = UE.SceneColor().rgb; }
+}
+)"), *AssetName);
+
+		FString SourceFilePath;
+		if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), Source, SourceFilePath))
+		{
+			return false;
+		}
+		Artifacts.AddSourceFile(SourceFilePath);
+
+		FString Message;
+		const bool bGenerated = FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ true);
+		TestFalse(TEXT("Opaque SceneColor is rejected."), bGenerated);
+		TestTrue(FString::Printf(TEXT("Rejection mentions translucent: %s"), *Message), Message.Contains(TEXT("translucent")));
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderGenerateInstanceBackendUIDomainTest,
+	"DreamShader.Compiler.Generate.InstanceBackendUIDomain",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FDreamShaderGenerateInstanceBackendUIDomainTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	// --- Positive: a UI-domain instance binding Final Color (EmissiveColor) + Opacity. ---
+	{
+		FScopedDreamShaderAutomationArtifacts Artifacts;
+		const FString AssetName = MakeUniqueTestAssetName(TEXT("M_AutoInstanceUI"));
+		const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+		Artifacts.AddObjectPath(ObjectPath);
+		AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
+		AddExpectedAutomationCleanupWarnings(*this);
+
+		const FString Source = FString::Printf(TEXT(R"(Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
+{
+    Properties = {
+        VectorParameter Tint = (1.0, 0.5, 0.2, 1.0);
+        ScalarParameter Alpha = 0.8;
+    }
+
+    Settings = {
+        Backend = "Instance";
+        Domain = "UI";
+    }
+
+    Outputs = {
+        vec3 Color;
+        float A;
+        Base.EmissiveColor = Color;
+        Base.Opacity = A;
+    }
+
+    Graph = {
+        Color = Tint.rgb;
+        A = Alpha;
+    }
+}
+)"), *AssetName);
+
+		FString SourceFilePath;
+		if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), Source, SourceFilePath))
+		{
+			return false;
+		}
+		Artifacts.AddSourceFile(SourceFilePath);
+
+		FString Message;
+		const bool bGenerated = FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ true);
+		if (!TestTrue(FString::Printf(TEXT("UI-domain generation succeeds: %s"), *Message), bGenerated))
+		{
+			return false;
+		}
+
+		UDreamShaderMaterialInstance* Instance = FindObject<UDreamShaderMaterialInstance>(nullptr, *ObjectPath);
+		if (!TestNotNull(TEXT("UI instance exists in memory."), Instance))
+		{
+			return false;
+		}
+
+		// Routed to the UI host (MaterialDomain=MD_UI). Domain is not per-instance overridable, so the
+		// parent chain's domain IS the material's domain.
+		if (UMaterial* Host = Instance->GetMaterial())
+		{
+			TestEqual(TEXT("UI instance is parented to a UI-domain host."), (int32)Host->MaterialDomain.GetValue(), (int32)MD_UI);
+		}
+	}
+
+	// --- Negative: a UI instance cannot bind a lit channel (BaseColor). ---
+	{
+		FScopedDreamShaderAutomationArtifacts Artifacts;
+		const FString AssetName = MakeUniqueTestAssetName(TEXT("M_AutoInstanceUIBadOutput"));
+		const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+		Artifacts.AddObjectPath(ObjectPath);
+
+		const FString Source = FString::Printf(TEXT(R"(Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
+{
+    Settings = { Backend = "Instance"; Domain = "UI"; }
+    Outputs = { vec3 C; Base.BaseColor = C; }
+    Graph = { C = vec3(1.0, 1.0, 1.0); }
+}
+)"), *AssetName);
+
+		FString SourceFilePath;
+		if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), Source, SourceFilePath))
+		{
+			return false;
+		}
+		Artifacts.AddSourceFile(SourceFilePath);
+
+		FString Message;
+		const bool bGenerated = FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ true);
+		TestFalse(TEXT("UI BaseColor output is rejected."), bGenerated);
+		TestTrue(FString::Printf(TEXT("Rejection names the UI domain: %s"), *Message), Message.Contains(TEXT("UI")));
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderGenerateInstanceBackendPostProcessTest,
+	"DreamShader.Compiler.Generate.InstanceBackendPostProcess",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FDreamShaderGenerateInstanceBackendPostProcessTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	// --- Positive: a PostProcess instance sampling PostProcessInput0 (scene color post-tonemap). ---
+	{
+		FScopedDreamShaderAutomationArtifacts Artifacts;
+		const FString AssetName = MakeUniqueTestAssetName(TEXT("M_AutoInstancePP"));
+		const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+		Artifacts.AddObjectPath(ObjectPath);
+		AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
+		AddExpectedAutomationCleanupWarnings(*this);
+
+		const FString Source = FString::Printf(TEXT(R"(Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
+{
+    Properties = { ScalarParameter Exposure = 1.2; }
+    Settings = { Backend = "Instance"; Domain = "PostProcess"; }
+    Outputs = { vec3 Color; Base.EmissiveColor = Color; }
+    Graph = {
+        float4 scene = UE.SceneTexture(Id="PostProcessInput0");
+        Color = scene.rgb * Exposure;
+    }
+}
+)"), *AssetName);
+
+		FString SourceFilePath;
+		if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), Source, SourceFilePath))
+		{
+			return false;
+		}
+		Artifacts.AddSourceFile(SourceFilePath);
+
+		FString Message;
+		const bool bGenerated = FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ true);
+		if (!TestTrue(FString::Printf(TEXT("PostProcess generation succeeds: %s"), *Message), bGenerated))
+		{
+			return false;
+		}
+
+		UDreamShaderMaterialInstance* Instance = FindObject<UDreamShaderMaterialInstance>(nullptr, *ObjectPath);
+		if (!TestNotNull(TEXT("PostProcess instance exists in memory."), Instance))
+		{
+			return false;
+		}
+
+		if (UMaterial* Host = Instance->GetMaterial())
+		{
+			TestEqual(TEXT("PP instance is parented to a PostProcess-domain host."), (int32)Host->MaterialDomain.GetValue(), (int32)MD_PostProcess);
+		}
+
+		if (TestEqual(TEXT("One scene texture read."), Instance->SceneReads.Num(), 1))
+		{
+			TestTrue(TEXT("Scene read is a SceneTexture."), Instance->SceneReads[0].Kind == EDreamShaderSceneReadKind::SceneTexture);
+		}
+
+		const FString FileName = FPaths::GetCleanFilename(Instance->GeneratedIncludeVirtualPath);
+		const FString DiskPath = UE::DreamShader::GetGeneratedShaderDirectory() / FileName;
+		FString IncludeContent;
+		if (TestTrue(TEXT("Generated instance .ush exists on disk."), FFileHelper::LoadFileToString(IncludeContent, *DiskPath)))
+		{
+			TestTrue(TEXT(".ush eval signature has a float4 scene-texture arg."), IncludeContent.Contains(TEXT("float4 DreamShaderSceneTex_")));
+			TestFalse(TEXT("No unlowered UE.* remains."), IncludeContent.Contains(TEXT("UE.")));
+		}
+	}
+
+	// --- Negative: UE.SceneTexture on a Surface instance is rejected (PostProcess only). ---
+	{
+		FScopedDreamShaderAutomationArtifacts Artifacts;
+		const FString AssetName = MakeUniqueTestAssetName(TEXT("M_AutoInstanceSceneTexSurface"));
+		const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+		Artifacts.AddObjectPath(ObjectPath);
+
+		const FString Source = FString::Printf(TEXT(R"(Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
+{
+    Settings = { Backend = "Instance"; ShadingModel = "Unlit"; }
+    Outputs = { vec3 Color; Base.EmissiveColor = Color; }
+    Graph = { Color = UE.SceneTexture(Id="PostProcessInput0").rgb; }
+}
+)"), *AssetName);
+
+		FString SourceFilePath;
+		if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), Source, SourceFilePath))
+		{
+			return false;
+		}
+		Artifacts.AddSourceFile(SourceFilePath);
+
+		FString Message;
+		const bool bGenerated = FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ true);
+		TestFalse(TEXT("Surface SceneTexture is rejected."), bGenerated);
+		TestTrue(FString::Printf(TEXT("Rejection names PostProcess: %s"), *Message), Message.Contains(TEXT("PostProcess")));
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderGenerateInstanceBackendMaterialAttributesTest,
+	"DreamShader.Compiler.Generate.InstanceBackendMaterialAttributes",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FDreamShaderGenerateInstanceBackendMaterialAttributesTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_AutoInstanceMatAttrs"));
+	const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+	Artifacts.AddObjectPath(ObjectPath);
+	AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
+	AddExpectedAutomationCleanupWarnings(*this);
+
+	// A whole-MaterialAttributes bind writing two lit channels; Normal is read (into a local) but not
+	// written, so it must NOT become a bound output (it falls through to the host default).
+	const FString Source = FString::Printf(TEXT(R"(Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
+{
+    Properties = {
+        VectorParameter Tint = (0.6, 0.8, 1.0, 1.0);
+        ScalarParameter Rough = 0.35;
+    }
+
+    Settings = {
+        Backend = "Instance";
+        Domain = "Surface";
+        ShadingModel = "DefaultLit";
+    }
+
+    Outputs = {
+        MaterialAttributes Attrs;
+        Base.MaterialAttributes = Attrs;
+    }
+
+    Graph = {
+        Attrs.BaseColor = Tint.rgb;
+        Attrs.Roughness = Rough;
+    }
+}
+)"), *AssetName);
+
+	FString SourceFilePath;
+	if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), Source, SourceFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(SourceFilePath);
+
+	FString Message;
+	const bool bGenerated = FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ true);
+	if (!TestTrue(FString::Printf(TEXT("MaterialAttributes generation succeeds: %s"), *Message), bGenerated))
+	{
+		return false;
+	}
+
+	UDreamShaderMaterialInstance* Instance = FindObject<UDreamShaderMaterialInstance>(nullptr, *ObjectPath);
+	if (!TestNotNull(TEXT("MaterialAttributes instance exists in memory."), Instance))
+	{
+		return false;
+	}
+
+	// The whole-attributes bind expanded to one output per WRITTEN channel (BaseColor + Roughness).
+	if (TestEqual(TEXT("Two channel outputs from the attributes bind."), Instance->InstanceOutputs.Num(), 2))
+	{
+		bool bHasBaseColor = false, bHasRoughness = false, bHasNormal = false;
+		for (const FDreamShaderInstanceOutput& Output : Instance->InstanceOutputs)
+		{
+			bHasBaseColor |= (Output.Property == MP_BaseColor);
+			bHasRoughness |= (Output.Property == MP_Roughness);
+			bHasNormal |= (Output.Property == MP_Normal);
+		}
+		TestTrue(TEXT("BaseColor channel is bound."), bHasBaseColor);
+		TestTrue(TEXT("Roughness channel is bound."), bHasRoughness);
+		TestFalse(TEXT("Unwritten Normal channel is NOT bound."), bHasNormal);
+	}
+
+	// The generated .ush flattens Attrs.Field into __Attrs_Field locals and never touches the
+	// procedurally-generated FMaterialAttributes struct.
+	{
+		const FString FileName = FPaths::GetCleanFilename(Instance->GeneratedIncludeVirtualPath);
+		const FString DiskPath = UE::DreamShader::GetGeneratedShaderDirectory() / FileName;
+		FString IncludeContent;
+		if (TestTrue(TEXT("Generated instance .ush exists on disk."), FFileHelper::LoadFileToString(IncludeContent, *DiskPath)))
+		{
+			TestTrue(TEXT("Attrs.BaseColor flattened to __Attrs_BaseColor."), IncludeContent.Contains(TEXT("__Attrs_BaseColor")));
+			TestTrue(TEXT("Attrs.Roughness flattened to __Attrs_Roughness."), IncludeContent.Contains(TEXT("__Attrs_Roughness")));
+			TestFalse(TEXT("No raw Attrs.Field member access remains."), IncludeContent.Contains(TEXT("Attrs.BaseColor")));
+			TestFalse(TEXT("No dependency on the FMaterialAttributes struct."), IncludeContent.Contains(TEXT("FMaterialAttributes")));
+		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderGenerateInstanceBackendImportedFunctionTest,
+	"DreamShader.Compiler.Generate.InstanceBackendImportedFunction",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FDreamShaderGenerateInstanceBackendImportedFunctionTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	// An out-param imported function (ApplyAutomationTint: in,in,out) called out-param style from an
+	// Instance material. The generated functions-include emits it as a single-out RETURN-VALUE function,
+	// so the eval call site must be rewritten from `Fn(a, b, out)` to `out = Fn(a, b)` — otherwise the
+	// 3-arg out-param call would not match the 2-arg return-value definition (the live shader-compile bug).
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_AutoInstanceImport"));
+	const FString HeaderFileName = AssetName + TEXT("_Shared.dsh");
+	const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+	Artifacts.AddObjectPath(ObjectPath);
+	AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
+	AddExpectedAutomationCleanupWarnings(*this);
+
+	FString HeaderFilePath;
+	if (!WriteAutomationSourceFile(*this, HeaderFileName, MakeSharedHeaderSource(), HeaderFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(HeaderFilePath);
+
+	const FString Source = FString::Printf(TEXT(R"(import "%s";
+
+Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
+{
+    Properties = {
+        VectorParameter InColor = (0.5, 0.5, 0.5, 1.0);
+        VectorParameter InTint = (1.0, 0.8, 0.6, 1.0);
+    }
+
+    Settings = { Backend = "Instance"; ShadingModel = "Unlit"; }
+
+    Outputs = {
+        vec3 Color;
+        Base.EmissiveColor = Color;
+    }
+
+    Graph = {
+        ApplyAutomationTint(InColor.rgb, InTint.rgb, Color);
+    }
+}
+)"), *HeaderFileName, *AssetName);
+
+	FString SourceFilePath;
+	if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), Source, SourceFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(SourceFilePath);
+
+	FString Message;
+	const bool bGenerated = FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ true);
+	if (!TestTrue(FString::Printf(TEXT("Imported-function instance generation succeeds: %s"), *Message), bGenerated))
+	{
+		return false;
+	}
+
+	UDreamShaderMaterialInstance* Instance = FindObject<UDreamShaderMaterialInstance>(nullptr, *ObjectPath);
+	if (!TestNotNull(TEXT("Imported-function instance exists in memory."), Instance))
+	{
+		return false;
+	}
+
+	const FString FileName = FPaths::GetCleanFilename(Instance->GeneratedIncludeVirtualPath);
+	const FString DiskPath = UE::DreamShader::GetGeneratedShaderDirectory() / FileName;
+	FString IncludeContent;
+	if (TestTrue(TEXT("Generated instance .ush exists on disk."), FFileHelper::LoadFileToString(IncludeContent, *DiskPath)))
+	{
+		// The out-param call was reconciled into a return-value assignment against the DreamShaderFn_ symbol.
+		TestTrue(
+			TEXT("Out-param call rewritten to `Color = DreamShaderFn_ApplyAutomationTint(...)`."),
+			IncludeContent.Contains(TEXT("= DreamShaderFn_ApplyAutomationTint(")));
+		// The un-rewritten 3-arg out-param form (…, Color) must NOT survive.
+		TestFalse(
+			TEXT("No un-rewritten 3-arg out-param call remains."),
+			IncludeContent.Contains(TEXT(", Color)")));
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderGenerateInstanceBackendBaseOverridesTest,
+	"DreamShader.Compiler.Generate.InstanceBackendBaseOverrides",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FDreamShaderGenerateInstanceBackendBaseOverridesTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_AutoInstanceOverrides"));
+	const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+	Artifacts.AddObjectPath(ObjectPath);
+	AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
+	AddExpectedAutomationCleanupWarnings(*this);
+
+	const FString Source = FString::Printf(TEXT(R"(Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
+{
+    Settings = {
+        Backend = "Instance";
+        ShadingModel = "Unlit";
+        BlendMode = "Masked";
+        TwoSided = true;
+        OpacityMaskClipValue = 0.7;
+    }
+
+    Outputs = {
+        vec3 Color;
+        float Mask;
+        Base.EmissiveColor = Color;
+        Base.OpacityMask = Mask;
+    }
+
+    Graph = {
+        Color = vec3(1.0, 1.0, 1.0);
+        Mask = 1.0;
+    }
+}
+)"), *AssetName);
+
+	FString SourceFilePath;
+	if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), Source, SourceFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(SourceFilePath);
+
+	FString Message;
+	const bool bGenerated = FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ true);
+	if (!TestTrue(FString::Printf(TEXT("Base-override generation succeeds: %s"), *Message), bGenerated))
+	{
+		return false;
+	}
+
+	UDreamShaderMaterialInstance* Instance = FindObject<UDreamShaderMaterialInstance>(nullptr, *ObjectPath);
+	if (!TestNotNull(TEXT("Override instance exists in memory."), Instance))
+	{
+		return false;
+	}
+
+	// Reflected long-tail base overrides applied with their bOverride_ companions.
+	TestTrue(TEXT("TwoSided override enabled + set."), Instance->BasePropertyOverrides.bOverride_TwoSided && Instance->BasePropertyOverrides.TwoSided);
+	TestTrue(TEXT("OpacityMaskClipValue override enabled."), Instance->BasePropertyOverrides.bOverride_OpacityMaskClipValue);
+	TestEqual(TEXT("OpacityMaskClipValue value set."), Instance->BasePropertyOverrides.OpacityMaskClipValue, 0.7f);
+
+	// Root/child shader-map ownership: the generated instance is a ROOT — its immediate parent is the
+	// host UMaterial — so it unconditionally forces its own permutation (its shading logic lives in the
+	// injected .ush, which base-property comparison can't see). A child instance's parent is another
+	// instance (not a UMaterial), so it does NOT hit the root gate and delegates to the stock
+	// comparison-against-parent, which lets a no-new-override variant share the root's map.
+	TestTrue(TEXT("Root instance (parent = host material) forces its own permutation."), Instance->HasOverridenBaseProperties());
+
+	UDreamShaderMaterialInstance* Child = NewObject<UDreamShaderMaterialInstance>(GetTransientPackage());
+	Child->SetParentEditorOnly(Instance, /*RecacheShader*/ false);
+	TestNull(TEXT("Child instance's parent is another instance, so it bypasses the root ownership gate."),
+		Cast<UMaterial>(Child->Parent));
+
 	return true;
 }
 

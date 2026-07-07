@@ -3,6 +3,7 @@
 #include "DreamShaderCompileService.h"
 #include "DreamShaderModule.h"
 #include "DreamShaderParser.h"
+#include "DreamShaderSettings.h"
 #include "Compile/DreamShaderEditorCompileAdapter.h"
 #include "DependencyGraph/DreamShaderDependencyGraphService.h"
 #include "MaterialAssetGeneration/DreamShaderMaterialGeneratorPrivate.h"
@@ -543,7 +544,10 @@ namespace UE::DreamShader::Editor::Private
 		OutResult.AssetPath = ObjectPath;
 
 		UE::DreamShader::Compiler::FDreamShaderCompileService CompileService(UE::DreamShader::Editor::GetEditorCompileAdapter());
-		const UE::DreamShader::Compiler::FDreamShaderCompileResult CompileResult = CompileService.CompileMaterial(SourceFilePath, true);
+		// Honor in-memory material mode (read live): a preview compile must not silently persist assets.
+		const UDreamShaderSettings* Settings = GetDefault<UDreamShaderSettings>();
+		const bool bTransient = Settings && Settings->bInMemoryMaterialMode;
+		const UE::DreamShader::Compiler::FDreamShaderCompileResult CompileResult = CompileService.CompileMaterial(SourceFilePath, true, bTransient);
 		if (!CompileResult.bSucceeded)
 		{
 			OutResult.Message = CompileResult.Message;
@@ -553,7 +557,15 @@ namespace UE::DreamShader::Editor::Private
 		OutMaterial = LoadObject<UMaterial>(nullptr, *ObjectPath);
 		if (!OutMaterial)
 		{
-			OutResult.Message = FString::Printf(TEXT("Generated material '%s' could not be loaded."), *ObjectPath);
+			if (LoadObject<UMaterialInterface>(nullptr, *ObjectPath))
+			{
+				// Backend="Instance" produces a material instance; the preview pipeline is UMaterial-typed.
+				OutResult.Message = FString::Printf(TEXT("'%s' is an instance-backend material; the preview panel does not support Backend=\"Instance\" yet."), *ObjectPath);
+			}
+			else
+			{
+				OutResult.Message = FString::Printf(TEXT("Generated material '%s' could not be loaded."), *ObjectPath);
+			}
 			return false;
 		}
 

@@ -230,7 +230,18 @@ namespace UE::DreamShader::Editor::Private
 			|| Key == TEXT("rendertype")
 			|| Key == TEXT("shadingmodel")
 			|| Key == TEXT("materialdomain")
-			|| Key == TEXT("domain");
+			|| Key == TEXT("domain")
+			|| Key == TEXT("backend");
+	}
+
+	bool TryResolveBlendModeSetting(const FString& InValue, EBlendMode& OutBlendMode)
+	{
+		return TryResolveBlendMode(InValue, OutBlendMode);
+	}
+
+	bool TryResolveShadingModelSetting(const FString& InValue, EMaterialShadingModel& OutShadingModel)
+	{
+		return TryResolveShadingModel(InValue, OutShadingModel);
 	}
 
 	static const TMap<FString, FString>& GetMaterialSettingAliases()

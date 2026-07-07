@@ -1052,6 +1052,22 @@ namespace UE::DreamShader::Editor::Private
 		return true;
 	}
 
+	FString RewriteImportedFunctionCallsForInclude(const FTextShaderDefinition& Definition, const FString& Source)
+	{
+		if (Definition.Functions.IsEmpty())
+		{
+			return Source;
+		}
+
+		TMap<FString, const FTextShaderFunctionDefinition*> FunctionsBySpelling;
+		TMap<FString, FString> GeneratedNamesBySpelling;
+		for (const FTextShaderFunctionDefinition& Function : Definition.Functions)
+		{
+			AddFunctionLookupEntries(Function, FunctionsBySpelling, GeneratedNamesBySpelling);
+		}
+		return RewriteDreamShaderFunctionBodyCalls(Source, FunctionsBySpelling, GeneratedNamesBySpelling);
+	}
+
 	bool PrepareCustomNodeCode(
 		const FTextShaderDefinition& Definition,
 		const FString& SourceCode,
