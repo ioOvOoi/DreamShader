@@ -325,6 +325,7 @@ namespace UE::DreamShader::Editor::Private
 	void ApplySourceMetadata(UObject* Asset, const FString& SourceFilePath);
 	void ApplySourceMetadata(UObject* Asset, const FString& SourceFilePath, const FString& SourceHash);
 	bool SaveAssetPackage(UObject* Asset, FString& OutError);
+	bool SaveAssetPackages(const TArray<UObject*>& Assets, FString& OutError);
 	UClass* ResolveMaterialExpressionClass(const FString& ClassSpecifier);
 	FProperty* FindMaterialExpressionArgumentProperty(UClass* ExpressionClass, const FString& ArgumentName);
 	bool IsMaterialExpressionInputProperty(const FProperty* Property);

@@ -136,4 +136,31 @@ namespace UE::DreamShader::Editor::Private
 
 		return true;
 	}
+
+	bool SaveAssetPackages(const TArray<UObject*>& Assets, FString& OutError)
+	{
+		// One SavePackages call for a dependent asset PAIR (e.g. a ThinCustom base material and the
+		// instance parented to it): SavePackages saves exactly the packages passed in -- it does NOT
+		// gather referenced (parent) packages -- so both must be listed explicitly, and both must be
+		// dirty (bOnlyDirty=true).
+		TArray<UPackage*> PackagesToSave;
+		PackagesToSave.Reserve(Assets.Num());
+		for (UObject* Asset : Assets)
+		{
+			check(Asset);
+			PackagesToSave.AddUnique(Asset->GetOutermost());
+		}
+
+		if (!UEditorLoadingAndSavingUtils::SavePackages(PackagesToSave, true))
+		{
+			OutError = TEXT("Generated DreamShader asset packages could not be saved.");
+			for (UObject* Asset : Assets)
+			{
+				OutError += FString::Printf(TEXT(" '%s'"), *Asset->GetPathName());
+			}
+			return false;
+		}
+
+		return true;
+	}
 }

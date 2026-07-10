@@ -6,6 +6,7 @@
 #include "UObject/StrongObjectPtr.h"
 
 class UTextureRenderTarget2D;
+class UMaterialInterface;
 class FMaterialThumbnailScene;
 class FRHIGPUTextureReadback;
 
@@ -70,14 +71,23 @@ namespace UE::DreamShader::Editor::Private
 		// OrbitPitch (degrees) drive the preview camera the same way, via
 		// ThumbnailInfo->OrbitYaw/OrbitPitch -- the same fields the Material Editor's own
 		// drag-to-orbit preview viewport reads every frame (no caching to invalidate).
-		bool RenderFrame(UMaterial* Material, int32 Width, int32 Height, const FString& Mesh, float OrbitYaw, float OrbitPitch, TArray64<uint8>& OutPngData, FString& OutError);
+		// Takes a UMaterialInterface so a material INSTANCE (e.g. a ThinCustom
+		// UDreamShaderMaterialInstance, which renders through its own static-permutation shader map)
+		// can be previewed/pixel-compared too -- the thumbnail scene itself is interface-based.
+		bool RenderFrame(UMaterialInterface* Material, int32 Width, int32 Height, const FString& Mesh, float OrbitYaw, float OrbitPitch, TArray64<uint8>& OutPngData, FString& OutError);
+
+		// Raw-pixel variant of RenderFrame(): the same synchronous render + blocking readback, but
+		// hands back the BGRA8 pixels (alpha untouched) instead of PNG-encoding them. Exists for the
+		// render-parity automation tests, which compare two materials pixel-by-pixel and have no use
+		// for a lossless-compress/decompress round trip.
+		bool RenderFramePixels(UMaterialInterface* Material, int32 Width, int32 Height, const FString& Mesh, float OrbitYaw, float OrbitPitch, TArray<FColor>& OutColors, FString& OutError);
 
 		// Renders the current material state and enqueues a non-blocking async GPU->CPU readback
 		// (FRHIGPUTextureReadback), then returns immediately without waiting for either the render
 		// or the copy to finish. Fails (returns false) if a previous readback from this context is
 		// still in flight -- call TryConsumeReadyFrame() first. Bridges the same
 		// EnsureResources()/RenderCurrentFrame() setup as RenderFrame() above.
-		bool KickoffFrame(UMaterial* Material, int32 Width, int32 Height, const FString& Mesh, float OrbitYaw, float OrbitPitch, FString& OutError);
+		bool KickoffFrame(UMaterialInterface* Material, int32 Width, int32 Height, const FString& Mesh, float OrbitYaw, float OrbitPitch, FString& OutError);
 
 		// Non-blocking. Returns true and fills OutPngData once the frame kicked off by
 		// KickoffFrame() has actually finished on the GPU and been PNG-encoded (usually a frame or
@@ -95,7 +105,7 @@ namespace UE::DreamShader::Editor::Private
 		// of that submission (Canvas.Flush_GameThread()) is done -- it does NOT wait for the
 		// render thread/GPU to actually finish, so callers that need the pixels immediately
 		// (RenderFrame) must still flush + block afterwards themselves.
-		bool RenderCurrentFrame(UMaterial* Material, const FString& Mesh, float OrbitYaw, float OrbitPitch, FString& OutError);
+		bool RenderCurrentFrame(UMaterialInterface* Material, const FString& Mesh, float OrbitYaw, float OrbitPitch, FString& OutError);
 
 		TStrongObjectPtr<UTextureRenderTarget2D> RenderTarget;
 		TUniquePtr<FMaterialThumbnailScene> ThumbnailScene;

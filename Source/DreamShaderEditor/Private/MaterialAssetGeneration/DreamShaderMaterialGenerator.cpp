@@ -3890,32 +3890,95 @@ namespace UE::DreamShader::Editor
 		return true;
 	}
 
-	// Stage 0 seam for the ThinCustom convergence backend: the base UMaterial that carries the
-	// whole-surface Custom graph (the instance parents to it). Kept deliberately minimal -- Stage 1
-	// replaces this with the finalized hidden-base hosting (per-domain sharing vs per-material,
-	// content-browser visibility, and cook persistence). For now the base lives in the transient
-	// package so it never accidentally persists, which limits ThinCustom to in-memory generation --
-	// all the opt-in currently drives.
-	static bool EnsureThinCustomBaseMaterial(const FTextShaderDefinition& Definition, UMaterial*& OutBase, FString& OutError)
+	// The hidden base UMaterial that carries the ThinCustom whole-surface graph (the instance parents
+	// to it). Hosting splits on bTransient:
+	//
+	// - TRANSIENT (the editor's in-memory default): the base lives in the transient package. Objects
+	//   whose outermost is GetTransientPackage() are excluded from IsAsset() and every content-browser
+	//   / asset-registry enumeration, so the base is naturally hidden with no override needed (the
+	//   instance hides itself via its own IsAsset()). Nothing is ever saved.
+	//
+	// - PERSIST (the cook director path): the base must be a real saveable sibling asset -- a saved
+	//   instance package records its Parent as an import by package+object path, and an import into
+	//   the transient package cannot resolve on load or at cook (the instance would lose its parent).
+	//   The base is created next to the instance as MB_DreamThinBase_<AssetName>, registered with the
+	//   asset registry, ownership-guarded like every other generated asset, and saved together with
+	//   the instance in one SavePackages call.
+	static bool EnsureThinCustomBaseMaterial(const FTextShaderDefinition& Definition, const bool bTransient, UMaterial*& OutBase, FString& OutError)
 	{
-		// Definition.Name is a slash-delimited logical path; sanitize it into a flat object name.
-		// Slashes in an FName break FindObject reuse (they read as subobject-path separators), so an
-		// unsanitized name would leak a new transient base on every regeneration.
-		const FName BaseName(*FString::Printf(TEXT("MB_DreamThinBase_%s"), *UE::DreamShader::SanitizeIdentifier(Definition.Name)));
-		OutBase = FindObject<UMaterial>(GetTransientPackage(), *BaseName.ToString());
-		if (!OutBase)
+		if (bTransient)
 		{
-			// RF_Standalone is mandatory, not cosmetic: RecompileMaterial runs a full GC pass
-			// (BuildTextureStreamingData -> CollectGarbage), and in the editor GARBAGE_COLLECTION_KEEPFLAGS
-			// is RF_Standalone alone. Until the instance parents to this base, the base is only reachable
-			// through a local pointer, so without RF_Standalone the GC collects it mid-recompile.
-			OutBase = NewObject<UMaterial>(GetTransientPackage(), BaseName, RF_Public | RF_Standalone | RF_Transient);
+			// Definition.Name is a slash-delimited logical path; sanitize it into a flat object name.
+			// Slashes in an FName break FindObject reuse (they read as subobject-path separators), so an
+			// unsanitized name would leak a new transient base on every regeneration.
+			const FName BaseName(*FString::Printf(TEXT("MB_DreamThinBase_%s"), *UE::DreamShader::SanitizeIdentifier(Definition.Name)));
+			OutBase = FindObject<UMaterial>(GetTransientPackage(), *BaseName.ToString());
+			if (!OutBase)
+			{
+				// RF_Standalone is mandatory, not cosmetic: RecompileMaterial runs a full GC pass
+				// (BuildTextureStreamingData -> CollectGarbage), and in the editor GARBAGE_COLLECTION_KEEPFLAGS
+				// is RF_Standalone alone. Until the instance parents to this base, the base is only reachable
+				// through a local pointer, so without RF_Standalone the GC collects it mid-recompile.
+				OutBase = NewObject<UMaterial>(GetTransientPackage(), BaseName, RF_Public | RF_Standalone | RF_Transient);
+			}
+			if (!OutBase)
+			{
+				OutError = FString::Printf(TEXT("Failed to create ThinCustom base material for '%s'."), *Definition.Name);
+				return false;
+			}
+			return true;
 		}
-		if (!OutBase)
+
+		// Persist: derive the base's sibling package from the instance's own destination.
+		FString InstancePackageName;
+		FString InstanceObjectPath;
+		FString InstanceAssetName;
+		if (!Private::ResolveDreamShaderAssetDestination(Definition.Name, Definition.Root, InstancePackageName, InstanceObjectPath, InstanceAssetName, OutError))
 		{
-			OutError = FString::Printf(TEXT("Failed to create ThinCustom base material for '%s'."), *Definition.Name);
 			return false;
 		}
+
+		const FString BaseLeafName = FString::Printf(TEXT("MB_DreamThinBase_%s"), *InstanceAssetName);
+		const FString BasePackageName = FPackageName::GetLongPackagePath(InstancePackageName) / BaseLeafName;
+		const FString BaseObjectPath = FString::Printf(TEXT("%s.%s"), *BasePackageName, *BaseLeafName);
+
+		if (UObject* ExistingObject = LoadObject<UObject>(nullptr, *BaseObjectPath))
+		{
+			OutBase = Cast<UMaterial>(ExistingObject);
+			if (!OutBase)
+			{
+				OutError = FString::Printf(TEXT("Asset '%s' already exists and is not a Material."), *BaseObjectPath);
+				return false;
+			}
+
+			// Ownership guard (same policy as CreateOrReuseMaterial): never rebuild over a saved asset
+			// DreamShader did not generate. The graph itself is cleared and repopulated by the caller.
+			if (FPackageName::DoesPackageExist(BasePackageName) && !Private::HasDreamShaderSourceMetadata(ExistingObject))
+			{
+				OutError = FString::Printf(
+					TEXT("Asset '%s' already exists and was not generated by DreamShader. Rename your shader or move/delete the existing asset before regenerating."),
+					*BaseObjectPath);
+				return false;
+			}
+
+			return true;
+		}
+
+		UPackage* BasePackage = CreatePackage(*BasePackageName);
+		if (!BasePackage)
+		{
+			OutError = FString::Printf(TEXT("Failed to create package '%s'."), *BasePackageName);
+			return false;
+		}
+
+		OutBase = NewObject<UMaterial>(BasePackage, FName(*BaseLeafName), RF_Public | RF_Standalone);
+		if (!OutBase)
+		{
+			OutError = FString::Printf(TEXT("Failed to create ThinCustom base material '%s'."), *BaseObjectPath);
+			return false;
+		}
+
+		FAssetRegistryModule::AssetCreated(OutBase);
 		return true;
 	}
 
@@ -3942,14 +4005,6 @@ namespace UE::DreamShader::Editor
 		const bool bForce,
 		const bool bTransient)
 	{
-		UMaterial* BaseMaterial = nullptr;
-		FString BaseError;
-		if (!EnsureThinCustomBaseMaterial(Definition, BaseMaterial, BaseError) || !BaseMaterial)
-		{
-			OutMessage = FString::Printf(TEXT("%s: %s"), *SourceFilePath, *BaseError);
-			return false;
-		}
-
 		UDreamShaderMaterialInstance* Instance = nullptr;
 		FString InstanceError;
 		if (!Private::CreateOrReuseInstanceMaterial(Definition, Instance, InstanceError, bTransient) || !Instance)
@@ -3962,6 +4017,15 @@ namespace UE::DreamShader::Editor
 		{
 			OutMessage = FString::Printf(TEXT("Skipped %s from %s; source hash is unchanged."), *Instance->GetPathName(), *SourceFilePath);
 			return true;
+		}
+
+		// After the skip check on purpose: a hash-skip must not create (or ownership-check) a base.
+		UMaterial* BaseMaterial = nullptr;
+		FString BaseError;
+		if (!EnsureThinCustomBaseMaterial(Definition, bTransient, BaseMaterial, BaseError) || !BaseMaterial)
+		{
+			OutMessage = FString::Printf(TEXT("%s: %s"), *SourceFilePath, *BaseError);
+			return false;
 		}
 
 		// Defensive reset: CreateOrReuseInstanceMaterial may hand back an instance that previously used
@@ -3982,17 +4046,18 @@ namespace UE::DreamShader::Editor
 #endif
 		Instance->RebuildSynthesizedParameterData();
 
-		// Build the whole-surface Custom graph onto the base (transient: the base is never laid out or
-		// saved as a standalone asset; the instance is the addressable material). Scope a self-contained
-		// slow-task for the build so its progress frames account against their own budget -- the caller
-		// already entered one coarse frame for the whole thin-custom generation, so threading that same
-		// task through here would overflow it (SlowTask.cpp "Work overflow" ensure).
+		// Build the whole-surface Custom graph onto the base. bTransient is threaded through: the
+		// persist path lays out the base's graph (it becomes a real inspectable asset on disk), the
+		// transient path skips layout. Scope a self-contained slow-task for the build so its progress
+		// frames account against their own budget -- the caller already entered one coarse frame for
+		// the whole thin-custom generation, so threading that same task through here would overflow it
+		// (SlowTask.cpp "Work overflow" ensure).
 		{
 			FScopedSlowTask GraphBuildTask(11.0f, FText::FromString(FString::Printf(TEXT("Building material graph for '%s'..."), *Definition.Name)));
 			if (!PopulateMaterialGraphFromDefinition(
 					BaseMaterial, Definition, SourceFilePath, SourceText, NamedOutputs,
 					bUsesReturn, ReturnOutputType, bReturnIsSubstrateMaterial, bUsesFrontMaterial,
-					/*bTransient*/ true, GraphBuildTask, OutMessage))
+					bTransient, GraphBuildTask, OutMessage))
 			{
 				return false;
 			}
@@ -4017,9 +4082,16 @@ namespace UE::DreamShader::Editor
 		}
 		else
 		{
+			// The base is the instance's ownership anchor on disk: stamp it so regeneration recognizes
+			// it (ownership guard) and save BOTH packages in one call -- SavePackages does not gather
+			// the parent dependency, and a saved instance whose base package is missing loses its
+			// parent import on the next load / at cook.
+			Private::ApplySourceMetadata(BaseMaterial, SourceFilePath, SourceHash);
+			BaseMaterial->MarkPackageDirty();
 			Instance->MarkPackageDirty();
+
 			FString SaveError;
-			if (!Private::SaveAssetPackage(Instance, SaveError))
+			if (!Private::SaveAssetPackages({ BaseMaterial, Instance }, SaveError))
 			{
 				OutMessage = FString::Printf(TEXT("%s: %s"), *SourceFilePath, *SaveError);
 				return false;
