@@ -1295,13 +1295,17 @@ bool FDreamShaderThinCustomVsGraphParityTest::RunTest(const FString& Parameters)
 	AddExpectedAutomationCleanupWarnings(*this);
 
 	// One shared body per case, generated twice: only the Backend setting differs between the twins.
-	// Unlit + Opaque so lighting cannot mask a difference. FlatParams exercises by-name scalar/vector
-	// parameter binding; UvTexture adds UE.TexCoord + a texture-object parameter + SampleTexture2D so
-	// interpolator allocation and the texture-sampling path must also match (Stage 2).
+	// FlatParams exercises by-name scalar/vector parameter binding on an Unlit surface; UvTexture adds
+	// UE.TexCoord + a texture-object parameter + SampleTexture2D so interpolator allocation and the
+	// texture-sampling path must also match (Stage 2); LitAttributes routes the whole surface through
+	// Base.MaterialAttributes on a DefaultLit material so the lit pipeline and the
+	// MakeMaterialAttributes path must also match (Stage 5).
 	struct FParityCase
 	{
 		const TCHAR* CaseName;
 		const TCHAR* PropertiesBlock;
+		const TCHAR* SettingsBlock;
+		const TCHAR* OutputsBlock;
 		const TCHAR* GraphBlock;
 	};
 	const FParityCase ParityCases[] =
@@ -1309,12 +1313,23 @@ bool FDreamShaderThinCustomVsGraphParityTest::RunTest(const FString& Parameters)
 		{
 			TEXT("FlatParams"),
 			TEXT("        ScalarParameter Boost = 0.75;\n        VectorParameter Tint = float4(0.1, 0.9, 0.35, 1.0);"),
+			TEXT("        ShadingModel = \"Unlit\";\n        BlendMode = \"Opaque\";"),
+			TEXT("        vec3 Color;\n        Base.EmissiveColor = Color;"),
 			TEXT("        Color = Tint.rgb * Boost;")
 		},
 		{
 			TEXT("UvTexture"),
 			TEXT("        TextureObjectParameter BaseMap = \"/Engine/EngineResources/DefaultTexture\";\n        ScalarParameter Boost = 1.0;"),
+			TEXT("        ShadingModel = \"Unlit\";\n        BlendMode = \"Opaque\";"),
+			TEXT("        vec3 Color;\n        Base.EmissiveColor = Color;"),
 			TEXT("        float2 uv = UE.TexCoord(Index=0);\n        float4 texel = SampleTexture2D(BaseMap, uv);\n        Color = vec3(0.08 * (uv.x + texel.r), 0.55 + 0.35 * uv.y, 0.15) * Boost;")
+		},
+		{
+			TEXT("LitAttributes"),
+			TEXT("        VectorParameter Tint = float4(0.15, 0.8, 0.3, 1.0);\n        ScalarParameter Rough = 0.4;"),
+			TEXT("        ShadingModel = \"DefaultLit\";\n        BlendMode = \"Opaque\";"),
+			TEXT("        MaterialAttributes Attrs;\n        Base.MaterialAttributes = Attrs;"),
+			TEXT("        Attrs.BaseColor = Tint.rgb;\n        Attrs.Roughness = Rough;")
 		},
 	};
 
@@ -1328,20 +1343,18 @@ bool FDreamShaderThinCustomVsGraphParityTest::RunTest(const FString& Parameters)
 
     Settings = {
         Backend = "%s";
-        ShadingModel = "Unlit";
-        BlendMode = "Opaque";
+%s
     }
 
     Outputs = {
-        vec3 Color;
-        Base.EmissiveColor = Color;
+%s
     }
 
     Graph = {
 %s
     }
 }
-)"), *AssetName, Case.PropertiesBlock, Backend, Case.GraphBlock);
+)"), *AssetName, Case.PropertiesBlock, Backend, Case.SettingsBlock, Case.OutputsBlock, Case.GraphBlock);
 	};
 
 	const int32 RenderSize = 256;
@@ -1877,6 +1890,88 @@ bool FDreamShaderGenerateThinCustomSceneReadsTest::RunTest(const FString& Parame
 			CountMaterialExpressionsOfClassName(Base, TEXT("MaterialExpressionSceneColor")) >= 1);
 		TestTrue(TEXT("The base carries a real PixelDepth node."),
 			CountMaterialExpressionsOfClassName(Base, TEXT("MaterialExpressionPixelDepth")) >= 1);
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderGenerateThinCustomMaterialAttributesTest,
+	"DreamShader.Compiler.Generate.ThinCustomMaterialAttributes",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+// Stage 5: a whole-MaterialAttributes bind through ThinCustom. The shared Graph construction seeds a
+// real MakeMaterialAttributes node and flips bUseMaterialAttributes on the hidden base -- replacing
+// the Instance backend's per-channel flattening (the __Attrs_Field local rewrite) for this path.
+bool FDreamShaderGenerateThinCustomMaterialAttributesTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_AutoThinCustomMatAttrs"));
+	const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+	Artifacts.AddObjectPath(ObjectPath);
+	AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
+	AddExpectedAutomationCleanupWarnings(*this);
+
+	const FString Source = FString::Printf(TEXT(R"(Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
+{
+    Properties = {
+        VectorParameter Tint = float4(0.6, 0.8, 1.0, 1.0);
+        ScalarParameter Rough = 0.35;
+        ScalarParameter Metal = 0.0;
+    }
+
+    Settings = {
+        Backend = "ThinCustom";
+        ShadingModel = "DefaultLit";
+        BlendMode = "Opaque";
+    }
+
+    Outputs = {
+        MaterialAttributes Attrs;
+        Base.MaterialAttributes = Attrs;
+    }
+
+    Graph = {
+        Attrs.BaseColor = Tint.rgb;
+        Attrs.Roughness = Rough;
+        Attrs.Metallic = Metal;
+    }
+}
+)"), *AssetName);
+
+	FString SourceFilePath;
+	if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), Source, SourceFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(SourceFilePath);
+
+	FString Message;
+	const bool bGenerated = FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ true);
+	if (!TestTrue(FString::Printf(TEXT("ThinCustom MaterialAttributes generation succeeds: %s"), *Message), bGenerated))
+	{
+		return false;
+	}
+
+	UDreamShaderMaterialInstance* Instance = FindObject<UDreamShaderMaterialInstance>(nullptr, *ObjectPath);
+	if (!TestNotNull(TEXT("ThinCustom MaterialAttributes instance exists in memory."), Instance))
+	{
+		return false;
+	}
+
+	TestEqual(TEXT("Instance-backend model stays empty."), Instance->InstanceOutputs.Num(), 0);
+
+	UMaterial* Base = Cast<UMaterial>(Instance->Parent.Get());
+	if (TestNotNull(TEXT("Instance is parented to the hidden base."), Base))
+	{
+		TestTrue(TEXT("The base routes the surface through MaterialAttributes."), Base->bUseMaterialAttributes);
+		TestTrue(TEXT("The base carries a real MakeMaterialAttributes node."),
+			CountMaterialExpressionsOfClassName(Base, TEXT("MaterialExpressionMakeMaterialAttributes")) >= 1);
+		TestTrue(TEXT("The base carries the DefaultLit shading model."),
+			Base->GetShadingModels().HasShadingModel(MSM_DefaultLit));
 	}
 
 	return true;
