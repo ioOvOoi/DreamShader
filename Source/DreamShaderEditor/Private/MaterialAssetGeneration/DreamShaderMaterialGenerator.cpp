@@ -4183,6 +4183,56 @@ namespace UE::DreamShader::Editor
 				*SourceFilePath, *CapabilityError);
 		}
 
+		// Transactional guard: validate the parts of the definition that can fail without a material --
+		// property-name uniqueness and Graph-block syntax -- BEFORE the target is created or cleared.
+		// PopulateMaterialGraphFromDefinition clears the existing graph up front, so without this a
+		// syntax typo would blank a previously generated material; catching it here reports the error
+		// and leaves the last good graph intact. Failures that can only surface once nodes are being
+		// built (e.g. an output-type mismatch) still happen after the clear -- at cook those abort the
+		// cook (see the cook director hardening), and in the editor the next successful save heals them.
+		{
+			TSet<FString> PrevalidatePropertyNames;
+			for (const FTextShaderPropertyDefinition& Property : Definition.Properties)
+			{
+				bool bDuplicate = false;
+				for (const FString& ExistingName : PrevalidatePropertyNames)
+				{
+					if (ExistingName.Equals(Property.Name, ESearchCase::IgnoreCase))
+					{
+						bDuplicate = true;
+						break;
+					}
+				}
+				if (bDuplicate)
+				{
+					OutMessage = FString::Printf(
+						TEXT("%s: Property '%s' is declared more than once. Property names must be unique."),
+						*SourceFilePath, *Property.Name);
+					return false;
+				}
+				PrevalidatePropertyNames.Add(Property.Name);
+			}
+
+			if (!Definition.Code.IsEmpty())
+			{
+				TArray<Private::FCodeStatement> PrevalidateStatements;
+				FString PrevalidateError;
+				int32 PrevalidateErrorLine = 0;
+				int32 PrevalidateErrorColumn = 0;
+				if (!Private::ParseCodeStatements(Definition.Code, PrevalidateStatements, PrevalidateError, &PrevalidateErrorLine, &PrevalidateErrorColumn))
+				{
+					FString CodeSourceFilePath;
+					int32 CodeStartLine = 1;
+					int32 CodeStartColumn = 1;
+					ResolveCodeBlockLocation(SourceFilePath, SourceText, Definition.CodeStartIndex, CodeSourceFilePath, CodeStartLine, CodeStartColumn);
+					OutMessage = FormatCodeBlockError(
+						SourceFilePath, CodeSourceFilePath, CodeStartLine, CodeStartColumn,
+						PrevalidateError, PrevalidateErrorLine, PrevalidateErrorColumn);
+					return false;
+				}
+			}
+		}
+
 		UMaterial* Material = nullptr;
 		FString MaterialError;
 		MaterialSlowTask.EnterProgressFrame(1.0f, FText::FromString(FString::Printf(TEXT("Preparing material asset '%s'..."), *Definition.Name)));
