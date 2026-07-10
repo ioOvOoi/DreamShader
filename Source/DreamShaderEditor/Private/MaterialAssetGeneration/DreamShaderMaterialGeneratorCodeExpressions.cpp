@@ -1514,6 +1514,45 @@ namespace UE::DreamShader::Editor::Private
 			return false;
 		}
 
+		// SampleTexture2D(textureObject, uv) is the DSL's cross-backend texture-sampling surface: the
+		// Instance backend lowers it to the DS_ HLSL macro, and here in the node-graph evaluator it
+		// desugars to the generic node builtin -- exactly
+		// UE.Expression(Class="TextureSample", OutputType="float4", TextureObject=..., Coordinates=...).
+		// Reserved (checked before user properties/functions) to match the Instance lowering.
+		if (CalleeName.Equals(TEXT("SampleTexture2D"), ESearchCase::CaseSensitive))
+		{
+			if (Expression->Arguments.Num() != 2
+				|| Expression->Arguments[0].bIsNamed
+				|| Expression->Arguments[1].bIsNamed)
+			{
+				OutError = TEXT("SampleTexture2D expects exactly two positional arguments: (textureObject, uv).");
+				return false;
+			}
+
+			const auto MakeStringLiteral = [](const TCHAR* Text)
+			{
+				TSharedPtr<FCodeExpression> Literal = MakeShared<FCodeExpression>();
+				Literal->Kind = ECodeExpressionKind::StringLiteral;
+				Literal->Text = Text;
+				return Literal;
+			};
+			const auto MakeNamedArgument = [](const TCHAR* Name, const TSharedPtr<FCodeExpression>& ArgumentExpression)
+			{
+				FCodeCallArgument Argument;
+				Argument.Name = Name;
+				Argument.Expression = ArgumentExpression;
+				Argument.bIsNamed = true;
+				return Argument;
+			};
+
+			TArray<FCodeCallArgument> DesugaredArguments;
+			DesugaredArguments.Add(MakeNamedArgument(TEXT("Class"), MakeStringLiteral(TEXT("TextureSample"))));
+			DesugaredArguments.Add(MakeNamedArgument(TEXT("OutputType"), MakeStringLiteral(TEXT("float4"))));
+			DesugaredArguments.Add(MakeNamedArgument(TEXT("TextureObject"), Expression->Arguments[0].Expression));
+			DesugaredArguments.Add(MakeNamedArgument(TEXT("Coordinates"), Expression->Arguments[1].Expression));
+			return EvaluateUEBuiltinCall(TEXT("UE.Expression"), DesugaredArguments, OutValue, OutError);
+		}
+
 		if (const FTextShaderPropertyDefinition* Property = FindPropertyDefinition(CalleeName))
 		{
 			if (Property->ParameterNodeType.Equals(TEXT("StaticSwitchParameter"), ESearchCase::IgnoreCase))

@@ -1294,15 +1294,36 @@ bool FDreamShaderThinCustomVsGraphParityTest::RunTest(const FString& Parameters)
 	FScopedDreamShaderAutomationArtifacts Artifacts;
 	AddExpectedAutomationCleanupWarnings(*this);
 
-	// One shared body, twice: only the Backend setting differs. Unlit + Opaque so lighting cannot
-	// mask a difference; scalar/vector parameters so the by-name parameter binding is exercised.
-	const auto MakeParitySource = [](const FString& AssetName, const TCHAR* Backend)
+	// One shared body per case, generated twice: only the Backend setting differs between the twins.
+	// Unlit + Opaque so lighting cannot mask a difference. FlatParams exercises by-name scalar/vector
+	// parameter binding; UvTexture adds UE.TexCoord + a texture-object parameter + SampleTexture2D so
+	// interpolator allocation and the texture-sampling path must also match (Stage 2).
+	struct FParityCase
+	{
+		const TCHAR* CaseName;
+		const TCHAR* PropertiesBlock;
+		const TCHAR* GraphBlock;
+	};
+	const FParityCase ParityCases[] =
+	{
+		{
+			TEXT("FlatParams"),
+			TEXT("        ScalarParameter Boost = 0.75;\n        VectorParameter Tint = float4(0.1, 0.9, 0.35, 1.0);"),
+			TEXT("        Color = Tint.rgb * Boost;")
+		},
+		{
+			TEXT("UvTexture"),
+			TEXT("        TextureObjectParameter BaseMap = \"/Engine/EngineResources/DefaultTexture\";\n        ScalarParameter Boost = 1.0;"),
+			TEXT("        float2 uv = UE.TexCoord(Index=0);\n        float4 texel = SampleTexture2D(BaseMap, uv);\n        Color = vec3(0.08 * (uv.x + texel.r), 0.55 + 0.35 * uv.y, 0.15) * Boost;")
+		},
+	};
+
+	const auto MakeParitySource = [](const FString& AssetName, const TCHAR* Backend, const FParityCase& Case)
 	{
 		return FString::Printf(TEXT(R"(Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
 {
     Properties = {
-        ScalarParameter Boost = 0.75;
-        VectorParameter Tint = float4(0.1, 0.9, 0.35, 1.0);
+%s
     }
 
     Settings = {
@@ -1317,203 +1338,290 @@ bool FDreamShaderThinCustomVsGraphParityTest::RunTest(const FString& Parameters)
     }
 
     Graph = {
-        Color = Tint.rgb * Boost;
+%s
     }
 }
-)"), *AssetName, Backend);
+)"), *AssetName, Case.PropertiesBlock, Backend, Case.GraphBlock);
 	};
 
-	const FString GraphAssetName = MakeUniqueTestAssetName(TEXT("M_ParityGraph"));
-	const FString ThinAssetName = MakeUniqueTestAssetName(TEXT("M_ParityThin"));
-
-	UMaterialInterface* Twins[2] = { nullptr, nullptr };
-	const FString TwinAssetNames[2] = { GraphAssetName, ThinAssetName };
-	const TCHAR* TwinBackends[2] = { TEXT("Graph"), TEXT("ThinCustom") };
-	for (int32 TwinIndex = 0; TwinIndex < 2; ++TwinIndex)
-	{
-		const FString& AssetName = TwinAssetNames[TwinIndex];
-		const FString ObjectPath = MakeAutomationObjectPath(AssetName);
-		Artifacts.AddObjectPath(ObjectPath);
-		AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
-
-		FString SourceFilePath;
-		if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), MakeParitySource(AssetName, TwinBackends[TwinIndex]), SourceFilePath))
-		{
-			return false;
-		}
-		Artifacts.AddSourceFile(SourceFilePath);
-
-		FString Message;
-		if (!TestTrue(
-			FString::Printf(TEXT("%s twin generation succeeds: %s"), TwinBackends[TwinIndex], *Message),
-			FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ true)))
-		{
-			return false;
-		}
-
-		Twins[TwinIndex] = LoadObject<UMaterialInterface>(nullptr, *ObjectPath);
-		if (!TestNotNull(FString::Printf(TEXT("%s twin loads from '%s'."), TwinBackends[TwinIndex], *ObjectPath), Twins[TwinIndex]))
-		{
-			return false;
-		}
-	}
-
-	// The ThinCustom twin must actually be the thin instance chain -- otherwise the comparison would
-	// silently degrade into Graph-vs-Graph.
-	UDreamShaderMaterialInstance* ThinInstance = Cast<UDreamShaderMaterialInstance>(Twins[1]);
-	if (!TestNotNull(TEXT("ThinCustom twin is a UDreamShaderMaterialInstance."), ThinInstance))
-	{
-		return false;
-	}
-	TestEqual(TEXT("ThinCustom twin keeps the Instance-backend model empty."), ThinInstance->InstanceOutputs.Num(), 0);
-	TestNotNull(TEXT("ThinCustom twin is parented to its hidden base."), Cast<UMaterial>(ThinInstance->Parent.Get()));
-
-	// Both shader maps must be fully compiled before pixels mean anything.
-	const auto FinishTwinCompilation = [&Twins]()
-	{
-		TArray<UObject*> CompileObjects;
-		CompileObjects.Add(Twins[0]);
-		CompileObjects.Add(Twins[1]);
-		FAssetCompilingManager::Get().FinishCompilationForObjects(CompileObjects);
-		if (GShaderCompilingManager)
-		{
-			GShaderCompilingManager->FinishAllCompilation();
-		}
-		FlushRenderingCommands();
-	};
-	FinishTwinCompilation();
-
-	// Diagnostic: report each twin's game-thread shader-map state before rendering -- if a twin has
-	// no complete shader map here, the renderer falls back to the default material and the pixel
-	// comparison below compares the wrong thing.
-	for (int32 TwinIndex = 0; TwinIndex < 2; ++TwinIndex)
-	{
-		const FMaterialResource* Resource = Twins[TwinIndex]->GetMaterialResource(GMaxRHIFeatureLevel);
-		AddInfo(FString::Printf(
-			TEXT("%s twin pre-render state: resource=%s shaderMap=%s compilationFinished=%s"),
-			TwinBackends[TwinIndex],
-			Resource ? TEXT("yes") : TEXT("NO"),
-			(Resource && Resource->GetGameThreadShaderMap()) ? TEXT("yes") : TEXT("NO"),
-			(Resource && Resource->IsCompilationFinished()) ? TEXT("yes") : TEXT("NO")));
-	}
-
-	// Render both twins through the identical offscreen path. A throwaway warm-up render per twin
-	// first, so any scene-history state (exposure adaptation) settles identically for both measured
-	// frames instead of biasing whichever twin rendered first.
 	const int32 RenderSize = 256;
 	const TCHAR* RenderMesh = TEXT("sphere");
 	const float RenderYaw = -157.5f;
 	const float RenderPitch = -11.25f;
-
 	UE::DreamShader::Editor::Private::FDreamShaderPreviewRenderContext RenderContext;
-	TArray<FColor> TwinPixels[2];
-	for (int32 TwinIndex = 0; TwinIndex < 2; ++TwinIndex)
+
+	for (const FParityCase& Case : ParityCases)
 	{
-		FString RenderError;
-		TArray<FColor> WarmupPixels;
-		if (!TestTrue(
-			FString::Printf(TEXT("%s twin warm-up render succeeds: %s"), TwinBackends[TwinIndex], *RenderError),
-			RenderContext.RenderFramePixels(Twins[TwinIndex], RenderSize, RenderSize, RenderMesh, RenderYaw, RenderPitch, WarmupPixels, RenderError)))
+		UMaterialInterface* Twins[2] = { nullptr, nullptr };
+		const TCHAR* TwinBackends[2] = { TEXT("Graph"), TEXT("ThinCustom") };
+		const FString TwinAssetNames[2] =
+		{
+			MakeUniqueTestAssetName(*FString::Printf(TEXT("M_Parity%sGraph"), Case.CaseName)),
+			MakeUniqueTestAssetName(*FString::Printf(TEXT("M_Parity%sThin"), Case.CaseName)),
+		};
+
+		for (int32 TwinIndex = 0; TwinIndex < 2; ++TwinIndex)
+		{
+			const FString& AssetName = TwinAssetNames[TwinIndex];
+			const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+			Artifacts.AddObjectPath(ObjectPath);
+			AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
+
+			FString SourceFilePath;
+			if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), MakeParitySource(AssetName, TwinBackends[TwinIndex], Case), SourceFilePath))
+			{
+				return false;
+			}
+			Artifacts.AddSourceFile(SourceFilePath);
+
+			FString Message;
+			if (!TestTrue(
+				FString::Printf(TEXT("[%s] %s twin generation succeeds: %s"), Case.CaseName, TwinBackends[TwinIndex], *Message),
+				FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ true)))
+			{
+				return false;
+			}
+
+			Twins[TwinIndex] = LoadObject<UMaterialInterface>(nullptr, *ObjectPath);
+			if (!TestNotNull(FString::Printf(TEXT("[%s] %s twin loads from '%s'."), Case.CaseName, TwinBackends[TwinIndex], *ObjectPath), Twins[TwinIndex]))
+			{
+				return false;
+			}
+		}
+
+		// The ThinCustom twin must actually be the thin instance chain -- otherwise the comparison
+		// would silently degrade into Graph-vs-Graph.
+		UDreamShaderMaterialInstance* ThinInstance = Cast<UDreamShaderMaterialInstance>(Twins[1]);
+		if (!TestNotNull(FString::Printf(TEXT("[%s] ThinCustom twin is a UDreamShaderMaterialInstance."), Case.CaseName), ThinInstance))
+		{
+			return false;
+		}
+		TestEqual(FString::Printf(TEXT("[%s] ThinCustom twin keeps the Instance-backend model empty."), Case.CaseName), ThinInstance->InstanceOutputs.Num(), 0);
+		TestNotNull(FString::Printf(TEXT("[%s] ThinCustom twin is parented to its hidden base."), Case.CaseName), Cast<UMaterial>(ThinInstance->Parent.Get()));
+
+		// Both shader maps must be fully compiled before pixels mean anything.
+		const auto FinishTwinCompilation = [&Twins]()
+		{
+			TArray<UObject*> CompileObjects;
+			CompileObjects.Add(Twins[0]);
+			CompileObjects.Add(Twins[1]);
+			FAssetCompilingManager::Get().FinishCompilationForObjects(CompileObjects);
+			if (GShaderCompilingManager)
+			{
+				GShaderCompilingManager->FinishAllCompilation();
+			}
+			FlushRenderingCommands();
+		};
+		FinishTwinCompilation();
+
+		// Render both twins through the identical offscreen path. A throwaway warm-up render per twin
+		// first: material resources/shader maps are allocated lazily on first render, and the finish-
+		// compile after the warm-up drains whatever that first render queued, so the measured frame
+		// renders the real shader instead of the default-material fallback.
+		TArray<FColor> TwinPixels[2];
+		for (int32 TwinIndex = 0; TwinIndex < 2; ++TwinIndex)
+		{
+			FString RenderError;
+			TArray<FColor> WarmupPixels;
+			if (!TestTrue(
+				FString::Printf(TEXT("[%s] %s twin warm-up render succeeds: %s"), Case.CaseName, TwinBackends[TwinIndex], *RenderError),
+				RenderContext.RenderFramePixels(Twins[TwinIndex], RenderSize, RenderSize, RenderMesh, RenderYaw, RenderPitch, WarmupPixels, RenderError)))
+			{
+				return false;
+			}
+
+			FinishTwinCompilation();
+
+			if (!TestTrue(
+				FString::Printf(TEXT("[%s] %s twin render succeeds: %s"), Case.CaseName, TwinBackends[TwinIndex], *RenderError),
+				RenderContext.RenderFramePixels(Twins[TwinIndex], RenderSize, RenderSize, RenderMesh, RenderYaw, RenderPitch, TwinPixels[TwinIndex], RenderError)))
+			{
+				return false;
+			}
+		}
+
+		if (!TestEqual(FString::Printf(TEXT("[%s] Both twins produced the same pixel count."), Case.CaseName), TwinPixels[1].Num(), TwinPixels[0].Num()))
 		{
 			return false;
 		}
 
-		// The first actual render can be what lazily requests/submits the material's shader work;
-		// finish anything it queued so the measured frame renders the real shader, not the fallback.
-		FinishTwinCompilation();
-
-		if (!TestTrue(
-			FString::Printf(TEXT("%s twin render succeeds: %s"), TwinBackends[TwinIndex], *RenderError),
-			RenderContext.RenderFramePixels(Twins[TwinIndex], RenderSize, RenderSize, RenderMesh, RenderYaw, RenderPitch, TwinPixels[TwinIndex], RenderError)))
+		// Sanity before parity: the frame must actually contain our green-dominant emissive. This is
+		// what separates "both twins render the same broken default-material checkerboard" (would pass
+		// a naive diff) from "both twins render the intended shader".
 		{
-			return false;
+			int32 GreenDominantPixels = 0;
+			uint64 SumR = 0, SumG = 0, SumB = 0;
+			for (const FColor& Pixel : TwinPixels[0])
+			{
+				SumR += Pixel.R;
+				SumG += Pixel.G;
+				SumB += Pixel.B;
+				if (Pixel.G > Pixel.R + 30 && Pixel.G > Pixel.B + 30)
+				{
+					++GreenDominantPixels;
+				}
+			}
+			const int32 PixelCount = FMath::Max(TwinPixels[0].Num(), 1);
+			const FColor CenterPixel = TwinPixels[0][(RenderSize / 2) * RenderSize + (RenderSize / 2)];
+			AddInfo(FString::Printf(
+				TEXT("[%s] Graph twin frame stats: avg RGB=(%d,%d,%d), center=(%d,%d,%d), %d green-dominant pixels."),
+				Case.CaseName,
+				int32(SumR / PixelCount), int32(SumG / PixelCount), int32(SumB / PixelCount),
+				CenterPixel.R, CenterPixel.G, CenterPixel.B,
+				GreenDominantPixels));
+
+			const bool bShowsEmissive = GreenDominantPixels > (TwinPixels[0].Num() / 20);
+			if (!bShowsEmissive)
+			{
+				// Dump both frames for offline inspection before failing -- a bit-identical pair that
+				// does not show the material means BOTH chains rendered the same wrong thing.
+				for (int32 TwinIndex = 0; TwinIndex < 2; ++TwinIndex)
+				{
+					TArray<FColor> PngColors = TwinPixels[TwinIndex];
+					for (FColor& Color : PngColors)
+					{
+						Color.A = 255;
+					}
+					TArray64<uint8> PngData;
+					FImageUtils::PNGCompressImageArray(RenderSize, RenderSize, TArrayView64<const FColor>(PngColors.GetData(), PngColors.Num()), PngData);
+					const FString DumpPath = FPaths::ProjectSavedDir() / TEXT("DreamShaderTests") / FString::Printf(TEXT("Parity_%s_%s.png"), Case.CaseName, TwinBackends[TwinIndex]);
+					FFileHelper::SaveArrayToFile(TArrayView64<const uint8>(PngData.GetData(), PngData.Num()), *DumpPath);
+					AddInfo(FString::Printf(TEXT("Dumped %s twin frame to '%s'."), TwinBackends[TwinIndex], *DumpPath));
+				}
+			}
+			TestTrue(
+				FString::Printf(TEXT("[%s] Graph twin frame shows the green emissive sphere (%d green-dominant pixels)."), Case.CaseName, GreenDominantPixels),
+				bShowsEmissive);
+		}
+
+		// Pixel parity with a small tolerance: the two shader maps are equivalent but separately
+		// translated/compiled, so allow LSB-level float/rounding differences while failing on anything
+		// a human could see.
+		{
+			constexpr int32 ChannelTolerance = 2;
+			int32 OffendingPixels = 0;
+			int32 MaxChannelDifference = 0;
+			for (int32 PixelIndex = 0; PixelIndex < TwinPixels[0].Num(); ++PixelIndex)
+			{
+				const FColor& A = TwinPixels[0][PixelIndex];
+				const FColor& B = TwinPixels[1][PixelIndex];
+				const int32 PixelDifference = FMath::Max3(
+					FMath::Abs(int32(A.R) - int32(B.R)),
+					FMath::Abs(int32(A.G) - int32(B.G)),
+					FMath::Abs(int32(A.B) - int32(B.B)));
+				MaxChannelDifference = FMath::Max(MaxChannelDifference, PixelDifference);
+				if (PixelDifference > ChannelTolerance)
+				{
+					++OffendingPixels;
+				}
+			}
+
+			const int32 AllowedOffenders = TwinPixels[0].Num() / 1000; // 0.1%
+			TestTrue(
+				FString::Printf(
+					TEXT("[%s] ThinCustom renders identically to its Graph twin (%d of %d pixels beyond tolerance %d, max channel difference %d)."),
+					Case.CaseName, OffendingPixels, TwinPixels[0].Num(), ChannelTolerance, MaxChannelDifference),
+				OffendingPixels <= AllowedOffenders);
+			AddInfo(FString::Printf(
+				TEXT("[%s] ThinCustom-vs-Graph parity: %d/%d pixels beyond tolerance %d, max channel difference %d."),
+				Case.CaseName, OffendingPixels, TwinPixels[0].Num(), ChannelTolerance, MaxChannelDifference));
 		}
 	}
 
-	if (!TestEqual(TEXT("Both twins produced the same pixel count."), TwinPixels[1].Num(), TwinPixels[0].Num()))
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderGenerateThinCustomTextureTest,
+	"DreamShader.Compiler.Generate.ThinCustomTexture",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+// Stage 2: texture parameters and state-read builtins reach ThinCustom as REAL nodes through the
+// shared Graph construction -- no .ush lowering, no instance-side texture index space, no dummy
+// interpolator chunks. The engine enumerates the base's texture parameter natively, which is what
+// makes the MI editor and the cook's used-texture gather work with zero instance machinery.
+bool FDreamShaderGenerateThinCustomTextureTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_AutoThinCustomTexture"));
+	const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+	Artifacts.AddObjectPath(ObjectPath);
+	AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
+	AddExpectedAutomationCleanupWarnings(*this);
+
+	const FString Source = FString::Printf(TEXT(R"(Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
+{
+    Properties = {
+        TextureObjectParameter BaseMap = "/Engine/EngineResources/DefaultTexture";
+        ScalarParameter Intensity = 1.0;
+    }
+
+    Settings = {
+        Backend = "ThinCustom";
+        ShadingModel = "Unlit";
+    }
+
+    Outputs = {
+        vec3 Color;
+        Base.EmissiveColor = Color;
+    }
+
+    Graph = {
+        float2 uv = UE.TexCoord(Index=0);
+        float4 texel = SampleTexture2D(BaseMap, uv);
+        Color = texel.rgb * Intensity;
+    }
+}
+)"), *AssetName);
+
+	FString SourceFilePath;
+	if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), Source, SourceFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(SourceFilePath);
+
+	FString Message;
+	const bool bGenerated = FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ true);
+	if (!TestTrue(FString::Printf(TEXT("ThinCustom texture generation succeeds: %s"), *Message), bGenerated))
 	{
 		return false;
 	}
 
-	// Sanity before parity: the frame must actually contain our green-dominant emissive. This is what
-	// separates "both twins render the same broken default-material checkerboard" (would pass a naive
-	// diff) from "both twins render the intended shader".
+	UDreamShaderMaterialInstance* Instance = FindObject<UDreamShaderMaterialInstance>(nullptr, *ObjectPath);
+	if (!TestNotNull(TEXT("ThinCustom texture instance exists in memory."), Instance))
 	{
-		int32 GreenDominantPixels = 0;
-		uint64 SumR = 0, SumG = 0, SumB = 0;
-		for (const FColor& Pixel : TwinPixels[0])
-		{
-			SumR += Pixel.R;
-			SumG += Pixel.G;
-			SumB += Pixel.B;
-			if (Pixel.G > Pixel.R + 30 && Pixel.G > Pixel.B + 30)
-			{
-				++GreenDominantPixels;
-			}
-		}
-		const int32 PixelCount = FMath::Max(TwinPixels[0].Num(), 1);
-		const FColor CenterPixel = TwinPixels[0][(RenderSize / 2) * RenderSize + (RenderSize / 2)];
-		AddInfo(FString::Printf(
-			TEXT("Graph twin frame stats: avg RGB=(%d,%d,%d), center=(%d,%d,%d), %d green-dominant pixels."),
-			int32(SumR / PixelCount), int32(SumG / PixelCount), int32(SumB / PixelCount),
-			CenterPixel.R, CenterPixel.G, CenterPixel.B,
-			GreenDominantPixels));
-
-		const bool bShowsEmissive = GreenDominantPixels > (TwinPixels[0].Num() / 20);
-		if (!bShowsEmissive)
-		{
-			// Dump both frames for offline inspection before failing -- a bit-identical pair that does
-			// not show the material means BOTH chains rendered the same wrong thing.
-			for (int32 TwinIndex = 0; TwinIndex < 2; ++TwinIndex)
-			{
-				TArray<FColor> PngColors = TwinPixels[TwinIndex];
-				for (FColor& Color : PngColors)
-				{
-					Color.A = 255;
-				}
-				TArray64<uint8> PngData;
-				FImageUtils::PNGCompressImageArray(RenderSize, RenderSize, TArrayView64<const FColor>(PngColors.GetData(), PngColors.Num()), PngData);
-				const FString DumpPath = FPaths::ProjectSavedDir() / TEXT("DreamShaderTests") / FString::Printf(TEXT("Parity_%s.png"), TwinBackends[TwinIndex]);
-				FFileHelper::SaveArrayToFile(TArrayView64<const uint8>(PngData.GetData(), PngData.Num()), *DumpPath);
-				AddInfo(FString::Printf(TEXT("Dumped %s twin frame to '%s'."), TwinBackends[TwinIndex], *DumpPath));
-			}
-		}
-		TestTrue(
-			FString::Printf(TEXT("Graph twin frame shows the green emissive sphere (%d green-dominant pixels)."), GreenDominantPixels),
-			bShowsEmissive);
+		return false;
 	}
 
-	// Pixel parity with a small tolerance: the two shader maps are equivalent but separately
-	// translated/compiled, so allow LSB-level float/rounding differences while failing on anything a
-	// human could see.
-	{
-		constexpr int32 ChannelTolerance = 2;
-		int32 OffendingPixels = 0;
-		int32 MaxChannelDifference = 0;
-		for (int32 PixelIndex = 0; PixelIndex < TwinPixels[0].Num(); ++PixelIndex)
-		{
-			const FColor& A = TwinPixels[0][PixelIndex];
-			const FColor& B = TwinPixels[1][PixelIndex];
-			const int32 PixelDifference = FMath::Max3(
-				FMath::Abs(int32(A.R) - int32(B.R)),
-				FMath::Abs(int32(A.G) - int32(B.G)),
-				FMath::Abs(int32(A.B) - int32(B.B)));
-			MaxChannelDifference = FMath::Max(MaxChannelDifference, PixelDifference);
-			if (PixelDifference > ChannelTolerance)
-			{
-				++OffendingPixels;
-			}
-		}
+	// The Instance-backend model stays empty: no lowered .ush, no per-instance texture index space,
+	// no dummy TexCoord side-effect inputs.
+	TestEqual(TEXT("No Instance-backend parameters."), Instance->InstanceParameters.Num(), 0);
+	TestEqual(TEXT("No Instance-backend outputs."), Instance->InstanceOutputs.Num(), 0);
+	TestEqual(TEXT("No instance default-texture index space."), Instance->InstanceDefaultTextures.Num(), 0);
+	TestEqual(TEXT("No dummy interpolator chunks."), Instance->UsedTexCoordCount, 0);
 
-		const int32 AllowedOffenders = TwinPixels[0].Num() / 1000; // 0.1%
-		TestTrue(
-			FString::Printf(
-				TEXT("ThinCustom renders identically to its Graph twin (%d of %d pixels beyond tolerance %d, max channel difference %d)."),
-				OffendingPixels, TwinPixels[0].Num(), ChannelTolerance, MaxChannelDifference),
-			OffendingPixels <= AllowedOffenders);
-		AddInfo(FString::Printf(
-			TEXT("ThinCustom-vs-Graph parity: %d/%d pixels beyond tolerance %d, max channel difference %d."),
-			OffendingPixels, TwinPixels[0].Num(), ChannelTolerance, MaxChannelDifference));
+	// Native parameter enumeration through the base's real nodes -- the engine, not synthesized
+	// cached data, resolves these.
+	UTexture* BaseMapValue = nullptr;
+	TestTrue(TEXT("BaseMap texture parameter resolves natively through the chain."),
+		Instance->GetTextureParameterValue(FMaterialParameterInfo(TEXT("BaseMap")), BaseMapValue) && BaseMapValue != nullptr);
+	float IntensityValue = 0.0f;
+	TestTrue(TEXT("Intensity scalar parameter resolves natively through the chain."),
+		Instance->GetScalarParameterValue(FMaterialParameterInfo(TEXT("Intensity")), IntensityValue) && FMath::IsNearlyEqual(IntensityValue, 1.0f));
+
+	// The base carries the real nodes: a texture-object parameter and a real TexCoord node (the
+	// stock translator allocates the interpolator from the node -- no dummy-chunk ceiling).
+	UMaterial* Base = Cast<UMaterial>(Instance->Parent.Get());
+	if (TestNotNull(TEXT("Instance is parented to the hidden base."), Base))
+	{
+		TestTrue(TEXT("Base has a real texture-object-parameter node."),
+			CountMaterialExpressionsOfClassName(Base, TEXT("MaterialExpressionTextureObjectParameter")) >= 1);
+		TestTrue(TEXT("Base has a real TextureCoordinate node."),
+			CountMaterialExpressionsOfClassName(Base, TEXT("MaterialExpressionTextureCoordinate")) >= 1);
 	}
 
 	return true;
