@@ -1628,6 +1628,168 @@ bool FDreamShaderGenerateThinCustomTextureTest::RunTest(const FString& Parameter
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderGenerateThinCustomUITest,
+	"DreamShader.Compiler.Generate.ThinCustomUI",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+// Stage 3: the UI domain through ThinCustom. Unlike the Instance backend (which needs a dedicated
+// graphless per-domain host asset), the shared Graph construction sets MaterialDomain directly on
+// the per-material hidden base -- no host infrastructure at all.
+bool FDreamShaderGenerateThinCustomUITest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_AutoThinCustomUI"));
+	const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+	Artifacts.AddObjectPath(ObjectPath);
+	AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
+	AddExpectedAutomationCleanupWarnings(*this);
+
+	const FString Source = FString::Printf(TEXT(R"(Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
+{
+    Properties = {
+        VectorParameter BaseTint = float4(0.15, 0.55, 0.95, 1.0);
+        ScalarParameter Opacity = 1.0;
+    }
+
+    Settings = {
+        Backend = "ThinCustom";
+        Domain = "UI";
+    }
+
+    Outputs = {
+        vec3 Color;
+        float A;
+        Base.EmissiveColor = Color;
+        Base.Opacity = A;
+    }
+
+    Graph = {
+        float2 uv = UE.TexCoord(Index=0);
+        float grad = lerp(0.85, 1.0, uv.y);
+        Color = BaseTint.rgb * grad;
+        A = Opacity;
+    }
+}
+)"), *AssetName);
+
+	FString SourceFilePath;
+	if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), Source, SourceFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(SourceFilePath);
+
+	FString Message;
+	const bool bGenerated = FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ true);
+	if (!TestTrue(FString::Printf(TEXT("ThinCustom UI generation succeeds: %s"), *Message), bGenerated))
+	{
+		return false;
+	}
+
+	UDreamShaderMaterialInstance* Instance = FindObject<UDreamShaderMaterialInstance>(nullptr, *ObjectPath);
+	if (!TestNotNull(TEXT("ThinCustom UI instance exists in memory."), Instance))
+	{
+		return false;
+	}
+
+	TestEqual(TEXT("Instance-backend model stays empty."), Instance->InstanceOutputs.Num(), 0);
+	FLinearColor BaseTintValue = FLinearColor::Black;
+	TestTrue(TEXT("BaseTint vector parameter resolves natively through the chain."),
+		Instance->GetVectorParameterValue(FMaterialParameterInfo(TEXT("BaseTint")), BaseTintValue));
+
+	UMaterial* Base = Cast<UMaterial>(Instance->Parent.Get());
+	if (TestNotNull(TEXT("Instance is parented to the hidden base."), Base))
+	{
+		TestEqual(TEXT("The base carries the UI material domain."), Base->MaterialDomain, MD_UI);
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderGenerateThinCustomPostProcessTest,
+	"DreamShader.Compiler.Generate.ThinCustomPostProcess",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+// Stage 3: the PostProcess domain through ThinCustom. The scene read becomes a REAL
+// UMaterialExpressionSceneTexture node on the hidden base -- replacing the Instance backend's named
+// value-input machinery (FDreamShaderSceneRead / SceneTextureLookup chunks) for this path.
+bool FDreamShaderGenerateThinCustomPostProcessTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_AutoThinCustomPP"));
+	const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+	Artifacts.AddObjectPath(ObjectPath);
+	AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
+	AddExpectedAutomationCleanupWarnings(*this);
+
+	const FString Source = FString::Printf(TEXT(R"(Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
+{
+    Properties = {
+        ScalarParameter Saturation = 1.4;
+    }
+
+    Settings = {
+        Backend = "ThinCustom";
+        Domain = "PostProcess";
+    }
+
+    Outputs = {
+        vec3 Color;
+        Base.EmissiveColor = Color;
+    }
+
+    Graph = {
+        float3 scene = UE.SceneTexture(Id="PostProcessInput0").rgb;
+        float luma = dot(scene, float3(0.299, 0.587, 0.114));
+        Color = lerp(float3(luma, luma, luma), scene, Saturation);
+    }
+}
+)"), *AssetName);
+
+	FString SourceFilePath;
+	if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), Source, SourceFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(SourceFilePath);
+
+	FString Message;
+	const bool bGenerated = FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ true);
+	if (!TestTrue(FString::Printf(TEXT("ThinCustom PostProcess generation succeeds: %s"), *Message), bGenerated))
+	{
+		return false;
+	}
+
+	UDreamShaderMaterialInstance* Instance = FindObject<UDreamShaderMaterialInstance>(nullptr, *ObjectPath);
+	if (!TestNotNull(TEXT("ThinCustom PostProcess instance exists in memory."), Instance))
+	{
+		return false;
+	}
+
+	// No named value-input scene reads: the scene texture is a real node on the base, not a
+	// translator-injected chunk on the instance.
+	TestEqual(TEXT("Instance-backend model stays empty."), Instance->InstanceOutputs.Num(), 0);
+	TestEqual(TEXT("No named value-input scene reads on the instance."), Instance->SceneReads.Num(), 0);
+
+	UMaterial* Base = Cast<UMaterial>(Instance->Parent.Get());
+	if (TestNotNull(TEXT("Instance is parented to the hidden base."), Base))
+	{
+		TestEqual(TEXT("The base carries the PostProcess material domain."), Base->MaterialDomain, MD_PostProcess);
+		TestTrue(TEXT("The base carries a real SceneTexture node."),
+			CountMaterialExpressionsOfClassName(Base, TEXT("MaterialExpressionSceneTexture")) >= 1);
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FDreamShaderGenerateInstanceBackendVirtualTest,
 	"DreamShader.Compiler.Generate.InstanceBackendVirtual",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
