@@ -1790,6 +1790,99 @@ bool FDreamShaderGenerateThinCustomPostProcessTest::RunTest(const FString& Param
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderGenerateThinCustomSceneReadsTest,
+	"DreamShader.Compiler.Generate.ThinCustomSceneReads",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+// Stage 4: translucent scene reads through ThinCustom. UE.SceneDepth/UE.SceneColor/UE.PixelDepth
+// become REAL nodes on the hidden base -- replacing the Instance backend's named value-input
+// machinery (FDreamShaderSceneRead + SceneDepth/SceneColor compiler chunks) for this path. The
+// engine's own "only translucent materials can read scene color" validation stands in for the
+// Instance backend's hand-written pre-flight gate.
+bool FDreamShaderGenerateThinCustomSceneReadsTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_AutoThinCustomSceneReads"));
+	const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+	Artifacts.AddObjectPath(ObjectPath);
+	AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
+	AddExpectedAutomationCleanupWarnings(*this);
+
+	const FString Source = FString::Printf(TEXT(R"(Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
+{
+    Properties = {
+        ScalarParameter FadeDistance = 64.0;
+        VectorParameter TintColor = float4(0.3, 0.7, 1.0, 1.0);
+    }
+
+    Settings = {
+        Backend = "ThinCustom";
+        ShadingModel = "Unlit";
+        BlendMode = "Translucent";
+    }
+
+    Outputs = {
+        vec3 Color;
+        float Alpha;
+        Base.EmissiveColor = Color;
+        Base.Opacity = Alpha;
+    }
+
+    Graph = {
+        float sceneDepth = UE.SceneDepth();
+        float pixelDepth = UE.PixelDepth();
+        float fade = saturate((sceneDepth - pixelDepth) / FadeDistance);
+
+        float4 behind = UE.SceneColor();
+        Color = lerp(behind.rgb, TintColor.rgb, 0.35);
+        Alpha = fade;
+    }
+}
+)"), *AssetName);
+
+	FString SourceFilePath;
+	if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), Source, SourceFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(SourceFilePath);
+
+	FString Message;
+	const bool bGenerated = FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ true);
+	if (!TestTrue(FString::Printf(TEXT("ThinCustom scene-reads generation succeeds: %s"), *Message), bGenerated))
+	{
+		return false;
+	}
+
+	UDreamShaderMaterialInstance* Instance = FindObject<UDreamShaderMaterialInstance>(nullptr, *ObjectPath);
+	if (!TestNotNull(TEXT("ThinCustom scene-reads instance exists in memory."), Instance))
+	{
+		return false;
+	}
+
+	// The named value-input machinery stays entirely unused on this path.
+	TestEqual(TEXT("Instance-backend model stays empty."), Instance->InstanceOutputs.Num(), 0);
+	TestEqual(TEXT("No named value-input scene reads on the instance."), Instance->SceneReads.Num(), 0);
+
+	UMaterial* Base = Cast<UMaterial>(Instance->Parent.Get());
+	if (TestNotNull(TEXT("Instance is parented to the hidden base."), Base))
+	{
+		TestEqual(TEXT("The base carries the translucent blend mode."), Base->BlendMode, BLEND_Translucent);
+		TestTrue(TEXT("The base carries a real SceneDepth node."),
+			CountMaterialExpressionsOfClassName(Base, TEXT("MaterialExpressionSceneDepth")) >= 1);
+		TestTrue(TEXT("The base carries a real SceneColor node."),
+			CountMaterialExpressionsOfClassName(Base, TEXT("MaterialExpressionSceneColor")) >= 1);
+		TestTrue(TEXT("The base carries a real PixelDepth node."),
+			CountMaterialExpressionsOfClassName(Base, TEXT("MaterialExpressionPixelDepth")) >= 1);
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FDreamShaderGenerateInstanceBackendVirtualTest,
 	"DreamShader.Compiler.Generate.InstanceBackendVirtual",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

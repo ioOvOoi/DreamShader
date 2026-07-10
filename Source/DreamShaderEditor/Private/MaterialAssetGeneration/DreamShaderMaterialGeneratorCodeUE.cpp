@@ -500,6 +500,13 @@ namespace UE::DreamShader::Editor::Private
 			Builtins.Add({ TEXT("ScreenPosition"), ScreenPositionClass, 2, {} });
 		}
 		Builtins.Add({ TEXT("VertexColor"), UMaterialExpressionVertexColor::StaticClass(), 4, {} });
+		// Scene reads as REAL nodes (Stage 4 of the ThinCustom convergence): the same DSL surface the
+		// Instance backend lowers to named value-input chunks. No-arg = current pixel (no UV/offset
+		// input wired), matching the Instance chunks' INDEX_NONE compilation. The engine's own
+		// translucency validation replaces the Instance backend's hand-written pre-flight gate.
+		Builtins.Add({ TEXT("PixelDepth"), UMaterialExpressionPixelDepth::StaticClass(), 1, {} });
+		Builtins.Add({ TEXT("SceneDepth"), UMaterialExpressionSceneDepth::StaticClass(), 1, {} });
+		Builtins.Add({ TEXT("SceneColor"), UMaterialExpressionSceneColor::StaticClass(), 4, {} });
 
 		Builtins.Add({
 			TEXT("TransformVector"),
