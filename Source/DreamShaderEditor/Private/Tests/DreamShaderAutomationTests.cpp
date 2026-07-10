@@ -1167,6 +1167,86 @@ bool FDreamShaderGenerateInstanceBackendTest::RunTest(const FString& Parameters)
 }
 
 IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderGenerateThinCustomBackendTest,
+	"DreamShader.Compiler.Generate.ThinCustomBackend",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FDreamShaderGenerateThinCustomBackendTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_AutoThinCustom"));
+	const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+	Artifacts.AddObjectPath(ObjectPath);
+	AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
+	AddExpectedAutomationCleanupWarnings(*this);
+
+	const FString Source = FString::Printf(TEXT(R"(Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
+{
+    Properties = {
+        ScalarParameter Boost = 0.5;
+        VectorParameter Tint = float4(1.0, 0.5, 0.25, 1.0);
+    }
+
+    Settings = {
+        Backend = "ThinCustom";
+        ShadingModel = "Unlit";
+        BlendMode = "Opaque";
+    }
+
+    Outputs = {
+        vec3 Color;
+        Base.EmissiveColor = Color;
+    }
+
+    Graph = {
+        Color = Tint.rgb * Boost;
+    }
+}
+)"), *AssetName);
+
+	FString SourceFilePath;
+	if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), Source, SourceFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(SourceFilePath);
+
+	FString Message;
+	const bool bGenerated = FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, true);
+	if (!TestTrue(FString::Printf(TEXT("ThinCustom material generation succeeds: %s"), *Message), bGenerated))
+	{
+		return false;
+	}
+
+	UDreamShaderMaterialInstance* Instance = LoadObject<UDreamShaderMaterialInstance>(nullptr, *ObjectPath);
+	if (!TestNotNull(FString::Printf(TEXT("Generated ThinCustom instance loads from '%s'."), *ObjectPath), Instance))
+	{
+		return false;
+	}
+
+	// The instance is a THIN material instance of a real base UMaterial: its own Instance-backend
+	// model stays empty (no per-property Custom injection, no synthesized parameter data), so the
+	// engine compiles and enumerates the base's real graph natively. This is what distinguishes the
+	// convergence path from the Instance backend.
+	TestEqual(TEXT("ThinCustom leaves the Instance-backend outputs empty."), Instance->InstanceOutputs.Num(), 0);
+	TestEqual(TEXT("ThinCustom leaves the Instance-backend parameters empty."), Instance->InstanceParameters.Num(), 0);
+	TestTrue(TEXT("Instance forces a static permutation (root of its own shader map)."), Instance->HasOverridenBaseProperties());
+
+	UMaterial* Base = Cast<UMaterial>(Instance->Parent);
+	if (TestNotNull(TEXT("Instance is parented to a real base UMaterial."), Base))
+	{
+		TestTrue(TEXT("Parent is the ThinCustom hidden base."), Base->GetName().StartsWith(TEXT("MB_DreamThinBase_")));
+		TestTrue(TEXT("The base carries a real material graph (Multiply from the Graph block)."),
+			CountMaterialExpressionsOfClass<UMaterialExpressionMultiply>(Base) >= 1);
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
 	FDreamShaderGenerateInstanceBackendVirtualTest,
 	"DreamShader.Compiler.Generate.InstanceBackendVirtual",
 	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)

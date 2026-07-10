@@ -15,6 +15,13 @@ enum class EDreamShaderDefaultBackend : uint8
 	Graph,
 	/** Compile the shading logic into a generated .ush and emit a lightweight material instance (no node graph). */
 	Instance,
+	/**
+	 * Convergence path (experimental): build the whole surface as one Custom node on a hidden base
+	 * UMaterial and emit a lightweight material instance of it. Reuses the Graph construction, so it
+	 * has the full feature surface, while keeping the instance's in-memory hiding and shader-map
+	 * sharing. Opt-in via Settings = { Backend = "ThinCustom" } while it reaches Instance parity.
+	 */
+	ThinCustom,
 };
 
 UCLASS(Config=Engine, DefaultConfig, meta=(DisplayName="DreamShader"))
