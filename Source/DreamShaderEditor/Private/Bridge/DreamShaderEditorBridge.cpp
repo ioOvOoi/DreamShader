@@ -1572,20 +1572,46 @@ namespace UE::DreamShader::Editor::Private
 	void FDreamShaderEditorBridge::CleanGeneratedShaderDirectory()
 	{
 		const FString GeneratedShaderDirectory = UE::DreamShader::GetGeneratedShaderDirectory();
+
+		// Safety guard: the generated-shader directory is user-configurable
+		// (DreamShaderSettings.GeneratedShaderDirectory). A misconfiguration pointing it at the project
+		// root, Content, or an arbitrary absolute path must never cause a recursive delete, so refuse to
+		// operate anywhere outside the project's Intermediate tree.
+		const FString FullGeneratedDir = FPaths::ConvertRelativePathToFull(GeneratedShaderDirectory);
+		const FString FullIntermediateDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectIntermediateDir());
+		if (!FPaths::IsUnderDirectory(FullGeneratedDir, *FullIntermediateDir))
+		{
+			UE_LOG(
+				LogDreamShader,
+				Warning,
+				TEXT("DreamShader refused to clean generated shaders: '%s' is not inside the project Intermediate directory. "
+					 "Point DreamShaderSettings.GeneratedShaderDirectory back under Intermediate/ before cleaning."),
+				*GeneratedShaderDirectory);
+			return;
+		}
+
 		IFileManager& FileManager = IFileManager::Get();
 
+		// Delete only the shader files we generate (*.ush), one at a time -- never DeleteDirectory the
+		// whole tree. Even if the directory is (mis)shared with unrelated files, nothing but our own
+		// generated shaders is removed, and the directory itself is left in place.
 		TArray<FString> GeneratedShaderFiles;
 		FileManager.FindFilesRecursive(
 			GeneratedShaderFiles,
 			*GeneratedShaderDirectory,
-			TEXT("*"),
+			TEXT("*.ush"),
 			true,
 			false,
 			false);
 
-		const int32 DeletedFileCount = GeneratedShaderFiles.Num();
-		FileManager.DeleteDirectory(*GeneratedShaderDirectory, false, true);
-		FileManager.MakeDirectory(*GeneratedShaderDirectory, true);
+		int32 DeletedFileCount = 0;
+		for (const FString& GeneratedShaderFile : GeneratedShaderFiles)
+		{
+			if (FileManager.Delete(*GeneratedShaderFile, /*bRequireExists*/ false, /*bEvenIfReadOnly*/ true))
+			{
+				++DeletedFileCount;
+			}
+		}
 
 		UE_LOG(
 			LogDreamShader,
