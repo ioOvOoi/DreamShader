@@ -237,7 +237,6 @@ namespace UE::DreamShader::Editor::Private
 	// instance backend references (single-out function -> return value, so an out-param call
 	// `Fn(a, b)` becomes `b = Fn(a)`, and the DSL name resolves to the DreamShaderFn_* symbol). The
 	// graph backend gets the same reconciliation through PrepareCustomNodeCode / the Custom node path.
-	FString RewriteImportedFunctionCallsForInclude(const FTextShaderDefinition& Definition, const FString& Source);
 	bool IsTextureFunctionParameterType(const FString& InTypeName);
 	FString BuildGeneratedFunctionSymbolName(const FTextShaderFunctionDefinition& Function);
 	FString BuildGeneratedIncludeVirtualPath(const FString& SourceFilePath);

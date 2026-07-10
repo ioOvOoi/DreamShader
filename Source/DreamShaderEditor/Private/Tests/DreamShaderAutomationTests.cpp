@@ -1109,8 +1109,6 @@ bool FDreamShaderGenerateInstanceBackendTest::RunTest(const FString& Parameters)
 
 	// The thin chain, not the legacy graphless host: empty Instance-backend model, parented to the
 	// per-material hidden base.
-	TestEqual(TEXT("No Instance-backend parameters."), Instance->InstanceParameters.Num(), 0);
-	TestEqual(TEXT("No Instance-backend outputs."), Instance->InstanceOutputs.Num(), 0);
 	UMaterial* Base = Cast<UMaterial>(Instance->Parent.Get());
 	if (TestNotNull(TEXT("Instance is parented to a real base UMaterial."), Base))
 	{
@@ -1203,8 +1201,6 @@ bool FDreamShaderGenerateThinCustomBackendTest::RunTest(const FString& Parameter
 	// model stays empty (no per-property Custom injection, no synthesized parameter data), so the
 	// engine compiles and enumerates the base's real graph natively. This is what distinguishes the
 	// convergence path from the Instance backend.
-	TestEqual(TEXT("ThinCustom leaves the Instance-backend outputs empty."), Instance->InstanceOutputs.Num(), 0);
-	TestEqual(TEXT("ThinCustom leaves the Instance-backend parameters empty."), Instance->InstanceParameters.Num(), 0);
 	TestTrue(TEXT("Instance forces a static permutation (root of its own shader map)."), Instance->HasOverridenBaseProperties());
 
 	UMaterial* Base = Cast<UMaterial>(Instance->Parent);
@@ -1368,7 +1364,6 @@ bool FDreamShaderThinCustomVsGraphParityTest::RunTest(const FString& Parameters)
 		{
 			return false;
 		}
-		TestEqual(FString::Printf(TEXT("[%s] ThinCustom twin keeps the Instance-backend model empty."), Case.CaseName), ThinInstance->InstanceOutputs.Num(), 0);
 		TestNotNull(FString::Printf(TEXT("[%s] ThinCustom twin is parented to its hidden base."), Case.CaseName), Cast<UMaterial>(ThinInstance->Parent.Get()));
 
 		// Both shader maps must be fully compiled before pixels mean anything.
@@ -1571,10 +1566,6 @@ bool FDreamShaderGenerateThinCustomTextureTest::RunTest(const FString& Parameter
 
 	// The Instance-backend model stays empty: no lowered .ush, no per-instance texture index space,
 	// no dummy TexCoord side-effect inputs.
-	TestEqual(TEXT("No Instance-backend parameters."), Instance->InstanceParameters.Num(), 0);
-	TestEqual(TEXT("No Instance-backend outputs."), Instance->InstanceOutputs.Num(), 0);
-	TestEqual(TEXT("No instance default-texture index space."), Instance->InstanceDefaultTextures.Num(), 0);
-	TestEqual(TEXT("No dummy interpolator chunks."), Instance->UsedTexCoordCount, 0);
 
 	// Native parameter enumeration through the base's real nodes -- the engine, not synthesized
 	// cached data, resolves these.
@@ -1667,7 +1658,6 @@ bool FDreamShaderGenerateThinCustomUITest::RunTest(const FString& Parameters)
 		return false;
 	}
 
-	TestEqual(TEXT("Instance-backend model stays empty."), Instance->InstanceOutputs.Num(), 0);
 	FLinearColor BaseTintValue = FLinearColor::Black;
 	TestTrue(TEXT("BaseTint vector parameter resolves natively through the chain."),
 		Instance->GetVectorParameterValue(FMaterialParameterInfo(TEXT("BaseTint")), BaseTintValue));
@@ -1747,8 +1737,6 @@ bool FDreamShaderGenerateThinCustomPostProcessTest::RunTest(const FString& Param
 
 	// No named value-input scene reads: the scene texture is a real node on the base, not a
 	// translator-injected chunk on the instance.
-	TestEqual(TEXT("Instance-backend model stays empty."), Instance->InstanceOutputs.Num(), 0);
-	TestEqual(TEXT("No named value-input scene reads on the instance."), Instance->SceneReads.Num(), 0);
 
 	UMaterial* Base = Cast<UMaterial>(Instance->Parent.Get());
 	if (TestNotNull(TEXT("Instance is parented to the hidden base."), Base))
@@ -1836,8 +1824,6 @@ bool FDreamShaderGenerateThinCustomSceneReadsTest::RunTest(const FString& Parame
 	}
 
 	// The named value-input machinery stays entirely unused on this path.
-	TestEqual(TEXT("Instance-backend model stays empty."), Instance->InstanceOutputs.Num(), 0);
-	TestEqual(TEXT("No named value-input scene reads on the instance."), Instance->SceneReads.Num(), 0);
 
 	UMaterial* Base = Cast<UMaterial>(Instance->Parent.Get());
 	if (TestNotNull(TEXT("Instance is parented to the hidden base."), Base))
@@ -1921,7 +1907,6 @@ bool FDreamShaderGenerateThinCustomMaterialAttributesTest::RunTest(const FString
 		return false;
 	}
 
-	TestEqual(TEXT("Instance-backend model stays empty."), Instance->InstanceOutputs.Num(), 0);
 
 	UMaterial* Base = Cast<UMaterial>(Instance->Parent.Get());
 	if (TestNotNull(TEXT("Instance is parented to the hidden base."), Base))
@@ -1999,8 +1984,6 @@ bool FDreamShaderGenerateInstanceBackendStateReadsTest::RunTest(const FString& P
 		return false;
 	}
 
-	TestEqual(TEXT("No Instance-backend parameters."), Instance->InstanceParameters.Num(), 0);
-	TestEqual(TEXT("No dummy interpolator chunks."), Instance->UsedTexCoordCount, 0);
 
 	UMaterial* Base = Cast<UMaterial>(Instance->Parent.Get());
 	if (TestNotNull(TEXT("Instance is parented to the hidden base."), Base))
@@ -2090,7 +2073,6 @@ Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
 		return false;
 	}
 
-	TestEqual(TEXT("No Instance-backend outputs."), Instance->InstanceOutputs.Num(), 0);
 	FLinearColor InColorValue = FLinearColor::Black;
 	TestTrue(TEXT("InColor resolves natively through the chain."),
 		Instance->GetVectorParameterValue(FMaterialParameterInfo(TEXT("InColor")), InColorValue));

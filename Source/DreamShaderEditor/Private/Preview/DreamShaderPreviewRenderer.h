@@ -130,9 +130,11 @@ namespace UE::DreamShader::Editor::Private
 	public:
 		static FString GetPreviewDirectory();
 		static FString GetPreviewManifestPath();
-		static bool ResolvePreviewMaterial(const FDreamShaderPreviewRequest& Request, FDreamShaderPreviewResult& OutResult, UMaterial*& OutMaterial);
-		static bool RenderMaterialPreviewFrame(UMaterial* Material, int32 Width, int32 Height, const FString& Mesh, float OrbitYaw, float OrbitPitch, TArray64<uint8>& OutPngData, FString& OutError);
-		static bool SaveMaterialPreviewFrame(UMaterial* Material, const FString& SourceFilePath, int32 Width, int32 Height, const FString& Mesh, float OrbitYaw, float OrbitPitch, FString& OutImagePath, FString& OutError);
+		// Interface-typed: ThinCustom (the default backend) generates a thin material instance, and
+		// the render pipeline below is interface-based, so instances and materials preview alike.
+		static bool ResolvePreviewMaterial(const FDreamShaderPreviewRequest& Request, FDreamShaderPreviewResult& OutResult, UMaterialInterface*& OutMaterial);
+		static bool RenderMaterialPreviewFrame(UMaterialInterface* Material, int32 Width, int32 Height, const FString& Mesh, float OrbitYaw, float OrbitPitch, TArray64<uint8>& OutPngData, FString& OutError);
+		static bool SaveMaterialPreviewFrame(UMaterialInterface* Material, const FString& SourceFilePath, int32 Width, int32 Height, const FString& Mesh, float OrbitYaw, float OrbitPitch, FString& OutImagePath, FString& OutError);
 		static bool RenderMaterialPreview(const FDreamShaderPreviewRequest& Request, FDreamShaderPreviewResult& OutResult);
 		static void WritePreviewResult(const FDreamShaderPreviewResult& Result, const FString& Status, const FString& RequestId = FString());
 	};

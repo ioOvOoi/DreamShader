@@ -219,7 +219,7 @@ namespace UE::DreamShader::Editor::Private
 		PreviewRequest.OrbitPitch = static_cast<float>(OrbitPitch);
 
 		FDreamShaderPreviewResult PreviewResult;
-		UMaterial* Material = nullptr;
+		UMaterialInterface* Material = nullptr;
 		const bool bPreviewSucceeded = FDreamShaderPreviewRenderer::ResolvePreviewMaterial(PreviewRequest, PreviewResult, Material);
 		const FString Status = bPreviewSucceeded ? TEXT("ready") : TEXT("error");
 		TArray64<uint8> FirstFramePngData;
