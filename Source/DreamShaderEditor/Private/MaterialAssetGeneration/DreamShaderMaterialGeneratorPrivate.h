@@ -321,6 +321,7 @@ namespace UE::DreamShader::Editor::Private
 		FString& OutError);
 	FString BuildSourceHash(const FString& SourceText);
 	bool IsGeneratedAssetSourceCurrent(UObject* Asset, const FString& SourceFilePath, const FString& SourceHash);
+	bool HasDreamShaderSourceMetadata(UObject* Asset);
 	void ApplySourceMetadata(UObject* Asset, const FString& SourceFilePath);
 	void ApplySourceMetadata(UObject* Asset, const FString& SourceFilePath, const FString& SourceHash);
 	bool SaveAssetPackage(UObject* Asset, FString& OutError);

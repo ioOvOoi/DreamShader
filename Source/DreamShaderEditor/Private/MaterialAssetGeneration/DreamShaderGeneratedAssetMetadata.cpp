@@ -62,6 +62,13 @@ namespace UE::DreamShader::Editor::Private
 			&& ExistingSourceHash.Equals(SourceHash, ESearchCase::CaseSensitive);
 	}
 
+	bool HasDreamShaderSourceMetadata(UObject* Asset)
+	{
+		// DreamShader stamps DreamShader.SourceFile on every asset it generates; its presence is the
+		// ownership marker used to decide whether an existing asset is safe to regenerate over.
+		return !GetSourceMetadataValue(Asset, TEXT("DreamShader.SourceFile")).IsEmpty();
+	}
+
 	void ApplySourceMetadata(UObject* Asset, const FString& SourceFilePath)
 	{
 		ApplySourceMetadata(Asset, SourceFilePath, FString());
