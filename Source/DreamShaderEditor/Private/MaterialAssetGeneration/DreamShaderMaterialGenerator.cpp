@@ -2471,8 +2471,14 @@ namespace UE::DreamShader::Editor
 		enum class EResolvedBackend : uint8 { Graph, Instance, ThinCustom };
 
 		// Decide which backend materializes the file: an explicit Settings = { Backend = "..." } wins;
-		// otherwise the project's DefaultBackend applies (with automatic Graph fallback for files the
-		// instance/thin-custom backend can't express).
+		// otherwise the project's DefaultBackend applies.
+		//
+		// STAGE 6 FLIP: "Instance" -- both the explicit Backend setting and the project default -- is
+		// a deprecation-window ALIAS for ThinCustom. ThinCustom reaches full Instance parity (textures,
+		// UI/PostProcess domains, scene reads, MaterialAttributes, the state-read builtin wave) with
+		// bit-identical SM6 rendering, so existing Instance sources keep generating unchanged -- they
+		// just get the real-graph hidden base + thin instance instead of the graphless host + injected
+		// resource. The legacy Instance generator is no longer reachable and is deleted in Stage 7.
 		static bool ResolveRequestedBackend(const FTextShaderDefinition& Definition, EResolvedBackend& OutBackend, bool& bOutExplicit, FString& OutError)
 		{
 			OutBackend = EResolvedBackend::Graph;
@@ -2484,7 +2490,7 @@ namespace UE::DreamShader::Editor
 				{
 					switch (Settings->DefaultBackend)
 					{
-					case EDreamShaderDefaultBackend::Instance:   OutBackend = EResolvedBackend::Instance; break;
+					case EDreamShaderDefaultBackend::Instance:   OutBackend = EResolvedBackend::ThinCustom; break;
 					case EDreamShaderDefaultBackend::ThinCustom: OutBackend = EResolvedBackend::ThinCustom; break;
 					default:                                     OutBackend = EResolvedBackend::Graph; break;
 					}
@@ -2496,7 +2502,7 @@ namespace UE::DreamShader::Editor
 			const FString Trimmed = Value.TrimStartAndEnd().TrimQuotes();
 			if (Trimmed.Equals(TEXT("Instance"), ESearchCase::IgnoreCase))
 			{
-				OutBackend = EResolvedBackend::Instance;
+				OutBackend = EResolvedBackend::ThinCustom;
 				return true;
 			}
 			if (Trimmed.Equals(TEXT("ThinCustom"), ESearchCase::IgnoreCase))

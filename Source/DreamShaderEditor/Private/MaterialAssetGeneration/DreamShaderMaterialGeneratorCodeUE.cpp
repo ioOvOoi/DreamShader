@@ -508,6 +508,43 @@ namespace UE::DreamShader::Editor::Private
 		Builtins.Add({ TEXT("SceneDepth"), UMaterialExpressionSceneDepth::StaticClass(), 1, {} });
 		Builtins.Add({ TEXT("SceneColor"), UMaterialExpressionSceneColor::StaticClass(), 4, {} });
 
+		// The Instance backend's no-arg state-read wave (Stage 6 of the ThinCustom convergence): every
+		// name the .ush lowering accepted resolves to a real node with matching semantics, so Instance
+		// sources keep compiling unchanged through the alias. Semantics pinned against the DS_ macros
+		// in DreamShaderBuiltins.ush.
+		Builtins.Add({
+			// GetTranslatedWorldPosition(Parameters) == camera-relative world position; the node's
+			// default WPT_Default is ABSOLUTE world position, so the shader-offset enum must be forced.
+			TEXT("TranslatedWorldPosition"),
+			UMaterialExpressionWorldPosition::StaticClass(),
+			3,
+			[&](UMaterialExpression* RawExpression, FString&) -> bool
+			{
+				CastChecked<UMaterialExpressionWorldPosition>(RawExpression)->WorldPositionShaderOffset = WPT_CameraRelative;
+				return true;
+			}
+		});
+		if (UClass* ObjectPositionClass = GetDreamShaderObjectPositionExpressionClass())
+		{
+			// Alias of ObjectPositionWS (the Instance surface spells it without the WS suffix).
+			Builtins.Add({ TEXT("ObjectPosition"), ObjectPositionClass, 3, {} });
+		}
+		Builtins.Add({ TEXT("ObjectRadius"), UMaterialExpressionObjectRadius::StaticClass(), 1, {} });
+		Builtins.Add({ TEXT("ObjectBounds"), UMaterialExpressionObjectBounds::StaticClass(), 3, {} });
+		Builtins.Add({ TEXT("CameraVector"), UMaterialExpressionCameraVectorWS::StaticClass(), 3, {} });
+		Builtins.Add({ TEXT("CameraPosition"), UMaterialExpressionCameraPositionWS::StaticClass(), 3, {} });
+		Builtins.Add({ TEXT("ReflectionVector"), UMaterialExpressionReflectionVectorWS::StaticClass(), 3, {} });
+		Builtins.Add({ TEXT("PixelNormalWS"), UMaterialExpressionPixelNormalWS::StaticClass(), 3, {} });
+		Builtins.Add({ TEXT("TwoSidedSign"), UMaterialExpressionTwoSidedSign::StaticClass(), 1, {} });
+		Builtins.Add({ TEXT("PerInstanceRandom"), UMaterialExpressionPerInstanceRandom::StaticClass(), 1, {} });
+		Builtins.Add({ TEXT("PerInstanceFadeAmount"), UMaterialExpressionPerInstanceFadeAmount::StaticClass(), 1, {} });
+		if (UClass* ScreenPositionClass = GetDreamShaderScreenPositionExpressionClass())
+		{
+			// ViewportUV == the ScreenPosition node's output 0 ("ViewportUV", GetViewportUV in the
+			// translator); the engine has no dedicated ViewportUV expression class.
+			Builtins.Add({ TEXT("ViewportUV"), ScreenPositionClass, 2, {} });
+		}
+
 		Builtins.Add({
 			TEXT("TransformVector"),
 			UMaterialExpressionTransform::StaticClass(),

@@ -13,13 +13,16 @@ enum class EDreamShaderDefaultBackend : uint8
 {
 	/** Build a UMaterial node graph per material (full DSL feature surface). */
 	Graph,
-	/** Compile the shading logic into a generated .ush and emit a lightweight material instance (no node graph). */
+	/**
+	 * DEPRECATED alias for ThinCustom (kept for one deprecation window so existing configs and
+	 * Settings = { Backend = "Instance" } sources keep working). The legacy graphless-host instance
+	 * backend is retired; "Instance" now generates the ThinCustom chain.
+	 */
 	Instance,
 	/**
-	 * Convergence path (experimental): build the whole surface as one Custom node on a hidden base
-	 * UMaterial and emit a lightweight material instance of it. Reuses the Graph construction, so it
-	 * has the full feature surface, while keeping the instance's in-memory hiding and shader-map
-	 * sharing. Opt-in via Settings = { Backend = "ThinCustom" } while it reaches Instance parity.
+	 * Build the material graph on a hidden per-material base UMaterial and emit a lightweight
+	 * material instance of it. Full Graph feature surface (the construction is shared) plus the
+	 * instance's in-memory hiding and root shader-map ownership. The default.
 	 */
 	ThinCustom,
 };
@@ -70,8 +73,8 @@ public:
 	// materializes them as persistent assets during cooking — so there is no in-memory on/off toggle.
 	UPROPERTY(Config, EditAnywhere, Category="Compiler",
 		meta=(DisplayName="Default Compiler Backend",
-			ToolTip="How DreamShader materializes a source file that does not specify Settings = { Backend = \"...\" }. Instance compiles the shading logic into a generated .ush and emits a lightweight, memory-only material instance (no per-material node graph). Graph builds a full UMaterial node graph. Files that need graph-only features (Substrate, static switches, graph/virtual functions) automatically fall back to Graph."))
-	EDreamShaderDefaultBackend DefaultBackend = EDreamShaderDefaultBackend::Instance;
+			ToolTip="How DreamShader materializes a source file that does not specify Settings = { Backend = \"...\" }. ThinCustom (the default) builds the material graph on a hidden per-material base and emits a lightweight, memory-only material instance of it -- full feature surface, no visible per-material asset. Graph builds a visible UMaterial node graph. Instance is a deprecated alias for ThinCustom."))
+	EDreamShaderDefaultBackend DefaultBackend = EDreamShaderDefaultBackend::ThinCustom;
 
 	UPROPERTY(Config, EditAnywhere, Category="Compiler",
 		meta=(DisplayName="Show In-Memory Materials In Content Browser",
