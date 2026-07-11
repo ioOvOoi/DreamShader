@@ -28,6 +28,7 @@ namespace UE::DreamShader::Editor::Private
 		FString StatusDetail;     // tooltip detail (error/parse message, or object path)
 		EStatus Status = EStatus::NeverCompiled;
 		bool bIsFunction = false; // .dsf or .dsh
+		int32 DependentCount = 0; // for functions/headers: how many materials import this file
 	};
 
 	// Source-file-centric view of the DreamShader generation pipeline: every .dsm/.dsf/.dsh under the

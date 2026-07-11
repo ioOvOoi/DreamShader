@@ -29,6 +29,15 @@ namespace UE::DreamShader::Editor::Private
 	// unique MI_<parentLeaf>_<n> asset name.
 	void GetDefaultInstanceDestination(UMaterialInterface* Parent, FString& OutPackagePath, FString& OutAssetName);
 
+	// Persists a memory-only DreamShader material (and its hidden base) to disk by re-generating it from
+	// its source with the persistent backend, and returns the on-disk material. Already-persisted
+	// materials are returned unchanged. Returns null with OutError on failure.
+	UMaterialInterface* MaterializeDreamShaderMaterial(UMaterialInterface* Material, FString& OutError);
+
+	// True when Material is a memory-only (transient / PKG_NewlyCreated) instance that materialization
+	// would move to disk.
+	bool IsMemoryOnlyMaterial(UMaterialInterface* Material);
+
 	// Opens a modal dialog to configure and create a new instance of Parent.
 	void OpenCreateInstanceDialog(UMaterialInterface* Parent);
 }

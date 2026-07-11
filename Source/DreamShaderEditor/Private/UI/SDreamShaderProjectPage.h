@@ -20,6 +20,7 @@ namespace UE::DreamShader::Editor::Private
 
 	private:
 		FAssetData SelectedAsset;
+		TSharedPtr<class SDreamShaderMaterialDetails> DetailsPanel;
 
 		void OnAssetSelected(const FAssetData& AssetData);
 		FReply OnCreateInstanceClicked();

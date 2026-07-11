@@ -47,40 +47,43 @@ namespace UE::DreamShader::Editor::Private
 			}
 		}
 
-		// If Parent is a memory-only DreamShader instance, re-generate it as persistent assets and return
-		// the on-disk object; otherwise return Parent unchanged.
-		UMaterialInterface* ResolvePersistedParent(UMaterialInterface* Parent, FString& OutError)
+	}
+
+	bool IsMemoryOnlyMaterial(UMaterialInterface* Material)
+	{
+		UPackage* Package = Material ? Material->GetPackage() : nullptr;
+		return Package && Package->HasAnyPackageFlags(PKG_NewlyCreated);
+	}
+
+	UMaterialInterface* MaterializeDreamShaderMaterial(UMaterialInterface* Material, FString& OutError)
+	{
+		if (!IsMemoryOnlyMaterial(Material))
 		{
-			UPackage* Package = Parent ? Parent->GetPackage() : nullptr;
-			const bool bInMemory = Package && Package->HasAnyPackageFlags(PKG_NewlyCreated);
-			if (!bInMemory)
-			{
-				return Parent;
-			}
-
-			UDreamShaderMaterialInstance* DreamInstance = Cast<UDreamShaderMaterialInstance>(Parent);
-			if (!DreamInstance || DreamInstance->SourceFilePath.IsEmpty())
-			{
-				OutError = LOCTEXT("MaterializeNoSource", "This material is memory-only and has no DreamShader source file to materialize from. Save it first, then create an instance.").ToString();
-				return nullptr;
-			}
-
-			const FString ObjectPath = Parent->GetPathName();
-			FString Message;
-			if (!FMaterialGenerator::GenerateAssetsFromFile(DreamInstance->SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ false))
-			{
-				OutError = FString::Printf(TEXT("Failed to materialize the parent material to disk: %s"), *Message);
-				return nullptr;
-			}
-
-			UMaterialInterface* Persisted = LoadObject<UMaterialInterface>(nullptr, *ObjectPath);
-			if (!Persisted)
-			{
-				OutError = FString::Printf(TEXT("Materialized the parent but could not reload it at %s."), *ObjectPath);
-				return nullptr;
-			}
-			return Persisted;
+			return Material;
 		}
+
+		UDreamShaderMaterialInstance* DreamInstance = Cast<UDreamShaderMaterialInstance>(Material);
+		if (!DreamInstance || DreamInstance->SourceFilePath.IsEmpty())
+		{
+			OutError = LOCTEXT("MaterializeNoSource", "This material is memory-only and has no DreamShader source file to materialize from.").ToString();
+			return nullptr;
+		}
+
+		const FString ObjectPath = Material->GetPathName();
+		FString Message;
+		if (!FMaterialGenerator::GenerateAssetsFromFile(DreamInstance->SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ false))
+		{
+			OutError = FString::Printf(TEXT("Failed to materialize the material to disk: %s"), *Message);
+			return nullptr;
+		}
+
+		UMaterialInterface* Persisted = LoadObject<UMaterialInterface>(nullptr, *ObjectPath);
+		if (!Persisted)
+		{
+			OutError = FString::Printf(TEXT("Materialized the material but could not reload it at %s."), *ObjectPath);
+			return nullptr;
+		}
+		return Persisted;
 	}
 
 	void GetDefaultInstanceDestination(UMaterialInterface* Parent, FString& OutPackagePath, FString& OutAssetName)
@@ -124,7 +127,7 @@ namespace UE::DreamShader::Editor::Private
 			return Result;
 		}
 
-		UMaterialInterface* PersistedParent = ResolvePersistedParent(Parent, Result.Error);
+		UMaterialInterface* PersistedParent = MaterializeDreamShaderMaterial(Parent, Result.Error);
 		if (!PersistedParent)
 		{
 			return Result;
@@ -162,6 +165,19 @@ namespace UE::DreamShader::Editor::Private
 		FString SaveError;
 		if (!SaveAssetPackage(Instance, SaveError))
 		{
+			// Roll back the half-created asset. Left as-is it would be a dirty, AssetRegistry-registered,
+			// RF_Standalone object that survives GC: it would show up in the Content Browser, could be
+			// silently persisted by Save-All / editor exit, and -- because the collision guard above uses
+			// FindObject on the object path -- would block a retry with the same name. Renaming it into the
+			// transient package frees the target path and lets GC reclaim it.
+			FAssetRegistryModule::AssetDeleted(Instance);
+			Instance->ClearFlags(RF_Public | RF_Standalone);
+			Instance->Rename(nullptr, GetTransientPackage(), REN_DontCreateRedirectors | REN_NonTransactional | REN_DoNotDirty);
+			Instance->MarkAsGarbage();
+			if (Package)
+			{
+				Package->SetDirtyFlag(false);
+			}
 			Result.Error = SaveError;
 			return Result;
 		}
@@ -289,10 +305,17 @@ namespace UE::DreamShader::Editor::Private
 						SNew(SButton)
 						.ButtonStyle(&FAppStyle::Get().GetWidgetStyle<FButtonStyle>("PrimaryButton"))
 						.Text(LOCTEXT("Create", "Create"))
-						.OnClicked_Lambda([Parent, NameValue, PathValue, OpenAfterValue, CloseWindow]()
+						.OnClicked_Lambda([WeakParent = TWeakObjectPtr<UMaterialInterface>(Parent), NameValue, PathValue, OpenAfterValue, CloseWindow]()
 						{
+							UMaterialInterface* ParentPtr = WeakParent.Get();
+							if (!ParentPtr)
+							{
+								NotifyInstance(LOCTEXT("ParentGone", "The parent material is no longer available."), false);
+								CloseWindow();
+								return FReply::Handled();
+							}
 							const FCreateInstanceResult Outcome = CreateDreamShaderMaterialInstance(
-								Parent, *NameValue, *PathValue, *OpenAfterValue);
+								ParentPtr, *NameValue, *PathValue, *OpenAfterValue);
 							if (Outcome.bSucceeded)
 							{
 								NotifyInstance(

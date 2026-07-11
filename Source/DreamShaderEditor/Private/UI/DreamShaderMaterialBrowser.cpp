@@ -1,9 +1,14 @@
 #include "UI/DreamShaderMaterialBrowser.h"
 
+#include "UI/DreamShaderInstanceFactory.h"
 #include "UI/SDreamShaderGenPage.h"
 #include "UI/SDreamShaderProjectPage.h"
 
+#include "ContentBrowserMenuContexts.h"
+#include "DreamShaderMaterialInstance.h"
 #include "Framework/Docking/TabManager.h"
+#include "Materials/MaterialInstanceConstant.h"
+#include "Materials/MaterialInterface.h"
 #include "Styling/AppStyle.h"
 #include "ToolMenus.h"
 #include "Widgets/Docking/SDockTab.h"
@@ -34,6 +39,41 @@ namespace UE::DreamShader::Editor::Private
 					SNew(SDreamShaderMaterialBrowser)
 				];
 		}
+
+		// Content Browser right-click on a material instance -> "Create DreamShader instance".
+		void PopulateInstanceCreateMenu(FToolMenuSection& InSection)
+		{
+			const UContentBrowserAssetContextMenuContext* Context = UContentBrowserAssetContextMenuContext::FindContextWithAssets(InSection);
+			if (!Context || Context->SelectedAssets.Num() != 1)
+			{
+				return;
+			}
+			UMaterialInterface* Material = Cast<UMaterialInterface>(Context->SelectedAssets[0].GetAsset());
+			if (!Material)
+			{
+				return;
+			}
+			InSection.AddMenuEntry(
+				"DreamShader.CreateInstance",
+				LOCTEXT("CBCreateInstance", "Create DreamShader instance"),
+				LOCTEXT("CBCreateInstanceTip", "Create a material instance that shares this material's compiled shader map."),
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), "ClassIcon.MaterialInstanceConstant"),
+				FUIAction(FExecuteAction::CreateLambda([WeakMaterial = TWeakObjectPtr<UMaterialInterface>(Material)]()
+				{
+					if (UMaterialInterface* M = WeakMaterial.Get()) { OpenCreateInstanceDialog(M); }
+				})));
+		}
+
+		void ExtendInstanceContextMenu(UClass* AssetClass)
+		{
+			if (UToolMenu* Menu = UE::ContentBrowser::ExtendToolMenu_AssetContextMenu(AssetClass))
+			{
+				FToolMenuSection& Section = Menu->FindOrAddSection(TEXT("GetAssetActions"));
+				Section.AddDynamicEntry(
+					TEXT("DreamShader.InstanceCreateActions"),
+					FNewToolMenuSectionDelegate::CreateStatic(&PopulateInstanceCreateMenu));
+			}
+		}
 	}
 
 	void FDreamShaderMaterialBrowser::Register()
@@ -62,6 +102,11 @@ namespace UE::DreamShader::Editor::Private
 						FGlobalTabmanager::Get()->TryInvokeTab(FDreamShaderMaterialBrowser::TabId);
 					})));
 			}
+
+			// Menu inheritance does not auto-propagate to subclasses (the CB menu name is per exact class),
+			// so extend both the stock instance class and the DreamShader subclass.
+			ExtendInstanceContextMenu(UMaterialInstanceConstant::StaticClass());
+			ExtendInstanceContextMenu(UDreamShaderMaterialInstance::StaticClass());
 		}));
 	}
 

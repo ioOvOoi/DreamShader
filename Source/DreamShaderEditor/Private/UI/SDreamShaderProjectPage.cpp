@@ -1,6 +1,7 @@
 #include "UI/SDreamShaderProjectPage.h"
 
 #include "UI/DreamShaderInstanceFactory.h"
+#include "UI/SDreamShaderMaterialDetails.h"
 
 #include "AssetRegistry/AssetData.h"
 #include "ContentBrowserModule.h"
@@ -15,6 +16,7 @@
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SSplitter.h"
 #include "Widgets/SBoxPanel.h"
 #include "Widgets/Text/STextBlock.h"
 
@@ -101,7 +103,20 @@ namespace UE::DreamShader::Editor::Private
 			+ SVerticalBox::Slot()
 			.FillHeight(1.0f)
 			[
-				ContentBrowserModule.Get().CreateAssetPicker(PickerConfig)
+				SNew(SSplitter)
+				.Orientation(Orient_Horizontal)
+
+				+ SSplitter::Slot()
+				.Value(0.62f)
+				[
+					ContentBrowserModule.Get().CreateAssetPicker(PickerConfig)
+				]
+
+				+ SSplitter::Slot()
+				.Value(0.38f)
+				[
+					SAssignNew(DetailsPanel, SDreamShaderMaterialDetails)
+				]
 			]
 		];
 	}
@@ -109,6 +124,10 @@ namespace UE::DreamShader::Editor::Private
 	void SDreamShaderProjectPage::OnAssetSelected(const FAssetData& AssetData)
 	{
 		SelectedAsset = AssetData;
+		if (DetailsPanel.IsValid())
+		{
+			DetailsPanel->SetMaterial(Cast<UMaterialInterface>(AssetData.GetAsset()));
+		}
 	}
 
 	FReply SDreamShaderProjectPage::OnCreateInstanceClicked()

@@ -3,6 +3,7 @@
 #include "UI/DreamShaderGeneratedAssetPath.h"
 #include "UI/DreamShaderInstanceFactory.h"
 
+#include "DependencyGraph/DreamShaderDependencyGraphService.h"
 #include "Materials/MaterialInterface.h"
 
 #include "DreamShaderModule.h"
@@ -127,6 +128,10 @@ namespace UE::DreamShader::Editor::Private
 		FDreamShaderSourceFileUtils::FindProjectDreamShaderSourceFiles(SourceFiles);
 		SourceFiles.Sort();
 
+		// Which materials import each header/function file -- for the "used by N materials" column.
+		TMap<FString, TSet<FString>> DependentsByFile;
+		FDreamShaderDependencyGraphService::RebuildMaterialDependencyGraph(DependentsByFile);
+
 		for (const FString& SourceFile : SourceFiles)
 		{
 			TSharedPtr<FDreamShaderSourceItem> Item = MakeShared<FDreamShaderSourceItem>();
@@ -134,6 +139,13 @@ namespace UE::DreamShader::Editor::Private
 			Item->DisplayName = FPaths::GetCleanFilename(Item->SourceFilePath);
 			Item->bIsFunction = UE::DreamShader::IsDreamShaderFunctionFile(Item->SourceFilePath)
 				|| UE::DreamShader::IsDreamShaderHeaderFile(Item->SourceFilePath);
+			if (Item->bIsFunction)
+			{
+				if (const TSet<FString>* Dependents = DependentsByFile.Find(Item->SourceFilePath))
+				{
+					Item->DependentCount = Dependents->Num();
+				}
+			}
 			RefreshItemStatus(Item);
 			Items.Add(Item);
 		}
@@ -192,6 +204,9 @@ namespace UE::DreamShader::Editor::Private
 	TSharedRef<ITableRow> SDreamShaderGenPage::OnGenerateRow(TSharedPtr<FDreamShaderSourceItem> Item, const TSharedRef<STableViewBase>& OwnerTable)
 	{
 		const FStatusVisual Visual = GetStatusVisual(Item->Status);
+		const FText SubLabel = Item->bIsFunction
+			? FText::Format(LOCTEXT("FunctionUsedBy", "function · used by {0} material(s)"), FText::AsNumber(Item->DependentCount))
+			: Visual.Label;
 
 		return SNew(STableRow<TSharedPtr<FDreamShaderSourceItem>>, OwnerTable)
 			.Padding(FMargin(4.0f, 3.0f))
@@ -228,7 +243,7 @@ namespace UE::DreamShader::Editor::Private
 						SNew(STextBlock)
 						.ColorAndOpacity(FSlateColor::UseSubduedForeground())
 						.TextStyle(FAppStyle::Get(), "SmallText")
-						.Text(Visual.Label)
+						.Text(SubLabel)
 					]
 				]
 
