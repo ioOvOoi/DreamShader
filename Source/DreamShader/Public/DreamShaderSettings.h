@@ -96,6 +96,11 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category="Editor")
 	bool bOpenInNewWindow = true;
 
+	UPROPERTY(Config, EditAnywhere, Category="Editor",
+		meta=(DisplayName="Material Instance Subfolder",
+			ToolTip="Subfolder, relative to the parent material's folder, where the Material Content Browser creates new material instances. Leave empty to create them alongside the parent."))
+	FString InstanceSubfolder = TEXT("Instances");
+
 private:
 	static FString NormalizeShadingModelKey(const FString& InName);
 	static FString NormalizeBlendModeKey(const FString& InName);

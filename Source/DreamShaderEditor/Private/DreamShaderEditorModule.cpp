@@ -1,6 +1,7 @@
 #include "Bridge/DreamShaderEditorBridge.h"
 #include "MaterialAssetGeneration/DreamShaderMaterialGenerator.h"
 #include "SourceFiles/DreamShaderSourceFileUtils.h"
+#include "UI/DreamShaderMaterialBrowser.h"
 
 #include "CoreGlobals.h"
 #include "DreamShaderModule.h"
@@ -57,10 +58,14 @@ public:
 
 		Bridge = MakeShared<UE::DreamShader::Editor::Private::FDreamShaderEditorBridge, ESPMode::ThreadSafe>();
 		Bridge->Startup();
+
+		UE::DreamShader::Editor::Private::FDreamShaderMaterialBrowser::Register();
 	}
 
 	virtual void ShutdownModule() override
 	{
+		UE::DreamShader::Editor::Private::FDreamShaderMaterialBrowser::Unregister();
+
 		if (Bridge)
 		{
 			Bridge->Shutdown();

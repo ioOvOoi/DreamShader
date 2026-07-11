@@ -11,6 +11,7 @@ public class DreamShaderEditor : ModuleRules
 			{
 				"ApplicationCore",
 				"AssetRegistry",
+				"AssetTools",
 				"ContentBrowser",
 				"Core",
 				"CoreUObject",
@@ -18,6 +19,7 @@ public class DreamShaderEditor : ModuleRules
 				"DreamShader",
 				"DreamShaderCompiler",
 				"Engine",
+				"InputCore",
 				"Json",
 				"MaterialEditor",
 				"Projects",
@@ -28,8 +30,10 @@ public class DreamShaderEditor : ModuleRules
 				"SlateCore",
 				"SQLiteCore",
 				"ToolMenus",
+				"ToolWidgets",
 				"UnrealEd",
-				"WebSocketNetworking"
+				"WebSocketNetworking",
+				"WorkspaceMenuStructure"
 			});
 	}
 }
