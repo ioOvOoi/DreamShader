@@ -46,8 +46,13 @@ namespace UE::DreamShader::Editor::Private
 		void Construct(const FArguments& InArgs);
 
 	private:
-		TArray<TSharedPtr<FDreamShaderSourceItem>> Items;
+		TArray<TSharedPtr<FDreamShaderSourceItem>> Items;        // all sources
+		TArray<TSharedPtr<FDreamShaderSourceItem>> VisibleItems; // after search + filters
 		TSharedPtr<SListView<TSharedPtr<FDreamShaderSourceItem>>> ListView;
+
+		FString SearchText;
+		bool bErrorsOnly = false;
+		bool bHideFunctions = false;
 
 		// Left-hand preview of the selected source's generated material.
 		TSharedPtr<SBorder> PreviewContainer;
@@ -57,6 +62,9 @@ namespace UE::DreamShader::Editor::Private
 
 		void Refresh();
 		void RefreshItemStatus(const TSharedPtr<FDreamShaderSourceItem>& Item) const;
+		void ApplyDiagnosticsToItems();
+		void ApplyFilter();
+		void CompileAll();
 
 		TSharedRef<ITableRow> OnGenerateRow(TSharedPtr<FDreamShaderSourceItem> Item, const TSharedRef<STableViewBase>& OwnerTable);
 		void OnSelectionChanged(TSharedPtr<FDreamShaderSourceItem> Item, ESelectInfo::Type SelectInfo);

@@ -14,15 +14,22 @@
 #include "Workspace/DreamShaderWorkspaceService.h"
 
 #include "AssetThumbnail.h"
+#include "Dom/JsonObject.h"
 #include "Editor.h"
 #include "Framework/Notifications/NotificationManager.h"
+#include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
+#include "Misc/ScopedSlowTask.h"
+#include "Serialization/JsonReader.h"
+#include "Serialization/JsonSerializer.h"
 #include "Styling/AppStyle.h"
 #include "Styling/SlateTypes.h"
 #include "Subsystems/AssetEditorSubsystem.h"
 #include "UObject/UObjectGlobals.h"
 #include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SCheckBox.h"
+#include "Widgets/Input/SSearchBox.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SBox.h"
 #include "Widgets/Layout/SSplitter.h"
@@ -76,6 +83,77 @@ namespace UE::DreamShader::Editor::Private
 				return { FText::FromString(TEXT("▲")), FLinearColor(0.82f, 0.24f, 0.22f), LOCTEXT("StatusUnresolved", "unresolved") };
 			}
 		}
+
+		// Reads the bridge's diagnostics sink (written on every compile) into a source-path -> first-error
+		// message map, so the Gen list can show compile errors from the startup/auto compile without the
+		// user first clicking Compile. Decoupled from the (private) bridge -- just reads its JSON file.
+		void LoadDiagnosticsErrors(TMap<FString, FString>& OutErrorsByPath)
+		{
+			const FString DiagnosticsPath = FPaths::ProjectSavedDir() / TEXT("DreamShader/Bridge/diagnostics.json");
+			FString JsonText;
+			if (!FFileHelper::LoadFileToString(JsonText, *DiagnosticsPath))
+			{
+				return;
+			}
+
+			TSharedPtr<FJsonObject> Root;
+			const TSharedRef<TJsonReader<>> Reader = TJsonReaderFactory<>::Create(JsonText);
+			if (!FJsonSerializer::Deserialize(Reader, Root) || !Root.IsValid())
+			{
+				return;
+			}
+
+			const TArray<TSharedPtr<FJsonValue>>* Files = nullptr;
+			if (!Root->TryGetArrayField(TEXT("files"), Files))
+			{
+				return;
+			}
+
+			for (const TSharedPtr<FJsonValue>& FileValue : *Files)
+			{
+				const TSharedPtr<FJsonObject>* FileObject = nullptr;
+				if (!FileValue->TryGetObject(FileObject))
+				{
+					continue;
+				}
+
+				FString Path;
+				const TArray<TSharedPtr<FJsonValue>>* Diagnostics = nullptr;
+				if (!(*FileObject)->TryGetStringField(TEXT("path"), Path) || !(*FileObject)->TryGetArrayField(TEXT("diagnostics"), Diagnostics))
+				{
+					continue;
+				}
+
+				for (const TSharedPtr<FJsonValue>& DiagnosticValue : *Diagnostics)
+				{
+					const TSharedPtr<FJsonObject>* DiagnosticObject = nullptr;
+					if (!DiagnosticValue->TryGetObject(DiagnosticObject))
+					{
+						continue;
+					}
+
+					FString Severity;
+					(*DiagnosticObject)->TryGetStringField(TEXT("severity"), Severity);
+					if (!Severity.IsEmpty() && !Severity.Equals(TEXT("error"), ESearchCase::IgnoreCase))
+					{
+						continue;
+					}
+
+					FString Message;
+					(*DiagnosticObject)->TryGetStringField(TEXT("message"), Message);
+					double Line = 0.0;
+					double Column = 0.0;
+					(*DiagnosticObject)->TryGetNumberField(TEXT("line"), Line);
+					(*DiagnosticObject)->TryGetNumberField(TEXT("column"), Column);
+					const FString Full = Line > 0.0
+						? FString::Printf(TEXT("L%d:%d %s"), static_cast<int32>(Line), static_cast<int32>(Column), *Message)
+						: Message;
+
+					OutErrorsByPath.Add(UE::DreamShader::NormalizeSourceFilePath(Path), Full);
+					break; // first error per file is enough for the list
+				}
+			}
+		}
 	}
 
 	void SDreamShaderGenPage::Construct(const FArguments& InArgs)
@@ -107,6 +185,7 @@ namespace UE::DreamShader::Editor::Private
 					+ SHorizontalBox::Slot()
 					.AutoWidth()
 					.VAlign(VAlign_Center)
+					.Padding(0.0f, 0.0f, 4.0f, 0.0f)
 					[
 						SNew(SButton)
 						.Text(LOCTEXT("Refresh", "Refresh"))
@@ -115,7 +194,53 @@ namespace UE::DreamShader::Editor::Private
 					]
 
 					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					.Padding(0.0f, 0.0f, 8.0f, 0.0f)
+					[
+						SNew(SButton)
+						.Text(LOCTEXT("CompileAll", "Compile all"))
+						.ToolTipText(LOCTEXT("CompileAllTip", "Force-recompile every .dsm/.dsf source (in memory)."))
+						.OnClicked_Lambda([this]() { CompileAll(); return FReply::Handled(); })
+					]
+
+					+ SHorizontalBox::Slot()
 					.FillWidth(1.0f)
+					.VAlign(VAlign_Center)
+					[
+						SNew(SSearchBox)
+						.HintText(LOCTEXT("SearchHint", "Search sources"))
+						.OnTextChanged_Lambda([this](const FText& NewText) { SearchText = NewText.ToString(); ApplyFilter(); })
+					]
+
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					.Padding(8.0f, 0.0f, 0.0f, 0.0f)
+					[
+						SNew(SCheckBox)
+						.IsChecked_Lambda([this]() { return bErrorsOnly ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
+						.OnCheckStateChanged_Lambda([this](ECheckBoxState State) { bErrorsOnly = (State == ECheckBoxState::Checked); ApplyFilter(); })
+						[
+							SNew(STextBlock).Text(LOCTEXT("ErrorsOnly", "Errors only"))
+						]
+					]
+
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					.Padding(8.0f, 0.0f, 0.0f, 0.0f)
+					[
+						SNew(SCheckBox)
+						.IsChecked_Lambda([this]() { return bHideFunctions ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
+						.OnCheckStateChanged_Lambda([this](ECheckBoxState State) { bHideFunctions = (State == ECheckBoxState::Checked); ApplyFilter(); })
+						[
+							SNew(STextBlock).Text(LOCTEXT("HideFunctions", "Hide functions"))
+						]
+					]
+
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
 					.VAlign(VAlign_Center)
 					.Padding(10.0f, 0.0f, 0.0f, 0.0f)
 					[
@@ -123,7 +248,7 @@ namespace UE::DreamShader::Editor::Private
 						.ColorAndOpacity(FSlateColor::UseSubduedForeground())
 						.Text_Lambda([this]()
 						{
-							return FText::Format(LOCTEXT("SourceCount", "{0} source file(s)"), FText::AsNumber(Items.Num()));
+							return FText::Format(LOCTEXT("SourceCount", "{0} / {1}"), FText::AsNumber(VisibleItems.Num()), FText::AsNumber(Items.Num()));
 						})
 					]
 				]
@@ -139,7 +264,7 @@ namespace UE::DreamShader::Editor::Private
 				.Value(0.6f)
 				[
 					SAssignNew(ListView, SListView<TSharedPtr<FDreamShaderSourceItem>>)
-					.ListItemsSource(&Items)
+					.ListItemsSource(&VisibleItems)
 					.SelectionMode(ESelectionMode::Single)
 					.OnGenerateRow(this, &SDreamShaderGenPage::OnGenerateRow)
 					.OnSelectionChanged(this, &SDreamShaderGenPage::OnSelectionChanged)
@@ -190,10 +315,90 @@ namespace UE::DreamShader::Editor::Private
 
 		// The old selected item is no longer in the rebuilt list.
 		SelectedItem.Reset();
+		ApplyDiagnosticsToItems();
+		ApplyFilter();
+		RebuildPreview();
+	}
+
+	void SDreamShaderGenPage::ApplyDiagnosticsToItems()
+	{
+		TMap<FString, FString> ErrorsByPath;
+		LoadDiagnosticsErrors(ErrorsByPath);
+		if (ErrorsByPath.IsEmpty())
+		{
+			return;
+		}
+		for (const TSharedPtr<FDreamShaderSourceItem>& Item : Items)
+		{
+			if (const FString* Error = ErrorsByPath.Find(Item->SourceFilePath))
+			{
+				Item->Status = FDreamShaderSourceItem::EStatus::Error;
+				Item->StatusDetail = *Error;
+			}
+		}
+	}
+
+	void SDreamShaderGenPage::ApplyFilter()
+	{
+		VisibleItems.Reset();
+		for (const TSharedPtr<FDreamShaderSourceItem>& Item : Items)
+		{
+			if (bHideFunctions && Item->bIsFunction)
+			{
+				continue;
+			}
+			if (bErrorsOnly
+				&& Item->Status != FDreamShaderSourceItem::EStatus::Error
+				&& Item->Status != FDreamShaderSourceItem::EStatus::Unresolved)
+			{
+				continue;
+			}
+			if (!SearchText.IsEmpty() && !Item->DisplayName.Contains(SearchText, ESearchCase::IgnoreCase))
+			{
+				continue;
+			}
+			VisibleItems.Add(Item);
+		}
 		if (ListView.IsValid())
 		{
 			ListView->RequestListRefresh();
 		}
+	}
+
+	void SDreamShaderGenPage::CompileAll()
+	{
+		TArray<TSharedPtr<FDreamShaderSourceItem>> Targets = Items.FilterByPredicate(
+			[](const TSharedPtr<FDreamShaderSourceItem>& Item)
+			{
+				// Headers do not generate assets directly; skip them (their dependents recompile below).
+				return !UE::DreamShader::IsDreamShaderHeaderFile(Item->SourceFilePath);
+			});
+
+		FScopedSlowTask SlowTask(static_cast<float>(Targets.Num()), LOCTEXT("CompilingAll", "Compiling all DreamShader sources..."));
+		SlowTask.MakeDialog();
+
+		int32 FailureCount = 0;
+		for (const TSharedPtr<FDreamShaderSourceItem>& Item : Targets)
+		{
+			SlowTask.EnterProgressFrame(1.0f, FText::FromString(Item->DisplayName));
+			FString Message;
+			if (UE::DreamShader::Editor::FMaterialGenerator::GenerateAssetsFromFile(Item->SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ true))
+			{
+				RefreshItemStatus(Item);
+			}
+			else
+			{
+				Item->Status = FDreamShaderSourceItem::EStatus::Error;
+				Item->StatusDetail = Message;
+				++FailureCount;
+			}
+		}
+
+		NotifyGen(
+			FText::Format(LOCTEXT("CompiledAll", "Compiled {0} source(s), {1} failed"), FText::AsNumber(Targets.Num()), FText::AsNumber(FailureCount)),
+			FailureCount == 0);
+
+		ApplyFilter();
 		RebuildPreview();
 	}
 
