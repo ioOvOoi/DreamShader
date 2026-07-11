@@ -1234,14 +1234,12 @@ bool FDreamShaderGenerateThinCustomBackendTest::RunTest(const FString& Parameter
 	FScopedDreamShaderAutomationArtifacts Artifacts;
 	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_AutoThinCustom"));
 	const FString ObjectPath = MakeAutomationObjectPath(AssetName);
-	// Persist-mode generation (bTransient defaults false below) also materializes the hidden base as
-	// a real sibling asset; register it for cleanup and expected-probe suppression too.
-	const FString BaseAssetName = FString::Printf(TEXT("MB_DreamThinBase_%s"), *AssetName);
-	const FString BaseObjectPath = MakeAutomationObjectPath(BaseAssetName);
+	// Persist-mode generation (bTransient defaults false below) hides the base as a subobject INSIDE the
+	// instance's package -- there is no separate sibling asset. BaseSiblingObjectPath is the path such a
+	// sibling WOULD have had before convergence; the test asserts below that it never reaches disk.
+	const FString BaseSiblingObjectPath = MakeAutomationObjectPath(FString::Printf(TEXT("MB_DreamThinBase_%s"), *AssetName));
 	Artifacts.AddObjectPath(ObjectPath);
-	Artifacts.AddObjectPath(BaseObjectPath);
 	AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
-	AddExpectedNewAssetProbeWarnings(*this, BaseObjectPath);
 	AddExpectedAutomationCleanupWarnings(*this);
 
 	const FString Source = FString::Printf(TEXT(R"(Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
@@ -1301,14 +1299,18 @@ bool FDreamShaderGenerateThinCustomBackendTest::RunTest(const FString& Parameter
 		TestTrue(TEXT("The base carries a real material graph (Multiply from the Graph block)."),
 			CountMaterialExpressionsOfClass<UMaterialExpressionMultiply>(Base) >= 1);
 
-		// Persist mode: the saved instance records its Parent as a package import, so the base must
-		// be a real saveable sibling asset -- a transient-package parent cannot resolve on a future
-		// load or at cook (the instance would silently lose its parent).
-		TestNotEqual(TEXT("Persisted base does not live in the transient package."),
-			Base->GetOutermost(), GetTransientPackage());
-		TestEqual(TEXT("Base is the named sibling asset."), Base->GetPathName(), BaseObjectPath);
-		TestTrue(TEXT("Base package reached disk alongside the instance."),
-			FPackageName::DoesPackageExist(FPackageName::ObjectPathToPackageName(BaseObjectPath)));
+		// Convergence: the base is a hidden subobject of the instance -- it shares the instance's
+		// package (so it cooks and loads with it, with no cross-package parent import to lose), is not
+		// an independently browsable asset, and leaves NO separate MB_ sibling behind on disk.
+		TestEqual(TEXT("Base is a subobject of the instance."),
+			Base->GetOuter(), static_cast<UObject*>(Instance));
+		TestEqual(TEXT("Base shares the instance's package."),
+			Base->GetOutermost(), Instance->GetOutermost());
+		TestFalse(TEXT("Base is not an independently browsable asset."), Base->IsAsset());
+		TestTrue(TEXT("Instance package reached disk."),
+			FPackageName::DoesPackageExist(FPackageName::ObjectPathToPackageName(ObjectPath)));
+		TestFalse(TEXT("No separate base sibling asset was written to disk."),
+			FPackageName::DoesPackageExist(FPackageName::ObjectPathToPackageName(BaseSiblingObjectPath)));
 	}
 
 	return true;
