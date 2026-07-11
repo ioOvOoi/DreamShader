@@ -7,6 +7,7 @@
 
 #include "AssetRegistry/AssetRegistryModule.h"
 #include "AssetToolsModule.h"
+#include "Dialogs/DlgPickPath.h"
 #include "Editor.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Widgets/Notifications/SNotificationList.h"
@@ -209,6 +210,11 @@ namespace UE::DreamShader::Editor::Private
 		TSharedRef<FString> PathValue = MakeShared<FString>(DefaultPath);
 		TSharedRef<bool> OpenAfterValue = MakeShared<bool>(true);
 
+		// Built up front so the Browse handler can capture a valid (already-assigned) pointer.
+		TSharedRef<SEditableTextBox> PathBox = SNew(SEditableTextBox)
+			.Text(FText::FromString(*PathValue))
+			.OnTextChanged_Lambda([PathValue](const FText& NewText) { *PathValue = NewText.ToString(); });
+
 		TSharedRef<SWindow> Window = SNew(SWindow)
 			.Title(LOCTEXT("CreateInstanceTitle", "Create material instance"))
 			.ClientSize(FVector2D(480.0f, 240.0f))
@@ -261,9 +267,29 @@ namespace UE::DreamShader::Editor::Private
 					]
 					+ SGridPanel::Slot(1, 2).Padding(4.0f)
 					[
-						SNew(SEditableTextBox)
-						.Text(FText::FromString(*PathValue))
-						.OnTextChanged_Lambda([PathValue](const FText& NewText) { *PathValue = NewText.ToString(); })
+						SNew(SHorizontalBox)
+						+ SHorizontalBox::Slot().FillWidth(1.0f)
+						[
+							PathBox
+						]
+						+ SHorizontalBox::Slot().AutoWidth().Padding(4.0f, 0.0f, 0.0f, 0.0f)
+						[
+							SNew(SButton)
+							.Text(LOCTEXT("Browse", "Browse..."))
+							.ToolTipText(LOCTEXT("BrowseTip", "Pick the destination folder."))
+							.OnClicked_Lambda([PathValue, PathBox]()
+							{
+								TSharedRef<SDlgPickPath> PickPath = SNew(SDlgPickPath)
+									.Title(LOCTEXT("PickFolderTitle", "Choose a destination folder"))
+									.DefaultPath(FText::FromString(*PathValue));
+								if (PickPath->ShowModal() == EAppReturnType::Ok)
+								{
+									*PathValue = PickPath->GetPath().ToString();
+									PathBox->SetText(FText::FromString(*PathValue));
+								}
+								return FReply::Handled();
+							})
+						]
 					]
 
 					+ SGridPanel::Slot(1, 3).Padding(4.0f)

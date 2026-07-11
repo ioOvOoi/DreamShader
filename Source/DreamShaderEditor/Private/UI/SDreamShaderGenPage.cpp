@@ -134,14 +134,6 @@ namespace UE::DreamShader::Editor::Private
 				.Orientation(Orient_Horizontal)
 
 				+ SSplitter::Slot()
-				.Value(0.4f)
-				[
-					SAssignNew(PreviewContainer, SBorder)
-					.BorderImage(FAppStyle::Get().GetBrush("Brushes.Recessed"))
-					.Padding(FMargin(12.0f))
-				]
-
-				+ SSplitter::Slot()
 				.Value(0.6f)
 				[
 					SAssignNew(ListView, SListView<TSharedPtr<FDreamShaderSourceItem>>)
@@ -149,6 +141,14 @@ namespace UE::DreamShader::Editor::Private
 					.SelectionMode(ESelectionMode::Single)
 					.OnGenerateRow(this, &SDreamShaderGenPage::OnGenerateRow)
 					.OnSelectionChanged(this, &SDreamShaderGenPage::OnSelectionChanged)
+				]
+
+				+ SSplitter::Slot()
+				.Value(0.4f)
+				[
+					SAssignNew(PreviewContainer, SBorder)
+					.BorderImage(FAppStyle::Get().GetBrush("Brushes.Recessed"))
+					.Padding(FMargin(12.0f))
 				]
 			]
 		];
