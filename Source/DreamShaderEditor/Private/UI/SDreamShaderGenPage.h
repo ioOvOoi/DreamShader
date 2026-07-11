@@ -7,6 +7,9 @@
 template <typename ItemType> class SListView;
 class ITableRow;
 class STableViewBase;
+class SBorder;
+class FAssetThumbnail;
+class FAssetThumbnailPool;
 
 namespace UE::DreamShader::Editor::Private
 {
@@ -45,13 +48,23 @@ namespace UE::DreamShader::Editor::Private
 		TArray<TSharedPtr<FDreamShaderSourceItem>> Items;
 		TSharedPtr<SListView<TSharedPtr<FDreamShaderSourceItem>>> ListView;
 
+		// Left-hand preview of the selected source's generated material.
+		TSharedPtr<SBorder> PreviewContainer;
+		TSharedPtr<FAssetThumbnailPool> ThumbnailPool;
+		TSharedPtr<FAssetThumbnail> PreviewThumbnail;
+		TSharedPtr<FDreamShaderSourceItem> SelectedItem;
+
 		void Refresh();
 		void RefreshItemStatus(const TSharedPtr<FDreamShaderSourceItem>& Item) const;
 
 		TSharedRef<ITableRow> OnGenerateRow(TSharedPtr<FDreamShaderSourceItem> Item, const TSharedRef<STableViewBase>& OwnerTable);
+		void OnSelectionChanged(TSharedPtr<FDreamShaderSourceItem> Item, ESelectInfo::Type SelectInfo);
+		void RebuildPreview();
+		TSharedRef<SWidget> BuildPreview(TSharedPtr<FDreamShaderSourceItem> Item);
 
 		void CompileItem(TSharedPtr<FDreamShaderSourceItem> Item);
 		void OpenItemSource(TSharedPtr<FDreamShaderSourceItem> Item);
+		void OpenItemMaterial(TSharedPtr<FDreamShaderSourceItem> Item);
 		void CreateInstanceForItem(TSharedPtr<FDreamShaderSourceItem> Item);
 	};
 }

@@ -13,14 +13,23 @@
 #include "SourceFiles/DreamShaderSourceFileUtils.h"
 #include "Workspace/DreamShaderWorkspaceService.h"
 
+#include "AssetThumbnail.h"
+#include "Editor.h"
 #include "Framework/Notifications/NotificationManager.h"
 #include "Misc/Paths.h"
 #include "Styling/AppStyle.h"
+#include "Styling/SlateTypes.h"
+#include "Subsystems/AssetEditorSubsystem.h"
 #include "UObject/UObjectGlobals.h"
+#include "Widgets/Images/SImage.h"
 #include "Widgets/Input/SButton.h"
 #include "Widgets/Layout/SBorder.h"
+#include "Widgets/Layout/SBox.h"
+#include "Widgets/Layout/SSplitter.h"
+#include "Widgets/Layout/SWrapBox.h"
 #include "Widgets/Notifications/SNotificationList.h"
 #include "Widgets/SBoxPanel.h"
+#include "Widgets/SNullWidget.h"
 #include "Widgets/Text/STextBlock.h"
 #include "Widgets/Views/STableRow.h"
 
@@ -69,6 +78,17 @@ namespace UE::DreamShader::Editor::Private
 
 	void SDreamShaderGenPage::Construct(const FArguments& InArgs)
 	{
+		ThumbnailPool = MakeShared<FAssetThumbnailPool>(8);
+		RegisterActiveTimer(0.05f, FWidgetActiveTimerDelegate::CreateLambda(
+			[WeakPool = TWeakPtr<FAssetThumbnailPool>(ThumbnailPool)](double, float DeltaTime)
+			{
+				if (TSharedPtr<FAssetThumbnailPool> Pool = WeakPool.Pin())
+				{
+					Pool->Tick(DeltaTime);
+				}
+				return EActiveTimerReturnType::Continue;
+			}));
+
 		ChildSlot
 		[
 			SNew(SVerticalBox)
@@ -110,10 +130,26 @@ namespace UE::DreamShader::Editor::Private
 			+ SVerticalBox::Slot()
 			.FillHeight(1.0f)
 			[
-				SAssignNew(ListView, SListView<TSharedPtr<FDreamShaderSourceItem>>)
-				.ListItemsSource(&Items)
-				.SelectionMode(ESelectionMode::Single)
-				.OnGenerateRow(this, &SDreamShaderGenPage::OnGenerateRow)
+				SNew(SSplitter)
+				.Orientation(Orient_Horizontal)
+
+				+ SSplitter::Slot()
+				.Value(0.4f)
+				[
+					SAssignNew(PreviewContainer, SBorder)
+					.BorderImage(FAppStyle::Get().GetBrush("Brushes.Recessed"))
+					.Padding(FMargin(12.0f))
+				]
+
+				+ SSplitter::Slot()
+				.Value(0.6f)
+				[
+					SAssignNew(ListView, SListView<TSharedPtr<FDreamShaderSourceItem>>)
+					.ListItemsSource(&Items)
+					.SelectionMode(ESelectionMode::Single)
+					.OnGenerateRow(this, &SDreamShaderGenPage::OnGenerateRow)
+					.OnSelectionChanged(this, &SDreamShaderGenPage::OnSelectionChanged)
+				]
 			]
 		];
 
@@ -150,10 +186,13 @@ namespace UE::DreamShader::Editor::Private
 			Items.Add(Item);
 		}
 
+		// The old selected item is no longer in the rebuilt list.
+		SelectedItem.Reset();
 		if (ListView.IsValid())
 		{
 			ListView->RequestListRefresh();
 		}
+		RebuildPreview();
 	}
 
 	void SDreamShaderGenPage::RefreshItemStatus(const TSharedPtr<FDreamShaderSourceItem>& Item) const
@@ -201,6 +240,133 @@ namespace UE::DreamShader::Editor::Private
 		Item->StatusDetail = Item->ObjectPath;
 	}
 
+	void SDreamShaderGenPage::OnSelectionChanged(TSharedPtr<FDreamShaderSourceItem> Item, ESelectInfo::Type)
+	{
+		SelectedItem = Item;
+		RebuildPreview();
+	}
+
+	void SDreamShaderGenPage::RebuildPreview()
+	{
+		if (PreviewContainer.IsValid())
+		{
+			PreviewContainer->SetContent(BuildPreview(SelectedItem));
+		}
+	}
+
+	TSharedRef<SWidget> SDreamShaderGenPage::BuildPreview(TSharedPtr<FDreamShaderSourceItem> Item)
+	{
+		if (!Item.IsValid())
+		{
+			return SNew(SBox).HAlign(HAlign_Center).VAlign(VAlign_Center)
+			[
+				SNew(STextBlock)
+				.Text(LOCTEXT("PreviewNone", "Select a source file to preview its material."))
+				.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+			];
+		}
+
+		UMaterialInterface* Material = (!Item->bIsFunction && !Item->ObjectPath.IsEmpty())
+			? LoadObject<UMaterialInterface>(nullptr, *Item->ObjectPath)
+			: nullptr;
+
+		const FStatusVisual Visual = GetStatusVisual(Item->Status);
+
+		// Thumbnail, or a placeholder tile when there is no compiled material to render.
+		TSharedRef<SWidget> ThumbWidget = SNullWidget::NullWidget;
+		if (Material)
+		{
+			PreviewThumbnail = MakeShared<FAssetThumbnail>(Material, 160, 160, ThumbnailPool);
+			ThumbWidget = PreviewThumbnail->MakeThumbnailWidget();
+		}
+		else
+		{
+			PreviewThumbnail.Reset();
+			ThumbWidget = SNew(SBorder)
+				.BorderImage(FAppStyle::Get().GetBrush("Brushes.Header"))
+				.HAlign(HAlign_Center)
+				.VAlign(VAlign_Center)
+				[
+					SNew(STextBlock)
+					.Text(Item->bIsFunction ? LOCTEXT("PreviewFunction", "function library") : LOCTEXT("PreviewNoMaterial", "not compiled yet"))
+					.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+				];
+		}
+
+		const TSharedPtr<FDreamShaderSourceItem> ItemRef = Item;
+		const auto MakeActionButton = [this, ItemRef](const FText& Label, const FText& Tip, bool bEnabled, TFunction<void()> Action) -> TSharedRef<SWidget>
+		{
+			return SNew(SButton)
+				.Text(Label)
+				.ToolTipText(Tip)
+				.IsEnabled(bEnabled)
+				.OnClicked_Lambda([Action]() { Action(); return FReply::Handled(); });
+		};
+
+		return SNew(SVerticalBox)
+
+			+ SVerticalBox::Slot().AutoHeight().HAlign(HAlign_Center).Padding(0.0f, 0.0f, 0.0f, 10.0f)
+			[
+				SNew(SBox).WidthOverride(160.0f).HeightOverride(160.0f)[ ThumbWidget ]
+			]
+
+			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 2.0f)
+			[
+				SNew(STextBlock).Text(FText::FromString(Item->DisplayName)).TextStyle(FAppStyle::Get(), "LargeText").AutoWrapText(true)
+			]
+
+			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 8.0f)
+			[
+				SNew(SHorizontalBox)
+				+ SHorizontalBox::Slot().AutoWidth().Padding(0.0f, 0.0f, 6.0f, 0.0f)
+				[
+					SNew(STextBlock).Text(Visual.Glyph).ColorAndOpacity(FSlateColor(Visual.Color))
+				]
+				+ SHorizontalBox::Slot().AutoWidth().VAlign(VAlign_Center)
+				[
+					SNew(STextBlock).Text(Visual.Label).ColorAndOpacity(FSlateColor::UseSubduedForeground())
+				]
+			]
+
+			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 4.0f)
+			[
+				SNew(STextBlock).Text(FText::FromString(Item->SourceFilePath)).TextStyle(FAppStyle::Get(), "SmallText")
+				.ColorAndOpacity(FSlateColor::UseSubduedForeground()).AutoWrapText(true)
+			]
+
+			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 10.0f)
+			[
+				SNew(STextBlock)
+				.Visibility(Item->bIsFunction ? EVisibility::Visible : EVisibility::Collapsed)
+				.Text(FText::Format(LOCTEXT("PreviewUsedBy", "used by {0} material(s)"), FText::AsNumber(Item->DependentCount)))
+				.ColorAndOpacity(FSlateColor::UseSubduedForeground())
+			]
+
+			+ SVerticalBox::Slot().AutoHeight()
+			[
+				SNew(SWrapBox).UseAllottedSize(true).InnerSlotPadding(FVector2D(4.0f, 4.0f))
+				+ SWrapBox::Slot()[ MakeActionButton(LOCTEXT("PComp", "Compile"), LOCTEXT("PCompTip", "Force-recompile this source (in memory)."), true, [this, ItemRef]() { CompileItem(ItemRef); }) ]
+				+ SWrapBox::Slot()[ MakeActionButton(LOCTEXT("PInst", "Create instance"), LOCTEXT("PInstTip", "Create a material instance of this material."), !ItemRef->bIsFunction, [this, ItemRef]() { CreateInstanceForItem(ItemRef); }) ]
+				+ SWrapBox::Slot()[ MakeActionButton(LOCTEXT("POpenMat", "Open material"), LOCTEXT("POpenMatTip", "Open the generated material asset."), Material != nullptr, [this, ItemRef]() { OpenItemMaterial(ItemRef); }) ]
+				+ SWrapBox::Slot()[ MakeActionButton(LOCTEXT("POpenSrc", "Open source"), LOCTEXT("POpenSrcTip", "Open the .dsm/.dsf in your preferred editor."), true, [this, ItemRef]() { OpenItemSource(ItemRef); }) ]
+			];
+	}
+
+	void SDreamShaderGenPage::OpenItemMaterial(TSharedPtr<FDreamShaderSourceItem> Item)
+	{
+		if (!Item.IsValid() || Item->ObjectPath.IsEmpty())
+		{
+			return;
+		}
+		if (UMaterialInterface* Material = LoadObject<UMaterialInterface>(nullptr, *Item->ObjectPath))
+		{
+			if (GEditor)
+			{
+				GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(Material);
+			}
+		}
+	}
+
 	TSharedRef<ITableRow> SDreamShaderGenPage::OnGenerateRow(TSharedPtr<FDreamShaderSourceItem> Item, const TSharedRef<STableViewBase>& OwnerTable)
 	{
 		const FStatusVisual Visual = GetStatusVisual(Item->Status);
@@ -246,41 +412,6 @@ namespace UE::DreamShader::Editor::Private
 						.Text(SubLabel)
 					]
 				]
-
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.VAlign(VAlign_Center)
-				.Padding(4.0f, 0.0f, 0.0f, 0.0f)
-				[
-					SNew(SButton)
-					.Text(LOCTEXT("Compile", "Compile"))
-					.ToolTipText(LOCTEXT("CompileTip", "Force-recompile this source file (in memory)."))
-					.OnClicked_Lambda([this, Item]() { CompileItem(Item); return FReply::Handled(); })
-				]
-
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.VAlign(VAlign_Center)
-				.Padding(4.0f, 0.0f, 0.0f, 0.0f)
-				[
-					SNew(SButton)
-					.Text(LOCTEXT("Instance", "Instance"))
-					.ToolTipText(LOCTEXT("InstanceTip", "Create a material instance of the material this source generates."))
-					.IsEnabled(!Item->bIsFunction)
-					.Visibility(Item->bIsFunction ? EVisibility::Collapsed : EVisibility::Visible)
-					.OnClicked_Lambda([this, Item]() { CreateInstanceForItem(Item); return FReply::Handled(); })
-				]
-
-				+ SHorizontalBox::Slot()
-				.AutoWidth()
-				.VAlign(VAlign_Center)
-				.Padding(4.0f, 0.0f, 0.0f, 0.0f)
-				[
-					SNew(SButton)
-					.Text(LOCTEXT("OpenSource", "Open source"))
-					.ToolTipText(LOCTEXT("OpenSourceTip", "Open the .dsm/.dsf in your preferred editor."))
-					.OnClicked_Lambda([this, Item]() { OpenItemSource(Item); return FReply::Handled(); })
-				]
 			];
 	}
 
@@ -310,6 +441,10 @@ namespace UE::DreamShader::Editor::Private
 		if (ListView.IsValid())
 		{
 			ListView->RequestListRefresh();
+		}
+		if (SelectedItem == Item)
+		{
+			RebuildPreview();
 		}
 	}
 
