@@ -4,7 +4,10 @@
 #include "UI/SDreamShaderMaterialDetails.h"
 
 #include "AssetRegistry/AssetData.h"
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "ContentBrowserModule.h"
+#include "DreamShaderMaterialInstance.h"
+#include "DreamShaderSettings.h"
 #include "Editor.h"
 #include "IContentBrowserSingleton.h"
 #include "Materials/Material.h"
@@ -14,7 +17,10 @@
 #include "Styling/AppStyle.h"
 #include "Styling/SlateTypes.h"
 #include "Subsystems/AssetEditorSubsystem.h"
+#include "UObject/Package.h"
+#include "UObject/UObjectIterator.h"
 #include "Widgets/Input/SButton.h"
+#include "Widgets/Input/SCheckBox.h"
 #include "Widgets/Layout/SBorder.h"
 #include "Widgets/Layout/SSplitter.h"
 #include "Widgets/SBoxPanel.h"
@@ -35,6 +41,37 @@ namespace UE::DreamShader::Editor::Private
 			if (UObject* Asset = AssetData.GetAsset())
 			{
 				GEditor->GetEditorSubsystem<UAssetEditorSubsystem>()->OpenEditorForAsset(Asset);
+			}
+		}
+
+		// Flip the global "show in-memory materials" setting and broadcast create/delete for every
+		// memory-only DreamShader instance so the asset registry (and this picker) add or drop their tiles
+		// immediately -- the instances are otherwise hidden via UDreamShaderMaterialInstance::IsAsset().
+		// Mirrors the Tools-menu toggle; the setting is global, so it affects the main Content Browser too.
+		void SetShowInMemoryMaterials(bool bShow)
+		{
+			UDreamShaderSettings* Settings = GetMutableDefault<UDreamShaderSettings>();
+			if (Settings->bShowInMemoryMaterialsInContentBrowser == bShow)
+			{
+				return;
+			}
+			Settings->bShowInMemoryMaterialsInContentBrowser = bShow;
+			Settings->TryUpdateDefaultConfigFile();
+
+			for (TObjectIterator<UDreamShaderMaterialInstance> It; It; ++It)
+			{
+				UDreamShaderMaterialInstance* Instance = *It;
+				if (Instance->GetPackage()->HasAnyPackageFlags(PKG_NewlyCreated))
+				{
+					if (bShow)
+					{
+						FAssetRegistryModule::AssetCreated(Instance);
+					}
+					else
+					{
+						FAssetRegistryModule::AssetDeleted(Instance);
+					}
+				}
 			}
 		}
 	}
@@ -96,6 +133,19 @@ namespace UE::DreamShader::Editor::Private
 								? FText::Format(LOCTEXT("SelectedFmt", "Selected: {0}"), FText::FromName(SelectedAsset.AssetName))
 								: LOCTEXT("NoneSelected", "Select a material, then create an instance.");
 						})
+					]
+
+					+ SHorizontalBox::Slot()
+					.AutoWidth()
+					.VAlign(VAlign_Center)
+					[
+						SNew(SCheckBox)
+						.IsChecked_Lambda([]() { return GetDefault<UDreamShaderSettings>()->bShowInMemoryMaterialsInContentBrowser ? ECheckBoxState::Checked : ECheckBoxState::Unchecked; })
+						.OnCheckStateChanged_Lambda([](ECheckBoxState State) { SetShowInMemoryMaterials(State == ECheckBoxState::Checked); })
+						.ToolTipText(LOCTEXT("ShowInMemoryTip", "Show DreamShader's memory-only materials here and in the Content Browser (global setting)."))
+						[
+							SNew(STextBlock).Text(LOCTEXT("ShowInMemory", "Show in-memory materials"))
+						]
 					]
 				]
 			]

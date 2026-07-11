@@ -20,7 +20,8 @@ namespace UE::DreamShader::Editor::Private
 		{
 			UpToDate,      // generated asset exists and its stored source hash matches the current source
 			Stale,         // generated asset exists but the source changed since it was compiled
-			NeverCompiled, // no generated asset found (never run, or generation failed)
+			NeverCompiled, // no generated asset found (never run)
+			Error,         // last compile from this page failed (StatusDetail holds the message)
 			Function,      // .dsf/.dsh -- a function/header, not a top-level material
 			Unresolved,    // could not read/parse the source to determine a target
 		};

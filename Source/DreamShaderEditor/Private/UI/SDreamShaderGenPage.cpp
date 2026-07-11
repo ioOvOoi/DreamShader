@@ -68,6 +68,8 @@ namespace UE::DreamShader::Editor::Private
 				return { FText::FromString(TEXT("●")), FLinearColor(0.90f, 0.62f, 0.12f), LOCTEXT("StatusStale", "stale") };
 			case FDreamShaderSourceItem::EStatus::NeverCompiled:
 				return { FText::FromString(TEXT("○")), FLinearColor(0.50f, 0.50f, 0.50f), LOCTEXT("StatusNever", "not compiled") };
+			case FDreamShaderSourceItem::EStatus::Error:
+				return { FText::FromString(TEXT("▲")), FLinearColor(0.82f, 0.24f, 0.22f), LOCTEXT("StatusError", "compile error") };
 			case FDreamShaderSourceItem::EStatus::Function:
 				return { FText::FromString(TEXT("◆")), FLinearColor(0.30f, 0.52f, 0.82f), LOCTEXT("StatusFunction", "function / header") };
 			default:
@@ -294,7 +296,7 @@ namespace UE::DreamShader::Editor::Private
 		}
 
 		const TSharedPtr<FDreamShaderSourceItem> ItemRef = Item;
-		const auto MakeActionButton = [this, ItemRef](const FText& Label, const FText& Tip, bool bEnabled, TFunction<void()> Action) -> TSharedRef<SWidget>
+		const auto MakeActionButton = [](const FText& Label, const FText& Tip, bool bEnabled, TFunction<void()> Action) -> TSharedRef<SWidget>
 		{
 			return SNew(SButton)
 				.Text(Label)
@@ -302,6 +304,48 @@ namespace UE::DreamShader::Editor::Private
 				.IsEnabled(bEnabled)
 				.OnClicked_Lambda([Action]() { Action(); return FReply::Handled(); });
 		};
+
+		TSharedRef<SWrapBox> ActionBox = SNew(SWrapBox).UseAllottedSize(true).InnerSlotPadding(FVector2D(4.0f, 4.0f));
+		ActionBox->AddSlot()[ MakeActionButton(LOCTEXT("PComp", "Compile"), LOCTEXT("PCompTip", "Force-recompile this source (in memory)."), true, [this, ItemRef]() { CompileItem(ItemRef); }) ];
+		if (!Item->bIsFunction)
+		{
+			ActionBox->AddSlot()[ MakeActionButton(LOCTEXT("PInst", "Create instance"), LOCTEXT("PInstTip", "Create a material instance of this material."), true, [this, ItemRef]() { CreateInstanceForItem(ItemRef); }) ];
+		}
+		if (Material)
+		{
+			ActionBox->AddSlot()[ MakeActionButton(LOCTEXT("POpenMat", "Open material"), LOCTEXT("POpenMatTip", "Open the generated material asset."), true, [this, ItemRef]() { OpenItemMaterial(ItemRef); }) ];
+		}
+		if (Material && IsMemoryOnlyMaterial(Material))
+		{
+			ActionBox->AddSlot()[ MakeActionButton(LOCTEXT("PMat", "Materialize"), LOCTEXT("PMatTip", "Write this memory-only material (and its base) to disk."), true,
+				[this, ItemRef]()
+				{
+					// Re-resolve by path (don't capture the raw material) so a delete/GC before the click
+					// can't dangle.
+					UMaterialInterface* Mat = ItemRef->ObjectPath.IsEmpty()
+						? nullptr
+						: LoadObject<UMaterialInterface>(nullptr, *ItemRef->ObjectPath);
+					if (!Mat)
+					{
+						return;
+					}
+					FString Error;
+					if (MaterializeDreamShaderMaterial(Mat, Error))
+					{
+						RefreshItemStatus(ItemRef);
+						if (ListView.IsValid()) { ListView->RequestListRefresh(); }
+						RebuildPreview();
+					}
+					else
+					{
+						NotifyGen(FText::FromString(Error), false);
+					}
+				}) ];
+		}
+		ActionBox->AddSlot()[ MakeActionButton(LOCTEXT("POpenSrc", "Open source"), LOCTEXT("POpenSrcTip", "Open the .dsm/.dsf in your preferred editor."), true, [this, ItemRef]() { OpenItemSource(ItemRef); }) ];
+
+		const bool bHasError = Item->Status == FDreamShaderSourceItem::EStatus::Error
+			|| Item->Status == FDreamShaderSourceItem::EStatus::Unresolved;
 
 		return SNew(SVerticalBox)
 
@@ -342,13 +386,18 @@ namespace UE::DreamShader::Editor::Private
 				.ColorAndOpacity(FSlateColor::UseSubduedForeground())
 			]
 
+			+ SVerticalBox::Slot().AutoHeight().Padding(0.0f, 0.0f, 0.0f, 8.0f)
+			[
+				SNew(STextBlock)
+				.Visibility(bHasError ? EVisibility::Visible : EVisibility::Collapsed)
+				.Text(FText::FromString(Item->StatusDetail))
+				.ColorAndOpacity(FSlateColor(FLinearColor(0.82f, 0.24f, 0.22f)))
+				.AutoWrapText(true)
+			]
+
 			+ SVerticalBox::Slot().AutoHeight()
 			[
-				SNew(SWrapBox).UseAllottedSize(true).InnerSlotPadding(FVector2D(4.0f, 4.0f))
-				+ SWrapBox::Slot()[ MakeActionButton(LOCTEXT("PComp", "Compile"), LOCTEXT("PCompTip", "Force-recompile this source (in memory)."), true, [this, ItemRef]() { CompileItem(ItemRef); }) ]
-				+ SWrapBox::Slot()[ MakeActionButton(LOCTEXT("PInst", "Create instance"), LOCTEXT("PInstTip", "Create a material instance of this material."), !ItemRef->bIsFunction, [this, ItemRef]() { CreateInstanceForItem(ItemRef); }) ]
-				+ SWrapBox::Slot()[ MakeActionButton(LOCTEXT("POpenMat", "Open material"), LOCTEXT("POpenMatTip", "Open the generated material asset."), Material != nullptr, [this, ItemRef]() { OpenItemMaterial(ItemRef); }) ]
-				+ SWrapBox::Slot()[ MakeActionButton(LOCTEXT("POpenSrc", "Open source"), LOCTEXT("POpenSrcTip", "Open the .dsm/.dsf in your preferred editor."), true, [this, ItemRef]() { OpenItemSource(ItemRef); }) ]
+				ActionBox
 			];
 	}
 
@@ -432,12 +481,19 @@ namespace UE::DreamShader::Editor::Private
 				FText::FromString(Item->DisplayName)),
 			bSuccess);
 
-		if (!bSuccess)
+		if (bSuccess)
 		{
+			RefreshItemStatus(Item);
+		}
+		else
+		{
+			// Keep the message on the item so the preview can show why it failed, instead of falling back
+			// to a bare "not compiled".
 			UE_LOG(LogDreamShader, Error, TEXT("Material Content Browser compile failed: %s"), *Message);
+			Item->Status = FDreamShaderSourceItem::EStatus::Error;
+			Item->StatusDetail = Message;
 		}
 
-		RefreshItemStatus(Item);
 		if (ListView.IsValid())
 		{
 			ListView->RequestListRefresh();
