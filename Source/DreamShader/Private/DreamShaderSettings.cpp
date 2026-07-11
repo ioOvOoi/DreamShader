@@ -59,7 +59,14 @@ namespace UE::DreamShader::Private
 		{
 			const int64 Value = Enum->GetValueByIndex(Index);
 			const FString Name = Enum->GetNameStringByIndex(Index);
-			const bool bHidden = Enum->HasMetaData(TEXT("Hidden"), Index);
+			// UEnum metadata is editor-only (declared #if WITH_METADATA == WITH_EDITORONLY_DATA) and is
+			// stripped from non-editor / shipping builds -- calling HasMetaData there fails to compile and
+			// breaks the whole plugin's store build (issue #12). In non-editor builds no value carries a
+			// "Hidden" meta, so treat every value as visible; ShouldSkip still drops values by their name.
+			bool bHidden = false;
+#if WITH_EDITORONLY_DATA
+			bHidden = Enum->HasMetaData(TEXT("Hidden"), Index);
+#endif
 			if (ShouldSkip(Value, Name, bHidden))
 			{
 				continue;
