@@ -21,6 +21,9 @@
 #include "Materials/Material.h"
 #include "Materials/MaterialParameters.h"
 #include "Materials/MaterialFunction.h"
+#include "Materials/MaterialExpressionTextureSampleParameter2D.h"
+#include "MaterialEditingLibrary.h"
+#include "Engine/Texture.h"
 #include "Materials/MaterialExpressionIf.h"
 #include "Materials/MaterialExpressionAdd.h"
 #include "Materials/MaterialExpressionMultiply.h"
@@ -669,6 +672,94 @@ Shader(Name="DreamShaderTests/Automation/%s")
 		FString::Printf(TEXT("Decompiled source re-parses: %s"), *ReparseError),
 		FTextShaderParser::Parse(DecompiledSource, ReparsedDefinition, ReparseError));
 	TestTrue(TEXT("Decompiled source declares a parameter"), DecompiledSource.Contains(TEXT("Parameter")));
+	return true;
+}
+
+IMPLEMENT_CUSTOM_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderRoundTripSubstrateMaterialTest,
+	FDreamShaderQuietAutomationTestBase,
+	"DreamShader.Roundtrip.SubstrateMaterialRegenerates",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+// A Substrate material's shading is driven by its FrontMaterial tree, so the UMaterial's ShadingModel
+// enum stays at its default (DefaultLit) -- it does not describe the surface. The decompiler used to
+// emit that enum verbatim, producing ShadingModel="DefaultLit" alongside Base.FrontMaterial, which the
+// generator rejects ("Base.FrontMaterial requires ShadingModel=Substrate or none"). So a decompiled
+// Substrate material would not round-trip. The existing round-trip test only re-PARSES the decompiled
+// source; this failure is at GENERATE time, so it needs a re-generate. (Requires r.Substrate=True.)
+bool FDreamShaderRoundTripSubstrateMaterialTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader;
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	// Substrate materials generate through the Graph backend (the decomposed node path).
+	FScopedDreamShaderGraphBackendPin BackendPin;
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_SubstrateSrc"));
+	const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+	Artifacts.AddObjectPath(ObjectPath);
+	AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
+	AddExpectedAutomationCleanupWarnings(*this);
+
+	FString SourceFilePath;
+	if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), MakeSubstrateMaterialSource(AssetName), SourceFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(SourceFilePath);
+
+	FString Message;
+	if (!TestTrue(
+		FString::Printf(TEXT("Substrate material generation succeeds: %s"), *Message),
+		FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, true)))
+	{
+		return false;
+	}
+
+	UMaterial* Material = LoadObject<UMaterial>(nullptr, *ObjectPath);
+	if (!TestNotNull(TEXT("Generated Substrate material loads"), Material))
+	{
+		return false;
+	}
+
+	// Decompile to a fresh automation-path name so the re-generated asset is registered for cleanup.
+	const FString ReAssetName = MakeUniqueTestAssetName(TEXT("M_SubstrateRoundTrip"));
+	const FString ReObjectPath = MakeAutomationObjectPath(ReAssetName);
+	Artifacts.AddObjectPath(ReObjectPath);
+	AddExpectedNewAssetProbeWarnings(*this, ReObjectPath);
+
+	FString DecompiledSource;
+	FString DecompileError;
+	if (!TestTrue(
+		FString::Printf(TEXT("Substrate decompile succeeds: %s"), *DecompileError),
+		GetGraphDecompiler().DecompileMaterial(Material, FString::Printf(TEXT("DreamShaderTests/Automation/%s"), *ReAssetName), DecompiledSource, DecompileError)))
+	{
+		return false;
+	}
+
+	// The fix: a FrontMaterial material decompiles to ShadingModel="Substrate", not the misleading
+	// DefaultLit enum, so it satisfies the generator's Base.FrontMaterial rule.
+	TestTrue(TEXT("Decompiled Substrate material binds Base.FrontMaterial."), DecompiledSource.Contains(TEXT("Base.FrontMaterial")));
+	TestTrue(TEXT("Decompiled Substrate ShadingModel is \"Substrate\"."), DecompiledSource.Contains(TEXT("ShadingModel = \"Substrate\"")));
+	TestFalse(TEXT("Decompiled Substrate ShadingModel is not the material's default DefaultLit enum."), DecompiledSource.Contains(TEXT("ShadingModel = \"DefaultLit\"")));
+
+	// The real round-trip: the decompiled source must re-GENERATE. This is the check the reported bug
+	// failed -- a re-parse alone would have passed while generation still errored.
+	FString ReSourceFilePath;
+	if (!WriteAutomationSourceFile(*this, ReAssetName + TEXT(".dsm"), DecompiledSource, ReSourceFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(ReSourceFilePath);
+
+	FString ReMessage;
+	TestTrue(
+		FString::Printf(TEXT("Decompiled Substrate source re-generates: %s"), *ReMessage),
+		FMaterialGenerator::GenerateMaterialFromFile(ReSourceFilePath, ReMessage, true));
+
 	return true;
 }
 
@@ -1494,6 +1585,275 @@ bool FDreamShaderThinCustomVsGraphParityTest::RunTest(const FString& Parameters)
 				Case.CaseName, OffendingPixels, TwinPixels[0].Num(), ChannelTolerance, MaxChannelDifference));
 		}
 	}
+
+	return true;
+}
+
+IMPLEMENT_CUSTOM_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderMTestToonRoundTripRenderTest,
+	FDreamShaderQuietAutomationTestBase,
+	"DreamShader.Roundtrip.MTestToonRenderParity",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+// End-to-end round-trip fidelity gate for the real hand-authored Substrate toon material M_Test_Toon:
+// decompile it to a .dsm, regenerate a fresh twin from that source, and require the twin to render
+// pixel-identically to the original through the same offscreen thumbnail path as the ThinCustom-vs-Graph
+// parity test. This exercises both the ShadingModel="Substrate" fix and the renamed-channel swizzle fix
+// on a genuinely complex asset. Self-contained: only depends on M_Test_Toon existing in this project;
+// skips cleanly under -nullrhi or where the asset is absent (plugin dropped into another project).
+bool FDreamShaderMTestToonRoundTripRenderTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader;
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	if (GUsingNullRHI || !FApp::CanEverRender())
+	{
+		AddInfo(TEXT("Skipping M_Test_Toon round-trip render parity: no usable RHI (run without -nullrhi)."));
+		return true;
+	}
+
+	// "阿芙" via code points so this source file stays ASCII-clean.
+	const FString CjkFolder = FString::Chr(TCHAR(0x963F)) + FString::Chr(TCHAR(0x8299));
+	const FString OriginalPath = FString::Printf(TEXT("/Game/Render/Character/%s/NewToonMaterials/M_Test_Toon.M_Test_Toon"), *CjkFolder);
+	UMaterial* OriginalMaterial = LoadObject<UMaterial>(nullptr, *OriginalPath);
+	if (!OriginalMaterial)
+	{
+		AddInfo(FString::Printf(TEXT("Skipping M_Test_Toon round-trip: '%s' is not present in this project."), *OriginalPath));
+		return true;
+	}
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	AddExpectedAutomationCleanupWarnings(*this);
+
+	// Decompile the real material, then regenerate a transient twin from the emitted .dsm -- the true
+	// round trip. If the renamed-channel swizzle regressed, the ".m" suffix would re-appear and this
+	// regeneration would fail with an invalid-swizzle error, so generation success is itself a guard.
+	const FString ReAssetName = MakeUniqueTestAssetName(TEXT("M_MTestToonRoundTrip"));
+	const FString ReObjectPath = MakeAutomationObjectPath(ReAssetName);
+	Artifacts.AddObjectPath(ReObjectPath);
+	AddExpectedNewAssetProbeWarnings(*this, ReObjectPath);
+
+	FString DecompiledSource;
+	FString DecompileError;
+	if (!TestTrue(
+		FString::Printf(TEXT("M_Test_Toon decompiles: %s"), *DecompileError),
+		GetGraphDecompiler().DecompileMaterial(OriginalMaterial, FString::Printf(TEXT("DreamShaderTests/Automation/%s"), *ReAssetName), DecompiledSource, DecompileError)))
+	{
+		return false;
+	}
+
+	// Explicit regression assertions for the two decompiler fixes under test.
+	TestTrue(TEXT("Decompiled M_Test_Toon binds Base.FrontMaterial with ShadingModel=\"Substrate\"."),
+		DecompiledSource.Contains(TEXT("ShadingModel = \"Substrate\"")));
+	TestFalse(TEXT("Decompiled M_Test_Toon emits no invalid renamed-channel swizzle (\".m\")."),
+		DecompiledSource.Contains(TEXT(".m,")) || DecompiledSource.Contains(TEXT(".m ")) || DecompiledSource.Contains(TEXT(".m)")));
+
+	FString SourceFilePath;
+	if (!WriteAutomationSourceFile(*this, ReAssetName + TEXT(".dsm"), DecompiledSource, SourceFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(SourceFilePath);
+
+	FString Message;
+	if (!TestTrue(
+		FString::Printf(TEXT("Decompiled M_Test_Toon re-generates (0 errors): %s"), *Message),
+		FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ true)))
+	{
+		return false;
+	}
+
+	UMaterialInterface* Materials[2] = { nullptr, nullptr };
+	const TCHAR* Labels[2] = { TEXT("Original"), TEXT("RoundTripTwin") };
+	Materials[0] = OriginalMaterial;
+	Materials[1] = LoadObject<UMaterialInterface>(nullptr, *ReObjectPath);
+	if (!TestNotNull(FString::Printf(TEXT("Round-trip twin loads from '%s'."), *ReObjectPath), Materials[1]))
+	{
+		return false;
+	}
+
+	const int32 RenderSize = 256;
+	const TCHAR* RenderMesh = TEXT("sphere");
+	const float RenderYaw = -157.5f;
+	const float RenderPitch = -11.25f;
+	UE::DreamShader::Editor::Private::FDreamShaderPreviewRenderContext RenderContext;
+
+	const auto FinishCompile = [&Materials]()
+	{
+		TArray<UObject*> Objects;
+		Objects.Add(Materials[0]);
+		Objects.Add(Materials[1]);
+		FAssetCompilingManager::Get().FinishCompilationForObjects(Objects);
+		if (GShaderCompilingManager)
+		{
+			GShaderCompilingManager->FinishAllCompilation();
+		}
+		FlushRenderingCommands();
+	};
+	FinishCompile();
+
+	TArray<FColor> Pixels[2];
+	for (int32 Index = 0; Index < 2; ++Index)
+	{
+		FString RenderError;
+		TArray<FColor> Warmup;
+		if (!TestTrue(FString::Printf(TEXT("%s warm-up render succeeds: %s"), Labels[Index], *RenderError),
+			RenderContext.RenderFramePixels(Materials[Index], RenderSize, RenderSize, RenderMesh, RenderYaw, RenderPitch, Warmup, RenderError)))
+		{
+			return false;
+		}
+		FinishCompile();
+		if (!TestTrue(FString::Printf(TEXT("%s render succeeds: %s"), Labels[Index], *RenderError),
+			RenderContext.RenderFramePixels(Materials[Index], RenderSize, RenderSize, RenderMesh, RenderYaw, RenderPitch, Pixels[Index], RenderError)))
+		{
+			return false;
+		}
+	}
+
+	// Always dump both frames for offline / screenshot inspection.
+	for (int32 Index = 0; Index < 2; ++Index)
+	{
+		TArray<FColor> PngColors = Pixels[Index];
+		for (FColor& Color : PngColors)
+		{
+			Color.A = 255;
+		}
+		TArray64<uint8> PngData;
+		FImageUtils::PNGCompressImageArray(RenderSize, RenderSize, TArrayView64<const FColor>(PngColors.GetData(), PngColors.Num()), PngData);
+		const FString DumpPath = FPaths::ProjectSavedDir() / TEXT("DreamShaderTests") / FString::Printf(TEXT("MTestToon_%s.png"), Labels[Index]);
+		FFileHelper::SaveArrayToFile(TArrayView64<const uint8>(PngData.GetData(), PngData.Num()), *DumpPath);
+		AddInfo(FString::Printf(TEXT("Dumped %s frame to '%s'."), Labels[Index], *DumpPath));
+	}
+
+	if (!TestEqual(TEXT("Both frames share a pixel count."), Pixels[1].Num(), Pixels[0].Num()))
+	{
+		return false;
+	}
+
+	// Sentinel: the frame must actually show the material sphere, not just the (44,44,48) clear color --
+	// otherwise a pair of empty frames would sail through a naive diff (as a -run= commandlet does).
+	{
+		const FColor ClearColor(44, 44, 48);
+		int32 ForegroundPixels = 0;
+		for (const FColor& Pixel : Pixels[0])
+		{
+			const int32 D = FMath::Max3(
+				FMath::Abs(int32(Pixel.R) - int32(ClearColor.R)),
+				FMath::Abs(int32(Pixel.G) - int32(ClearColor.G)),
+				FMath::Abs(int32(Pixel.B) - int32(ClearColor.B)));
+			if (D > 8)
+			{
+				++ForegroundPixels;
+			}
+		}
+		AddInfo(FString::Printf(TEXT("Original frame foreground pixels (>8 from clear color): %d/%d."), ForegroundPixels, Pixels[0].Num()));
+		if (!TestTrue(
+			FString::Printf(TEXT("Original frame actually shows the material sphere (%d foreground pixels)."), ForegroundPixels),
+			ForegroundPixels > Pixels[0].Num() / 20))
+		{
+			return false;
+		}
+	}
+
+	// Round-trip parity: original vs regenerated twin. The two are separately translated/compiled shader
+	// maps, so allow LSB-level tolerance while failing on anything a human could see.
+	{
+		constexpr int32 ChannelTolerance = 2;
+		int32 OffendingPixels = 0;
+		int32 MaxChannelDifference = 0;
+		for (int32 PixelIndex = 0; PixelIndex < Pixels[0].Num(); ++PixelIndex)
+		{
+			const FColor& A = Pixels[0][PixelIndex];
+			const FColor& B = Pixels[1][PixelIndex];
+			const int32 PixelDifference = FMath::Max3(
+				FMath::Abs(int32(A.R) - int32(B.R)),
+				FMath::Abs(int32(A.G) - int32(B.G)),
+				FMath::Abs(int32(A.B) - int32(B.B)));
+			MaxChannelDifference = FMath::Max(MaxChannelDifference, PixelDifference);
+			if (PixelDifference > ChannelTolerance)
+			{
+				++OffendingPixels;
+			}
+		}
+
+		const int32 AllowedOffenders = Pixels[0].Num() / 1000; // 0.1%
+		AddInfo(FString::Printf(
+			TEXT("M_Test_Toon round-trip parity: %d/%d pixels beyond tolerance %d, max channel difference %d."),
+			OffendingPixels, Pixels[0].Num(), ChannelTolerance, MaxChannelDifference));
+		TestTrue(
+			FString::Printf(
+				TEXT("Round-trip twin renders identically to the original (%d of %d pixels beyond tolerance %d, max channel difference %d)."),
+				OffendingPixels, Pixels[0].Num(), ChannelTolerance, MaxChannelDifference),
+			OffendingPixels <= AllowedOffenders);
+	}
+
+	return true;
+}
+
+IMPLEMENT_CUSTOM_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderDecompileRenamedChannelUsesMaskTest,
+	FDreamShaderQuietAutomationTestBase,
+	"DreamShader.Roundtrip.RenamedChannelUsesMask",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+// Regression guard for the renamed-channel swizzle fix. A texture sample lets the author RELABEL its
+// per-channel outputs (ChannelNames), but channel selection at compile/render time is driven SOLELY by
+// the mask bits (FExpressionInput::Compile applies the connected output's mask; ApplyChannelNames only
+// rewrites the cosmetic name). So a green-masked output relabeled with the swizzle letter "R" must
+// decompile to ".g" (the mask), NOT ".r" (the misleading label) -- otherwise the regenerated material
+// silently samples the wrong channel of a packed MRA/ORM texture. The M_Test_Toon happy path can't catch
+// this because its relabel ("M") is not a valid swizzle letter and already falls through to the mask.
+bool FDreamShaderDecompileRenamedChannelUsesMaskTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	UMaterial* Material = NewObject<UMaterial>(GetTransientPackage(), NAME_None, RF_Transient);
+	if (!TestNotNull(TEXT("Transient probe material created."), Material))
+	{
+		return false;
+	}
+
+	UMaterialExpressionTextureSampleParameter2D* Tex = Cast<UMaterialExpressionTextureSampleParameter2D>(
+		UMaterialEditingLibrary::CreateMaterialExpression(Material, UMaterialExpressionTextureSampleParameter2D::StaticClass()));
+	if (!TestNotNull(TEXT("Texture sample parameter created."), Tex))
+	{
+		return false;
+	}
+	Tex->ParameterName = TEXT("T_MaskProbe");
+	Tex->Texture = LoadObject<UTexture>(nullptr, TEXT("/Engine/EngineResources/DefaultTexture"));
+
+	// Relabel with swizzle letters that DISAGREE with the physical masks: the red-masked output becomes
+	// "Rd" and the GREEN-masked output becomes "R". If the decompiler trusted the label it would emit
+	// ".r" (red) for the green channel; the mask is authoritative, so it must emit ".g".
+	Tex->ChannelNames.R = FText::FromString(TEXT("Rd"));
+	Tex->ChannelNames.G = FText::FromString(TEXT("R"));
+	Tex->ApplyChannelNames();
+
+	// Connect emissive to the output now labelled "R" -- the green-masked one (output index 2).
+	if (!TestTrue(TEXT("Connected the relabeled green output to EmissiveColor."),
+		UMaterialEditingLibrary::ConnectMaterialProperty(Tex, TEXT("R"), MP_EmissiveColor)))
+	{
+		return false;
+	}
+
+	FString DecompiledSource;
+	FString DecompileError;
+	if (!TestTrue(
+		FString::Printf(TEXT("Renamed-channel probe material decompiles: %s"), *DecompileError),
+		GetGraphDecompiler().DecompileMaterial(Material, TEXT("DreamShaderTests/Automation/M_RenamedChannelProbe"), DecompiledSource, DecompileError)))
+	{
+		return false;
+	}
+
+	// The green mask is authoritative, so the emissive must read the GREEN channel regardless of the "R" label.
+	TestTrue(TEXT("Relabeled green channel decompiles to the mask-derived '.g' swizzle."),
+		DecompiledSource.Contains(TEXT("T_MaskProbe.g")));
+	TestFalse(TEXT("Relabeled green channel does NOT decompile to the misleading '.r' label."),
+		DecompiledSource.Contains(TEXT("T_MaskProbe.r")));
 
 	return true;
 }

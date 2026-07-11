@@ -34,6 +34,7 @@ namespace UE::DreamShader::Editor::Private
 		TArray<FString> OutputDeclarations;
 		TArray<FString> OutputBindings;
 		TArray<FString> OutputAssignments;
+		bool bUsesFrontMaterial = false;
 
 		struct FMaterialOutputBinding
 		{
@@ -80,6 +81,10 @@ namespace UE::DreamShader::Editor::Private
 			ReservedNames.Add(Binding.Name);
 			OutputDeclarations.Add(FString::Printf(TEXT("\t\t%s %s;"), Binding.Type, Binding.Name));
 			OutputBindings.Add(FString::Printf(TEXT("\t\t%s = %s;"), Binding.Target, Binding.Name));
+			if (Binding.Property == MP_FrontMaterial)
+			{
+				bUsesFrontMaterial = true;
+			}
 		}
 
 		for (const FMaterialOutputBinding& Binding : Bindings)
@@ -115,7 +120,12 @@ namespace UE::DreamShader::Editor::Private
 		AppendSection(Lines, TEXT("Properties"), PropertyDeclarations);
 		Lines.Add(TEXT("\tSettings = {"));
 		Lines.Add(FString::Printf(TEXT("\t\tDomain = \"%s\";"), *GetMaterialDomainText(Material->MaterialDomain)));
-		Lines.Add(FString::Printf(TEXT("\t\tShadingModel = \"%s\";"), *GetShadingModelText(Material)));
+		// A Substrate material's shading is driven by its FrontMaterial tree, so the UMaterial's
+		// ShadingModel enum stays at its default (usually DefaultLit) and does NOT describe the surface.
+		// Emit "Substrate" whenever we decompiled a Base.FrontMaterial binding, matching the generator's
+		// rule (Base.FrontMaterial requires ShadingModel="Substrate" or none) so the .dsm round-trips.
+		const FString ShadingModelText = bUsesFrontMaterial ? FString(TEXT("Substrate")) : GetShadingModelText(Material);
+		Lines.Add(FString::Printf(TEXT("\t\tShadingModel = \"%s\";"), *ShadingModelText));
 		Lines.Add(FString::Printf(TEXT("\t\tBlendMode = \"%s\";"), *GetBlendModeText(Material->BlendMode)));
 		AppendAdditionalMaterialSettings(Lines, Material);
 		Lines.Add(TEXT("\t}"));
@@ -2000,55 +2010,28 @@ namespace UE::DreamShader::Editor::Private
 		}
 
 		const FExpressionOutput& Output = Expression->Outputs[OutputIndex];
-		FString OutputName = Output.OutputName.ToString();
-		if (OutputName.Equals(TEXT("None"), ESearchCase::IgnoreCase))
-		{
-			OutputName.Reset();
-		}
-		if (OutputName.IsEmpty())
-		{
-			if (Output.MaskR && Output.MaskG && !Output.MaskB && !Output.MaskA)
-			{
-				OutputName = TEXT("rg");
-			}
-			else if (Output.MaskR && Output.MaskG && Output.MaskB && !Output.MaskA)
-			{
-				OutputName = TEXT("rgb");
-			}
-			else if (Output.MaskR && Output.MaskG && Output.MaskB && Output.MaskA)
-			{
-				OutputName = TEXT("rgba");
-			}
-			else if (Output.MaskR && !Output.MaskG && !Output.MaskB && !Output.MaskA)
-			{
-				OutputName = TEXT("r");
-			}
-			else if (!Output.MaskR && Output.MaskG && !Output.MaskB && !Output.MaskA)
-			{
-				OutputName = TEXT("g");
-			}
-			else if (!Output.MaskR && !Output.MaskG && Output.MaskB && !Output.MaskA)
-			{
-				OutputName = TEXT("b");
-			}
-			else if (!Output.MaskR && !Output.MaskG && !Output.MaskB && Output.MaskA)
-			{
-				OutputName = TEXT("a");
-			}
-		}
 
-		if (OutputName.IsEmpty())
+		// Channel selection for an output connection is driven SOLELY by the output's mask bits. The engine's
+		// FExpressionInput::Compile applies Compiler->ComponentMask(result, MaskR, MaskG, MaskB, MaskA) from
+		// the connected output (Materials/MaterialShared.cpp), and UMaterialExpressionTextureSample::
+		// ApplyChannelNames only rewrites the COSMETIC OutputName -- it never touches the mask. So a channel
+		// the author relabels must decompile from its MASK, never its display name: a green-masked output
+		// labelled "M" would otherwise emit an invalid ".m", and one labelled "R"/"A" (a swizzle-shaped label
+		// that denotes a DIFFERENT channel, as in a packed MRA/ORM texture) would silently select the wrong
+		// channel. The mask is authoritative in every case, so derive the swizzle from it and ignore the name.
+		FString MaskSwizzle;
+		if (Output.MaskR) MaskSwizzle += TEXT("r");
+		if (Output.MaskG) MaskSwizzle += TEXT("g");
+		if (Output.MaskB) MaskSwizzle += TEXT("b");
+		if (Output.MaskA) MaskSwizzle += TEXT("a");
+
+		// Empty mask (no component selection) or a full RGBA mask both mean "pass the whole value" -- no suffix.
+		if (MaskSwizzle.IsEmpty() || MaskSwizzle == TEXT("rgba"))
 		{
 			return ExpressionText;
 		}
 
-		const FString NormalizedOutputName = OutputName.ToLower();
-		if (NormalizedOutputName == TEXT("rgba") || NormalizedOutputName == TEXT("xyzw"))
-		{
-			return ExpressionText;
-		}
-
-		return MakeSwizzleExpression(ExpressionText, NormalizedOutputName);
+		return MakeSwizzleExpression(ExpressionText, MaskSwizzle);
 	}
 
 	FDecompiledValue FDreamShaderGraphDecompiler::MakeExpressionOutputValue(FDecompiledValue Source, UMaterialExpression* Expression, const int32 OutputIndex) const
