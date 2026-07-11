@@ -18,6 +18,7 @@
 #if WITH_DEV_AUTOMATION_TESTS
 
 #include "DreamShaderParser.h"
+#include "DreamShaderSettings.h"
 #include "DreamShaderTypes.h"
 #include "MaterialAssetGeneration/DreamShaderMaterialGenerator.h"
 
@@ -29,6 +30,7 @@
 #include "Misc/FileHelper.h"
 #include "Misc/Parse.h"
 #include "Misc/Paths.h"
+#include "Misc/ScopeExit.h"
 #include "Policies/PrettyJsonPrintPolicy.h"
 #include "Serialization/JsonReader.h"
 #include "Serialization/JsonSerializer.h"
@@ -426,9 +428,32 @@ namespace UE::DreamShader::Editor::Private::Tests
 	 * Run one corpus case through the material generator (transient) and assert outcome + message.
 	 * .dsm -> GenerateMaterialFromFile, .dsf -> GenerateAssetsFromFile, .dsh -> skipped (no asset).
 	 */
+	// Pins the project DefaultBackend to Graph for a test's duration: tests that assert
+	// graph-backend generation shapes must not be rerouted by a project-level
+	// DefaultBackend=Instance when their fixtures don't declare Backend themselves.
+	struct FScopedDreamShaderGraphBackendPin
+	{
+		EDreamShaderDefaultBackend SavedDefaultBackend;
+
+		FScopedDreamShaderGraphBackendPin()
+			: SavedDefaultBackend(GetMutableDefault<UDreamShaderSettings>()->DefaultBackend)
+		{
+			GetMutableDefault<UDreamShaderSettings>()->DefaultBackend = EDreamShaderDefaultBackend::Graph;
+		}
+
+		~FScopedDreamShaderGraphBackendPin()
+		{
+			GetMutableDefault<UDreamShaderSettings>()->DefaultBackend = SavedDefaultBackend;
+		}
+	};
+
 	inline bool RunDreamShaderGenerateCorpusCase(FAutomationTestBase& Test, const FCorpusCase& Case)
 	{
 		const FString Extension = Case.Extension.ToLower();
+
+		// The corpus goldens encode GRAPH-backend generation semantics (node shapes, graph-level
+		// type merging).
+		FScopedDreamShaderGraphBackendPin BackendPin;
 
 		FString Message;
 		bool bGenerated = false;

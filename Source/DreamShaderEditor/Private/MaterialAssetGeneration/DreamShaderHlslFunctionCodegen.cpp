@@ -179,7 +179,14 @@ namespace UE::DreamShader::Editor::Private
 
 	static uint32 GetSourcePathHash(const FString& SourceFilePath)
 	{
-		return FCrc::StrCrc32(*UE::DreamShader::NormalizeSourceFilePath(SourceFilePath));
+		// Hash the project-relative path, not the absolute path, so the generated include's file name
+		// and header guard are identical across machines and checkouts. An absolute path made both
+		// machine-specific, fragmenting shared DDC / build-cache hits and producing per-machine
+		// generated-shader file names for the same source. Sources outside the project (rare) keep
+		// their absolute path.
+		FString Path = UE::DreamShader::NormalizeSourceFilePath(SourceFilePath);
+		FPaths::MakePathRelativeTo(Path, *FPaths::ConvertRelativePathToFull(FPaths::ProjectDir()));
+		return FCrc::StrCrc32(*Path);
 	}
 
 	static FString BuildGeneratedIncludeGuardMacro(const FString& SourceFilePath)

@@ -5,7 +5,7 @@
 
 class INetworkingWebSocket;
 class IWebSocketServer;
-class UMaterial;
+class UMaterialInterface;
 
 namespace UE::DreamShader::Editor::Private
 {
@@ -34,7 +34,7 @@ namespace UE::DreamShader::Editor::Private
 			// never rotates the camera renders identically to today's baseline framing.
 			float OrbitYaw = -157.5f;
 			float OrbitPitch = -11.25f;
-			TWeakObjectPtr<UMaterial> Material;
+			TWeakObjectPtr<UMaterialInterface> Material;
 			int32 Width = 512;
 			int32 Height = 512;
 			double LastFrameSeconds = 0.0;

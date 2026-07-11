@@ -3,6 +3,7 @@
 #include "DreamShaderCompileService.h"
 #include "DreamShaderModule.h"
 #include "DreamShaderParser.h"
+#include "DreamShaderSettings.h"
 #include "Compile/DreamShaderEditorCompileAdapter.h"
 #include "DependencyGraph/DreamShaderDependencyGraphService.h"
 #include "MaterialAssetGeneration/DreamShaderMaterialGeneratorPrivate.h"
@@ -120,7 +121,7 @@ namespace UE::DreamShader::Editor::Private
 		// Material->ThumbnailInfo, lazily creating one (matching what the native Material Editor's
 		// own preview toolbar would do the first time you touch shape or orbit for an asset that
 		// never had one).
-		USceneThumbnailInfoWithPrimitive* GetOrCreatePreviewThumbnailInfo(UMaterial* Material)
+		USceneThumbnailInfoWithPrimitive* GetOrCreatePreviewThumbnailInfo(UMaterialInterface* Material)
 		{
 			USceneThumbnailInfoWithPrimitive* ThumbnailInfo = Cast<USceneThumbnailInfoWithPrimitive>(Material->ThumbnailInfo);
 			if (!ThumbnailInfo)
@@ -137,7 +138,7 @@ namespace UE::DreamShader::Editor::Private
 		// scene itself. So the requested mesh has to be written onto the material asset's own
 		// ThumbnailInfo before every SetMaterialInterface() call, same as the native Material
 		// Editor's preview-shape button does.
-		void ApplyPreviewMeshSelection(UMaterial* Material, const FString& Mesh)
+		void ApplyPreviewMeshSelection(UMaterialInterface* Material, const FString& Mesh)
 		{
 			if (!Material)
 			{
@@ -154,7 +155,7 @@ namespace UE::DreamShader::Editor::Private
 		// same shape as the mesh selection above. The engine applies no clamp of its own; the VSCode
 		// side clamps pitch to roughly +/-89 degrees before sending it to avoid gimbal-flip framing
 		// (see EditorViewportClient.cpp's own +/-90 pitch clamp for the native equivalent).
-		void ApplyPreviewCameraOrbit(UMaterial* Material, float OrbitYaw, float OrbitPitch)
+		void ApplyPreviewCameraOrbit(UMaterialInterface* Material, float OrbitYaw, float OrbitPitch)
 		{
 			if (!Material)
 			{
@@ -166,7 +167,7 @@ namespace UE::DreamShader::Editor::Private
 			ThumbnailInfo->OrbitPitch = OrbitPitch;
 		}
 
-		void WaitForPreviewMaterialCompilation(UMaterial* Material)
+		void WaitForPreviewMaterialCompilation(UMaterialInterface* Material)
 		{
 			TArray<UObject*> MaterialObjects;
 			MaterialObjects.Add(Material);
@@ -178,7 +179,7 @@ namespace UE::DreamShader::Editor::Private
 			FlushRenderingCommands();
 		}
 
-		bool BuildThumbnailPng(UMaterial* Material, const int32 Width, const int32 Height, const FString& Mesh, float OrbitYaw, float OrbitPitch, const bool bWaitForCompilation, TArray64<uint8>& OutPngData, FString& OutError)
+		bool BuildThumbnailPng(UMaterialInterface* Material, const int32 Width, const int32 Height, const FString& Mesh, float OrbitYaw, float OrbitPitch, const bool bWaitForCompilation, TArray64<uint8>& OutPngData, FString& OutError)
 		{
 			if (bWaitForCompilation && Material)
 			{
@@ -194,7 +195,7 @@ namespace UE::DreamShader::Editor::Private
 			return TemporaryContext.RenderFrame(Material, Width, Height, Mesh, OrbitYaw, OrbitPitch, OutPngData, OutError);
 		}
 
-		bool SaveThumbnailPng(UMaterial* Material, const int32 Width, const int32 Height, const FString& Mesh, float OrbitYaw, float OrbitPitch, const FString& ImagePath, FString& OutError)
+		bool SaveThumbnailPng(UMaterialInterface* Material, const int32 Width, const int32 Height, const FString& Mesh, float OrbitYaw, float OrbitPitch, const FString& ImagePath, FString& OutError)
 		{
 			TArray64<uint8> PngData;
 			if (!BuildThumbnailPng(Material, Width, Height, Mesh, OrbitYaw, OrbitPitch, true, PngData, OutError))
@@ -254,7 +255,7 @@ namespace UE::DreamShader::Editor::Private
 	// finished processing the submission) would race with in-flight rendering commands that still
 	// reference the scene's current state. The temporary context RenderFrame's one-shot callers
 	// construct locally is torn down as a whole right after use anyway.
-	bool FDreamShaderPreviewRenderContext::RenderCurrentFrame(UMaterial* Material, const FString& Mesh, float OrbitYaw, float OrbitPitch, FString& OutError)
+	bool FDreamShaderPreviewRenderContext::RenderCurrentFrame(UMaterialInterface* Material, const FString& Mesh, float OrbitYaw, float OrbitPitch, FString& OutError)
 	{
 		FTextureRenderTargetResource* RenderTargetResource = RenderTarget->GameThread_GetRenderTargetResource();
 		if (!RenderTargetResource)
@@ -294,9 +295,9 @@ namespace UE::DreamShader::Editor::Private
 		return true;
 	}
 
-	bool FDreamShaderPreviewRenderContext::RenderFrame(UMaterial* Material, int32 Width, int32 Height, const FString& Mesh, float OrbitYaw, float OrbitPitch, TArray64<uint8>& OutPngData, FString& OutError)
+	bool FDreamShaderPreviewRenderContext::RenderFramePixels(UMaterialInterface* Material, int32 Width, int32 Height, const FString& Mesh, float OrbitYaw, float OrbitPitch, TArray<FColor>& OutColors, FString& OutError)
 	{
-		OutPngData.Reset();
+		OutColors.Reset();
 		if (!Material)
 		{
 			OutError = TEXT("Preview material is not valid.");
@@ -313,10 +314,21 @@ namespace UE::DreamShader::Editor::Private
 		FlushRenderingCommands();
 
 		FTextureRenderTargetResource* RenderTargetResource = RenderTarget->GameThread_GetRenderTargetResource();
-		TArray<FColor> Colors;
-		if (!RenderTargetResource || !RenderTargetResource->ReadPixels(Colors) || Colors.Num() != CachedWidth * CachedHeight)
+		if (!RenderTargetResource || !RenderTargetResource->ReadPixels(OutColors) || OutColors.Num() != CachedWidth * CachedHeight)
 		{
 			OutError = FString::Printf(TEXT("Failed to read preview pixels for '%s'."), *Material->GetPathName());
+			return false;
+		}
+
+		return true;
+	}
+
+	bool FDreamShaderPreviewRenderContext::RenderFrame(UMaterialInterface* Material, int32 Width, int32 Height, const FString& Mesh, float OrbitYaw, float OrbitPitch, TArray64<uint8>& OutPngData, FString& OutError)
+	{
+		OutPngData.Reset();
+		TArray<FColor> Colors;
+		if (!RenderFramePixels(Material, Width, Height, Mesh, OrbitYaw, OrbitPitch, Colors, OutError))
+		{
 			return false;
 		}
 
@@ -339,7 +351,7 @@ namespace UE::DreamShader::Editor::Private
 		return true;
 	}
 
-	bool FDreamShaderPreviewRenderContext::KickoffFrame(UMaterial* Material, int32 Width, int32 Height, const FString& Mesh, float OrbitYaw, float OrbitPitch, FString& OutError)
+	bool FDreamShaderPreviewRenderContext::KickoffFrame(UMaterialInterface* Material, int32 Width, int32 Height, const FString& Mesh, float OrbitYaw, float OrbitPitch, FString& OutError)
 	{
 		if (bReadbackInFlight)
 		{
@@ -513,7 +525,7 @@ namespace UE::DreamShader::Editor::Private
 		return FPaths::Combine(FPaths::ProjectSavedDir(), TEXT("DreamShader"), TEXT("Bridge"), TEXT("preview.json"));
 	}
 
-	bool FDreamShaderPreviewRenderer::ResolvePreviewMaterial(const FDreamShaderPreviewRequest& Request, FDreamShaderPreviewResult& OutResult, UMaterial*& OutMaterial)
+	bool FDreamShaderPreviewRenderer::ResolvePreviewMaterial(const FDreamShaderPreviewRequest& Request, FDreamShaderPreviewResult& OutResult, UMaterialInterface*& OutMaterial)
 	{
 		OutMaterial = nullptr;
 		const FString SourceFilePath = UE::DreamShader::NormalizeSourceFilePath(Request.SourceFilePath);
@@ -543,14 +555,18 @@ namespace UE::DreamShader::Editor::Private
 		OutResult.AssetPath = ObjectPath;
 
 		UE::DreamShader::Compiler::FDreamShaderCompileService CompileService(UE::DreamShader::Editor::GetEditorCompileAdapter());
-		const UE::DreamShader::Compiler::FDreamShaderCompileResult CompileResult = CompileService.CompileMaterial(SourceFilePath, true);
+		// Editor materials are always memory-only, so a preview compile is transient (never persists).
+		const UE::DreamShader::Compiler::FDreamShaderCompileResult CompileResult = CompileService.CompileMaterial(SourceFilePath, true, /*bTransient*/ true);
 		if (!CompileResult.bSucceeded)
 		{
 			OutResult.Message = CompileResult.Message;
 			return false;
 		}
 
-		OutMaterial = LoadObject<UMaterial>(nullptr, *ObjectPath);
+		// Interface-typed on purpose: ThinCustom (the default backend) generates a thin material
+		// INSTANCE whose hidden base carries the graph, and the whole render pipeline downstream is
+		// interface-based, so both shapes preview identically.
+		OutMaterial = LoadObject<UMaterialInterface>(nullptr, *ObjectPath);
 		if (!OutMaterial)
 		{
 			OutResult.Message = FString::Printf(TEXT("Generated material '%s' could not be loaded."), *ObjectPath);
@@ -567,12 +583,12 @@ namespace UE::DreamShader::Editor::Private
 		return true;
 	}
 
-	bool FDreamShaderPreviewRenderer::RenderMaterialPreviewFrame(UMaterial* Material, int32 Width, int32 Height, const FString& Mesh, float OrbitYaw, float OrbitPitch, TArray64<uint8>& OutPngData, FString& OutError)
+	bool FDreamShaderPreviewRenderer::RenderMaterialPreviewFrame(UMaterialInterface* Material, int32 Width, int32 Height, const FString& Mesh, float OrbitYaw, float OrbitPitch, TArray64<uint8>& OutPngData, FString& OutError)
 	{
 		return BuildThumbnailPng(Material, Width, Height, Mesh, OrbitYaw, OrbitPitch, false, OutPngData, OutError);
 	}
 
-	bool FDreamShaderPreviewRenderer::SaveMaterialPreviewFrame(UMaterial* Material, const FString& SourceFilePath, int32 Width, int32 Height, const FString& Mesh, float OrbitYaw, float OrbitPitch, FString& OutImagePath, FString& OutError)
+	bool FDreamShaderPreviewRenderer::SaveMaterialPreviewFrame(UMaterialInterface* Material, const FString& SourceFilePath, int32 Width, int32 Height, const FString& Mesh, float OrbitYaw, float OrbitPitch, FString& OutImagePath, FString& OutError)
 	{
 		OutImagePath = BuildPreviewImagePath(SourceFilePath);
 		return SaveThumbnailPng(Material, Width, Height, Mesh, OrbitYaw, OrbitPitch, OutImagePath, OutError);
@@ -580,7 +596,7 @@ namespace UE::DreamShader::Editor::Private
 
 	bool FDreamShaderPreviewRenderer::RenderMaterialPreview(const FDreamShaderPreviewRequest& Request, FDreamShaderPreviewResult& OutResult)
 	{
-		UMaterial* Material = nullptr;
+		UMaterialInterface* Material = nullptr;
 		if (!ResolvePreviewMaterial(Request, OutResult, Material))
 		{
 			return false;

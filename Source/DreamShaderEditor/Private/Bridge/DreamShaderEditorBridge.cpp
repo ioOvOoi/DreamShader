@@ -16,9 +16,16 @@
 #include "VirtualFunction/DreamShaderVirtualFunctionSyncService.h"
 #include "Workspace/DreamShaderWorkspaceService.h"
 
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "Async/Async.h"
 #include "CoreGlobals.h"
+#include "DreamShaderMaterialInstance.h"
 #include "Misc/CoreDelegates.h"
+#include "Misc/PackageName.h"
+#include "ObjectTools.h"
+#include "UObject/UnrealType.h"
+#include "UObject/UObjectGlobals.h"
+#include "UObject/UObjectIterator.h"
 #include "ContentBrowserMenuContexts.h"
 #include "DirectoryWatcherModule.h"
 #include "Dom/JsonObject.h"
@@ -144,9 +151,6 @@ namespace UE::DreamShader::Editor::Private
 	{
 		bIsShuttingDown = false;
 
-		const UDreamShaderSettings* Settings = GetDefault<UDreamShaderSettings>();
-		bVirtualMaterialMode = Settings && Settings->bVirtualMaterialMode;
-
 		IFileManager::Get().MakeDirectory(*GetBridgeDirectory(), true);
 		IFileManager::Get().MakeDirectory(*GetRequestDirectory(), true);
 		IFileManager::Get().MakeDirectory(*FDreamShaderPreviewRenderer::GetPreviewDirectory(), true);
@@ -157,12 +161,14 @@ namespace UE::DreamShader::Editor::Private
 		FDreamShaderWorkspaceService::ExportSubstrateBuiltinsManifest();
 		SyncVirtualFunctionDefinitions();
 
-		if (bVirtualMaterialMode)
-		{
-			PostEngineInitHandle = FCoreDelegates::OnPostEngineInit.AddSP(
-				AsShared(),
-				&FDreamShaderEditorBridge::GenerateAllVirtualMaterials);
-		}
+		// Registered unconditionally and gated inside on the LIVE setting: caching the flag here
+		// made a mid-session Project Settings toggle silently ineffective until the next restart.
+		PostEngineInitHandle = FCoreDelegates::GetOnPostEngineInit().AddSP(
+			AsShared(),
+			&FDreamShaderEditorBridge::HandlePostEngineInit);
+		SettingsChangedHandle = FCoreUObjectDelegates::OnObjectPropertyChanged.AddSP(
+			AsShared(),
+			&FDreamShaderEditorBridge::HandleSettingsPropertyChanged);
 
 		QueueFullScan();
 		UpdateDiagnosticsFile();
@@ -227,8 +233,14 @@ namespace UE::DreamShader::Editor::Private
 
 		if (PostEngineInitHandle.IsValid())
 		{
-			FCoreDelegates::OnPostEngineInit.Remove(PostEngineInitHandle);
+			FCoreDelegates::GetOnPostEngineInit().Remove(PostEngineInitHandle);
 			PostEngineInitHandle.Reset();
+		}
+
+		if (SettingsChangedHandle.IsValid())
+		{
+			FCoreUObjectDelegates::OnObjectPropertyChanged.Remove(SettingsChangedHandle);
+			SettingsChangedHandle.Reset();
 		}
 
 		if (MaterialCompilationFinishedHandle.IsValid())
@@ -279,7 +291,39 @@ namespace UE::DreamShader::Editor::Private
 		}
 	}
 
-	void FDreamShaderEditorBridge::GenerateAllVirtualMaterials()
+	void FDreamShaderEditorBridge::HandlePostEngineInit()
+	{
+		// In-memory generation is the editor's always-on behavior (source files are the authoring
+		// surface; the editor never writes per-material .uasset files).
+		GenerateAllInMemoryMaterials();
+	}
+
+	void FDreamShaderEditorBridge::HandleSettingsPropertyChanged(UObject* Object, FPropertyChangedEvent& Event)
+	{
+		// Switching the default compiler backend changes how every backend-less source materializes, so
+		// regenerate everything in memory to reflect the new choice.
+		if (!Object || !Object->IsA<UDreamShaderSettings>()
+			|| Event.GetPropertyName() != GET_MEMBER_NAME_CHECKED(UDreamShaderSettings, DefaultBackend))
+		{
+			return;
+		}
+
+		UE_LOG(LogDreamShader, Display, TEXT("DreamShader default compiler backend changed; regenerating all source files in memory."));
+		GenerateAllInMemoryMaterials();
+
+		// Stale persisted assets shadow the in-memory versions; point the user at the cleanup.
+		TArray<UObject*> ShadowingAssets;
+		if (CollectPersistedGeneratedAssets(ShadowingAssets) > 0)
+		{
+			ShowDreamShaderNotification(
+				FText::Format(
+					LOCTEXT("DreamShaderInMemoryModeShadowed", "{0} previously generated asset(s) are still saved on disk and shadow the in-memory materials. Run Tools > DreamShader > Clean Persisted Generated Assets to remove them."),
+					FText::AsNumber(ShadowingAssets.Num())),
+				SNotificationItem::CS_Fail);
+		}
+	}
+
+	void FDreamShaderEditorBridge::GenerateAllInMemoryMaterials()
 	{
 		TArray<FString> SourceFiles;
 		FDreamShaderSourceFileUtils::FindProjectDreamShaderSourceFiles(SourceFiles);
@@ -289,7 +333,7 @@ namespace UE::DreamShader::Editor::Private
 			return;
 		}
 
-		UE_LOG(LogDreamShader, Display, TEXT("DreamShader virtual material mode: generating %d source file(s) in memory..."), SourceFiles.Num());
+		UE_LOG(LogDreamShader, Display, TEXT("DreamShader in-memory material mode: generating %d source file(s) in memory..."), SourceFiles.Num());
 
 		int32 SuccessCount = 0;
 		int32 FailCount = 0;
@@ -306,16 +350,16 @@ namespace UE::DreamShader::Editor::Private
 			if (bSuccess)
 			{
 				++SuccessCount;
-				UE_LOG(LogDreamShader, Display, TEXT("  [Virtual] %s"), *Message);
+				UE_LOG(LogDreamShader, Display, TEXT("  [In-Memory] %s"), *Message);
 			}
 			else
 			{
 				++FailCount;
-				UE_LOG(LogDreamShader, Warning, TEXT("  [Virtual] Failed: %s"), *Message);
+				UE_LOG(LogDreamShader, Warning, TEXT("  [In-Memory] Failed: %s"), *Message);
 			}
 		}
 
-		UE_LOG(LogDreamShader, Display, TEXT("DreamShader virtual material generation complete: %d succeeded, %d failed."), SuccessCount, FailCount);
+		UE_LOG(LogDreamShader, Display, TEXT("DreamShader in-memory material generation complete: %d succeeded, %d failed."), SuccessCount, FailCount);
 	}
 
 	void FDreamShaderEditorBridge::QueueSourceFile(const FString& SourceFilePath)
@@ -564,7 +608,7 @@ namespace UE::DreamShader::Editor::Private
 	void FDreamShaderEditorBridge::ProcessSourceFile(const FString& SourceFilePath)
 	{
 		UE::DreamShader::Compiler::FDreamShaderCompileService CompileService(UE::DreamShader::Editor::GetEditorCompileAdapter());
-		const UE::DreamShader::Compiler::FDreamShaderCompileResult Result = CompileService.CompileAssets(SourceFilePath, false, bVirtualMaterialMode);
+		const UE::DreamShader::Compiler::FDreamShaderCompileResult Result = CompileService.CompileAssets(SourceFilePath, false, /*bInMemory*/ true);
 		if (Result.bSucceeded)
 		{
 			ClearDiagnosticsForSourceAndDependencies(SourceFilePath);
@@ -717,6 +761,25 @@ namespace UE::DreamShader::Editor::Private
 				LOCTEXT("DreamShaderCleanGeneratedShadersTooltip", "Delete Intermediate/DreamShader/GeneratedShaders and queue a full DreamShader recompile."),
 				FSlateIcon(FAppStyle::GetAppStyleSetName(), TEXT("Icons.Delete")),
 				FUIAction(FExecuteAction::CreateSP(AsShared(), &FDreamShaderEditorBridge::RequestCleanGeneratedShaders)));
+			Section.AddMenuEntry(
+				TEXT("DreamShader.CleanPersistedGeneratedAssets"),
+				LOCTEXT("DreamShaderCleanPersistedGeneratedAssetsLabel", "Clean Persisted Generated Assets"),
+				LOCTEXT("DreamShaderCleanPersistedGeneratedAssetsTooltip", "Delete DreamShader-generated material assets that are saved on disk (they shadow in-memory material mode). Shows a confirmation with the full list; source files are untouched and regenerate in memory."),
+				FSlateIcon(FAppStyle::GetAppStyleSetName(), TEXT("Icons.Delete")),
+				FUIAction(FExecuteAction::CreateSP(AsShared(), &FDreamShaderEditorBridge::RequestCleanPersistedGeneratedAssets)));
+			Section.AddMenuEntry(
+				TEXT("DreamShader.ToggleShowInMemoryMaterials"),
+				LOCTEXT("DreamShaderToggleShowInMemoryMaterialsLabel", "Show In-Memory Materials"),
+				LOCTEXT("DreamShaderToggleShowInMemoryMaterialsTooltip", "Show memory-only DreamShader materials in the Content Browser and asset pickers — needed when picking one as a material instance Parent or referencing it from a detail panel. While shown, an explicit Save on one would persist it to disk (the shadow warning and Clean command cover recovery)."),
+				FSlateIcon(),
+				FUIAction(
+					FExecuteAction::CreateSP(AsShared(), &FDreamShaderEditorBridge::ToggleShowInMemoryMaterialsInContentBrowser),
+					FCanExecuteAction(),
+					FIsActionChecked::CreateLambda([]()
+					{
+						return GetDefault<UDreamShaderSettings>()->bShowInMemoryMaterialsInContentBrowser;
+					})),
+				EUserInterfaceActionType::ToggleButton);
 			Section.AddMenuEntry(
 				TEXT("DreamShader.OpenWorkspace"),
 				LOCTEXT("DreamShaderOpenWorkspaceLabel", "Open Dream Shader Workspace (VSCode)"),
@@ -1012,6 +1075,121 @@ namespace UE::DreamShader::Editor::Private
 		CleanGeneratedShaderDirectory();
 		QueueFullScan();
 		UE_LOG(LogDreamShader, Display, TEXT("DreamShader cleaned generated shader includes and queued a full .dsm/.dsf recompile scan."));
+	}
+
+	int32 FDreamShaderEditorBridge::CollectPersistedGeneratedAssets(TArray<UObject*>& OutAssets)
+	{
+		const FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
+
+		FARFilter Filter;
+		Filter.PackagePaths.Add(TEXT("/Game"));
+		Filter.bRecursivePaths = true;
+		Filter.bRecursiveClasses = true;
+		Filter.ClassPaths.Add(UMaterial::StaticClass()->GetClassPathName());
+		Filter.ClassPaths.Add(UMaterialFunction::StaticClass()->GetClassPathName());
+		Filter.ClassPaths.Add(UDreamShaderMaterialInstance::StaticClass()->GetClassPathName());
+
+		TArray<FAssetData> AssetDataList;
+		AssetRegistryModule.Get().GetAssets(Filter, AssetDataList);
+
+		for (const FAssetData& AssetData : AssetDataList)
+		{
+			// Only assets that actually live on disk qualify; in-memory assets are the
+			// desired end state. The provenance metadata gate means hand-authored materials are
+			// never touched — only assets DreamShader itself generated (including orphans whose
+			// source file has since been deleted or renamed).
+			if (!FPackageName::DoesPackageExist(AssetData.PackageName.ToString()))
+			{
+				continue;
+			}
+
+			UObject* Asset = AssetData.GetAsset();
+			if (Asset && !GetSourceFileMetadata(Asset).IsEmpty())
+			{
+				OutAssets.Add(Asset);
+			}
+		}
+
+		return OutAssets.Num();
+	}
+
+	void FDreamShaderEditorBridge::ToggleShowInMemoryMaterialsInContentBrowser()
+	{
+		if (bIsShuttingDown || IsEngineExitRequested() || GExitPurge)
+		{
+			return;
+		}
+
+		UDreamShaderSettings* Settings = GetMutableDefault<UDreamShaderSettings>();
+		Settings->bShowInMemoryMaterialsInContentBrowser = !Settings->bShowInMemoryMaterialsInContentBrowser;
+		Settings->TryUpdateDefaultConfigFile();
+		const bool bShow = Settings->bShowInMemoryMaterialsInContentBrowser;
+
+		// IsAsset() reads the setting live; broadcast per-instance registry events so the Content
+		// Browser (and open asset pickers) add/remove the tiles immediately instead of on the next
+		// re-enumeration.
+		int32 ToggledCount = 0;
+		for (TObjectIterator<UDreamShaderMaterialInstance> It; It; ++It)
+		{
+			UDreamShaderMaterialInstance* Instance = *It;
+			if (!IsValid(Instance) || !Instance->GetPackage()->HasAnyPackageFlags(PKG_NewlyCreated))
+			{
+				continue;
+			}
+
+			if (bShow)
+			{
+				FAssetRegistryModule::AssetCreated(Instance);
+			}
+			else
+			{
+				FAssetRegistryModule::AssetDeleted(Instance);
+			}
+			++ToggledCount;
+		}
+
+		ShowDreamShaderNotification(
+			FText::Format(
+				bShow
+					? LOCTEXT("DreamShaderInMemoryMaterialsShown", "Showing {0} in-memory material(s) in the Content Browser and asset pickers.")
+					: LOCTEXT("DreamShaderInMemoryMaterialsHidden", "Hidden {0} in-memory material(s) from the Content Browser and asset pickers."),
+				FText::AsNumber(ToggledCount)),
+			SNotificationItem::CS_Success);
+	}
+
+	void FDreamShaderEditorBridge::RequestCleanPersistedGeneratedAssets()
+	{
+		if (bIsShuttingDown || IsEngineExitRequested() || GExitPurge)
+		{
+			return;
+		}
+
+		TArray<UObject*> AssetsToDelete;
+		if (CollectPersistedGeneratedAssets(AssetsToDelete) == 0)
+		{
+			ShowDreamShaderNotification(
+				LOCTEXT("DreamShaderCleanPersistedNoneFound", "No persisted DreamShader-generated assets found."),
+				SNotificationItem::CS_Success);
+			return;
+		}
+
+		// Standard editor delete flow: lists the assets, checks references, and asks the user to
+		// confirm. Sources (.dsm/.dsf) are untouched, so everything is regenerable.
+		const int32 DeletedCount = ObjectTools::DeleteObjects(AssetsToDelete, /*bShowConfirmation*/ true);
+		UE_LOG(LogDreamShader, Display, TEXT("DreamShader deleted %d of %d persisted generated asset(s)."), DeletedCount, AssetsToDelete.Num());
+
+		if (DeletedCount > 0)
+		{
+			// Recreate the deleted assets in memory right away so references resolve without a restart.
+			GenerateAllInMemoryMaterials();
+		}
+
+		ShowDreamShaderNotification(
+			FText::Format(
+				LOCTEXT("DreamShaderCleanPersistedResult", "Deleted {0} of {1} persisted generated asset(s)."),
+				FText::AsNumber(DeletedCount),
+				FText::AsNumber(AssetsToDelete.Num())),
+			DeletedCount > 0 ? SNotificationItem::CS_Success : SNotificationItem::CS_Fail);
 	}
 
 	void FDreamShaderEditorBridge::OpenDreamShaderWorkspace()
@@ -1394,20 +1572,46 @@ namespace UE::DreamShader::Editor::Private
 	void FDreamShaderEditorBridge::CleanGeneratedShaderDirectory()
 	{
 		const FString GeneratedShaderDirectory = UE::DreamShader::GetGeneratedShaderDirectory();
+
+		// Safety guard: the generated-shader directory is user-configurable
+		// (DreamShaderSettings.GeneratedShaderDirectory). A misconfiguration pointing it at the project
+		// root, Content, or an arbitrary absolute path must never cause a recursive delete, so refuse to
+		// operate anywhere outside the project's Intermediate tree.
+		const FString FullGeneratedDir = FPaths::ConvertRelativePathToFull(GeneratedShaderDirectory);
+		const FString FullIntermediateDir = FPaths::ConvertRelativePathToFull(FPaths::ProjectIntermediateDir());
+		if (!FPaths::IsUnderDirectory(FullGeneratedDir, *FullIntermediateDir))
+		{
+			UE_LOG(
+				LogDreamShader,
+				Warning,
+				TEXT("DreamShader refused to clean generated shaders: '%s' is not inside the project Intermediate directory. "
+					 "Point DreamShaderSettings.GeneratedShaderDirectory back under Intermediate/ before cleaning."),
+				*GeneratedShaderDirectory);
+			return;
+		}
+
 		IFileManager& FileManager = IFileManager::Get();
 
+		// Delete only the shader files we generate (*.ush), one at a time -- never DeleteDirectory the
+		// whole tree. Even if the directory is (mis)shared with unrelated files, nothing but our own
+		// generated shaders is removed, and the directory itself is left in place.
 		TArray<FString> GeneratedShaderFiles;
 		FileManager.FindFilesRecursive(
 			GeneratedShaderFiles,
 			*GeneratedShaderDirectory,
-			TEXT("*"),
+			TEXT("*.ush"),
 			true,
 			false,
 			false);
 
-		const int32 DeletedFileCount = GeneratedShaderFiles.Num();
-		FileManager.DeleteDirectory(*GeneratedShaderDirectory, false, true);
-		FileManager.MakeDirectory(*GeneratedShaderDirectory, true);
+		int32 DeletedFileCount = 0;
+		for (const FString& GeneratedShaderFile : GeneratedShaderFiles)
+		{
+			if (FileManager.Delete(*GeneratedShaderFile, /*bRequireExists*/ false, /*bEvenIfReadOnly*/ true))
+			{
+				++DeletedFileCount;
+			}
+		}
 
 		UE_LOG(
 			LogDreamShader,

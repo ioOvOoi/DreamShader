@@ -14,6 +14,7 @@ class UMaterial;
 class UMaterialFunction;
 class UMaterialExpression;
 class UMaterialExpressionMaterialFunctionCall;
+class UDreamShaderMaterialInstance;
 class UClass;
 class UEnum;
 class FProperty;
@@ -232,6 +233,10 @@ namespace UE::DreamShader::Editor::Private
 		FString& OutCode,
 		bool& bOutUsesGeneratedInclude,
 		FString& OutError);
+	// Rewrite imported-Function call sites in HLSL text to match the generated-include signatures the
+	// instance backend references (single-out function -> return value, so an out-param call
+	// `Fn(a, b)` becomes `b = Fn(a)`, and the DSL name resolves to the DreamShaderFn_* symbol). The
+	// graph backend gets the same reconciliation through PrepareCustomNodeCode / the Custom node path.
 	bool IsTextureFunctionParameterType(const FString& InTypeName);
 	FString BuildGeneratedFunctionSymbolName(const FTextShaderFunctionDefinition& Function);
 	FString BuildGeneratedIncludeVirtualPath(const FString& SourceFilePath);
@@ -297,6 +302,9 @@ namespace UE::DreamShader::Editor::Private
 		bool& bOutIsSubstrateMaterial);
 	bool CreateOrReuseMaterial(const FTextShaderDefinition& Definition, UMaterial*& OutMaterial, FString& OutError, bool bTransient = false);
 	bool CreateOrReuseMaterialFunction(const FTextShaderMaterialFunctionDefinition& Definition, UMaterialFunction*& OutFunction, FString& OutError, bool bTransient = false);
+	bool CreateOrReuseInstanceMaterial(const FTextShaderDefinition& Definition, ::UDreamShaderMaterialInstance*& OutInstance, FString& OutError, bool bTransient = false);
+	bool TryResolveBlendModeSetting(const FString& InValue, EBlendMode& OutBlendMode);
+	bool TryResolveShadingModelSetting(const FString& InValue, EMaterialShadingModel& OutShadingModel);
 	bool TryResolveMaterialFunctionParameterType(
 		const FString& InTypeName,
 		int32& OutComponentCount,
@@ -312,9 +320,11 @@ namespace UE::DreamShader::Editor::Private
 		FString& OutError);
 	FString BuildSourceHash(const FString& SourceText);
 	bool IsGeneratedAssetSourceCurrent(UObject* Asset, const FString& SourceFilePath, const FString& SourceHash);
+	bool HasDreamShaderSourceMetadata(UObject* Asset);
 	void ApplySourceMetadata(UObject* Asset, const FString& SourceFilePath);
 	void ApplySourceMetadata(UObject* Asset, const FString& SourceFilePath, const FString& SourceHash);
 	bool SaveAssetPackage(UObject* Asset, FString& OutError);
+	bool SaveAssetPackages(const TArray<UObject*>& Assets, FString& OutError);
 	UClass* ResolveMaterialExpressionClass(const FString& ClassSpecifier);
 	FProperty* FindMaterialExpressionArgumentProperty(UClass* ExpressionClass, const FString& ArgumentName);
 	bool IsMaterialExpressionInputProperty(const FProperty* Property);

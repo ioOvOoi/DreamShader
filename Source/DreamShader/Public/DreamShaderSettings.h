@@ -7,6 +7,26 @@
 
 #include "DreamShaderSettings.generated.h"
 
+/** Backend used for source files that do not specify Settings = { Backend = "..." } themselves. */
+UENUM()
+enum class EDreamShaderDefaultBackend : uint8
+{
+	/** Build a UMaterial node graph per material (full DSL feature surface). */
+	Graph,
+	/**
+	 * DEPRECATED alias for ThinCustom (kept for one deprecation window so existing configs and
+	 * Settings = { Backend = "Instance" } sources keep working). The legacy graphless-host instance
+	 * backend is retired; "Instance" now generates the ThinCustom chain.
+	 */
+	Instance,
+	/**
+	 * Build the material graph on a hidden per-material base UMaterial and emit a lightweight
+	 * material instance of it. Full Graph feature surface (the construction is shared) plus the
+	 * instance's in-memory hiding and root shader-map ownership. The default.
+	 */
+	ThinCustom,
+};
+
 UCLASS(Config=Engine, DefaultConfig, meta=(DisplayName="DreamShader"))
 class DREAMSHADER_API UDreamShaderSettings : public UDeveloperSettings
 {
@@ -48,10 +68,18 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category="Paths", meta=(RelativeToGameDir))
 	FDirectoryPath GeneratedShaderDirectory;
 
-	UPROPERTY(Config, EditAnywhere, Category="Virtual Materials",
-		meta=(DisplayName="Enable Virtual Material Mode",
-			ToolTip="When enabled, DreamShader generates materials as transient in-memory assets at editor startup instead of saving .uasset files. DreamShader source files become the single asset source. Materials are automatically generated as persistent assets during cooking for packaging."))
-	bool bVirtualMaterialMode = false;
+	// The single compiler knob. DreamShader always generates materials in memory in the editor
+	// (source files are the authoring surface; the editor never writes per-material .uasset files) and
+	// materializes them as persistent assets during cooking — so there is no in-memory on/off toggle.
+	UPROPERTY(Config, EditAnywhere, Category="Compiler",
+		meta=(DisplayName="Default Compiler Backend",
+			ToolTip="How DreamShader materializes a source file that does not specify Settings = { Backend = \"...\" }. ThinCustom (the default) builds the material graph on a hidden per-material base and emits a lightweight, memory-only material instance of it -- full feature surface, no visible per-material asset. Graph builds a visible UMaterial node graph. Instance is a deprecated alias for ThinCustom."))
+	EDreamShaderDefaultBackend DefaultBackend = EDreamShaderDefaultBackend::ThinCustom;
+
+	UPROPERTY(Config, EditAnywhere, Category="Compiler",
+		meta=(DisplayName="Show In-Memory Materials In Content Browser",
+			ToolTip="When enabled, the memory-only DreamShader materials appear in the Content Browser like unsaved assets. Disabled by default: the source files are the intended authoring surface, and hiding the materials also prevents accidental Save actions from materializing them to disk."))
+	bool bShowInMemoryMaterialsInContentBrowser = false;
 
 	UPROPERTY(Config, EditAnywhere, Category="Compiler")
 	bool bAutoCompileOnSave = true;
@@ -67,6 +95,11 @@ public:
 	
 	UPROPERTY(Config, EditAnywhere, Category="Editor")
 	bool bOpenInNewWindow = true;
+
+	UPROPERTY(Config, EditAnywhere, Category="Editor",
+		meta=(DisplayName="Material Instance Subfolder",
+			ToolTip="Subfolder, relative to the parent material's folder, where the Material Content Browser creates new material instances. Leave empty to create them alongside the parent."))
+	FString InstanceSubfolder = TEXT("Instances");
 
 private:
 	static FString NormalizeShadingModelKey(const FString& InName);

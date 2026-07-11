@@ -12,7 +12,7 @@
 	"SupportURL": "https://github.com/TypeDreamMoon",
 	"Copyright": "Copyright (c) 2026 TypeDreamMoon. All rights reserved.",
 	"EnabledByDefault": true,
-	"CanContainContent": false,
+	"CanContainContent": true,
 	"IsBetaVersion": false,
 	"Installed": false,
 	"Modules": [

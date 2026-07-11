@@ -6,11 +6,20 @@
 #include "DreamShaderMaterialGeneratorPrivate.h"
 #include "DreamShaderMaterialGeneratorSourceLoading.h"
 
+#include "DreamShaderMaterialInstance.h"
 #include "DreamShaderModule.h"
 #include "DreamShaderParser.h"
+#include "DreamShaderSettings.h"
 #include "DreamShaderVersionCompat.h"
 
+#include "AssetRegistry/AssetRegistryModule.h"
 #include "CoreGlobals.h"
+#include "Engine/Texture.h"
+#include "HAL/FileManager.h"
+#include "RenderUtils.h"
+#include "Interfaces/IPluginManager.h"
+#include "MaterialShared.h"
+#include "Misc/PackageName.h"
 #include "MaterialEditingLibrary.h"
 #include "Materials/Material.h"
 #include "Materials/MaterialExpression.h"
@@ -21,6 +30,9 @@
 #include "Materials/MaterialExpressionMakeMaterialAttributes.h"
 #include "Materials/MaterialFunction.h"
 #include "Materials/MaterialFunctionMaterialLayerBlend.h"
+#include "Materials/MaterialInstanceBasePropertyOverrides.h"
+#include "MaterialSceneTextureId.h"
+#include "UObject/UnrealType.h"
 #include "Misc/FileHelper.h"
 #include "Misc/Paths.h"
 #include "Misc/ScopedSlowTask.h"
@@ -1802,6 +1814,9 @@ namespace UE::DreamShader::Editor
 			if (bTransient)
 			{
 				FunctionSlowTask.EnterProgressFrame(1.0f);
+				// Modify()/PostEditChange dirtied the in-memory package; clear it so no save-all or
+				// exit prompt can silently persist an in-memory material function.
+				MaterialFunction->GetPackage()->SetDirtyFlag(false);
 			}
 			else
 			{
@@ -1950,116 +1965,113 @@ namespace UE::DreamShader::Editor
 		return true;
 	}
 
-	bool FMaterialGenerator::GenerateMaterialFromFile(const FString& InSourceFilePath, FString& OutMessage, const bool bForce, const bool bTransient)
+	namespace Private
 	{
-		const FString SourceFilePath = UE::DreamShader::NormalizeSourceFilePath(InSourceFilePath);
-		FScopedSlowTask MaterialSlowTask(
-			11.0f,
-			FText::FromString(FString::Printf(TEXT("Generating DreamShader material from '%s'..."), *FPaths::GetCleanFilename(SourceFilePath))));
-		if (!IsRunningCommandlet())
+		static FString GetHlslTypeForCustomOutput(const ECustomMaterialOutputType OutputType)
 		{
-			MaterialSlowTask.MakeDialogDelayed(0.25f);
-		}
-
-		MaterialSlowTask.EnterProgressFrame(1.0f, FText::FromString(FString::Printf(TEXT("Reading material source '%s'..."), *FPaths::GetCleanFilename(SourceFilePath))));
-		if (UE::DreamShader::IsDreamShaderHeaderFile(SourceFilePath) || UE::DreamShader::IsDreamShaderFunctionFile(SourceFilePath))
-		{
-			OutMessage = FString::Printf(TEXT("DreamShader source '%s' cannot generate a material asset directly."), *SourceFilePath);
-			return false;
-		}
-
-		FString SourceText;
-		FString PreparedSourceError;
-		if (!LoadPreparedDreamShaderSource(SourceFilePath, SourceText, PreparedSourceError))
-		{
-			OutMessage = PreparedSourceError;
-			return false;
-		}
-
-		FTextShaderDefinition Definition;
-		FString ParseError;
-		MaterialSlowTask.EnterProgressFrame(1.0f, FText::FromString(FString::Printf(TEXT("Parsing material source '%s'..."), *FPaths::GetCleanFilename(SourceFilePath))));
-		if (!FTextShaderParser::Parse(SourceText, Definition, ParseError))
-		{
-			OutMessage = FormatParseErrorWithSourceLocation(SourceFilePath, SourceText, ParseError);
-			return false;
-		}
-
-		const FString SourceHash = Private::BuildSourceHash(SourceText);
-
-		if (Definition.Name.IsEmpty())
-		{
-			OutMessage = FString::Printf(TEXT("%s: This file does not define a top-level Shader block."), *SourceFilePath);
-			return false;
-		}
-
-		if (Definition.Outputs.IsEmpty())
-		{
-			OutMessage = FString::Printf(TEXT("%s: Outputs block is required."), *SourceFilePath);
-			return false;
-		}
-
-		TArray<Private::FResolvedNamedOutput> NamedOutputs;
-		bool bUsesReturn = false;
-		ECustomMaterialOutputType ReturnOutputType = CMOT_Float1;
-		bool bReturnIsSubstrateMaterial = false;
-		FString ValidationError;
-		if (!Private::ValidateSettings(Definition, ValidationError)
-			|| !Private::ValidateOutputs(Definition, NamedOutputs, bUsesReturn, ReturnOutputType, bReturnIsSubstrateMaterial, ValidationError))
-		{
-			OutMessage = FString::Printf(TEXT("%s: %s"), *SourceFilePath, *ValidationError);
-			return false;
-		}
-
-		bool bUsesFrontMaterial = false;
-		bool bUsesMaterialAttributesOutput = false;
-		for (const FTextShaderOutputBinding& Binding : Definition.Outputs)
-		{
-			if (Binding.TargetKind != FTextShaderOutputBinding::ETargetKind::MaterialProperty)
+			switch (OutputType)
 			{
-				continue;
-			}
-
-			Private::FResolvedMaterialProperty ResolvedProperty;
-			if (!Private::ResolveMaterialProperty(Binding.MaterialProperty, ResolvedProperty))
-			{
-				continue;
-			}
-
-			bUsesFrontMaterial |= ResolvedProperty.bIsSubstrateMaterial;
-			bUsesMaterialAttributesOutput |= ResolvedProperty.OutputType == CMOT_MaterialAttributes;
-		}
-		if (bUsesFrontMaterial && bUsesMaterialAttributesOutput)
-		{
-			OutMessage = FString::Printf(TEXT("%s: Base.FrontMaterial and Base.MaterialAttributes cannot be used by the same Shader."), *SourceFilePath);
-			return false;
-		}
-
-		if (!Definition.Functions.IsEmpty())
-		{
-			FString IncludeWriteError;
-			if (!Private::WriteGeneratedInclude(SourceFilePath, Definition, IncludeWriteError))
-			{
-				OutMessage = FString::Printf(TEXT("%s: %s"), *SourceFilePath, *IncludeWriteError);
-				return false;
+			case CMOT_Float1: return TEXT("float");
+			case CMOT_Float2: return TEXT("float2");
+			case CMOT_Float3: return TEXT("float3");
+			default:          return TEXT("float4");
 			}
 		}
 
-		UMaterial* Material = nullptr;
-		FString MaterialError;
-		MaterialSlowTask.EnterProgressFrame(1.0f, FText::FromString(FString::Printf(TEXT("Preparing material asset '%s'..."), *Definition.Name)));
-		if (!Private::CreateOrReuseMaterial(Definition, Material, MaterialError, bTransient) || !Material)
+		enum class EResolvedBackend : uint8 { Graph, ThinCustom };
+
+		// Decide which backend materializes the file: an explicit Settings = { Backend = "..." } wins;
+		// otherwise the project's DefaultBackend applies.
+		//
+		// STAGE 6 FLIP: "Instance" -- both the explicit Backend setting and the project default -- is
+		// a deprecation-window ALIAS for ThinCustom. ThinCustom reaches full Instance parity (textures,
+		// UI/PostProcess domains, scene reads, MaterialAttributes, the state-read builtin wave) with
+		// bit-identical SM6 rendering, so existing Instance sources keep generating unchanged -- they
+		// just get the real-graph hidden base + thin instance instead of the graphless host + injected
+		// resource. The legacy Instance generator is no longer reachable and is deleted in Stage 7.
+		static bool ResolveRequestedBackend(const FTextShaderDefinition& Definition, EResolvedBackend& OutBackend, bool& bOutExplicit, FString& OutError)
 		{
-			OutMessage = FString::Printf(TEXT("%s: %s"), *SourceFilePath, *MaterialError);
+			OutBackend = EResolvedBackend::Graph;
+			bOutExplicit = false;
+			FString Value;
+			if (!Definition.TryGetSetting(TEXT("Backend"), Value))
+			{
+				if (const UDreamShaderSettings* Settings = GetDefault<UDreamShaderSettings>())
+				{
+					switch (Settings->DefaultBackend)
+					{
+					case EDreamShaderDefaultBackend::Instance:   OutBackend = EResolvedBackend::ThinCustom; break;
+					case EDreamShaderDefaultBackend::ThinCustom: OutBackend = EResolvedBackend::ThinCustom; break;
+					default:                                     OutBackend = EResolvedBackend::Graph; break;
+					}
+				}
+				return true;
+			}
+
+			bOutExplicit = true;
+			const FString Trimmed = Value.TrimStartAndEnd().TrimQuotes();
+			if (Trimmed.Equals(TEXT("Instance"), ESearchCase::IgnoreCase))
+			{
+				OutBackend = EResolvedBackend::ThinCustom;
+				return true;
+			}
+			if (Trimmed.Equals(TEXT("ThinCustom"), ESearchCase::IgnoreCase))
+			{
+				OutBackend = EResolvedBackend::ThinCustom;
+				return true;
+			}
+			if (Trimmed.Equals(TEXT("Graph"), ESearchCase::IgnoreCase) || Trimmed.IsEmpty())
+			{
+				return true;
+			}
+
+			OutError = FString::Printf(TEXT("Unsupported Backend '%s'. Supported values: Graph, Instance, ThinCustom."), *Value);
 			return false;
 		}
 
-		if (!bForce && Private::IsGeneratedAssetSourceCurrent(Material, SourceFilePath, SourceHash))
+		// The single committed parent material every instance material derives from. Created on first
+		// use and saved into the plugin's Content mount; its graph stays empty because the instance
+		// resource overrides property compilation for every DSL-bound output.
+		// Parameter rows in the material instance editor are only marked visible when the parent
+		// material opts into the new HLSL generator (GetVisibleMaterialParameters trusts the
+		// enumerated parameter list instead of walking the — here nonexistent — expression graph).
+		// Actual translation stays on the legacy path: FDreamShaderInstanceResource overrides
+		// IsUsingNewHLSLGenerator to false. Requires r.Material.Translator.EnableNew=1.
+		static void EnsureHostParameterVisibilityFlag(UMaterial* Host)
 		{
-			OutMessage = FString::Printf(TEXT("Skipped %s from %s; source hash is unchanged."), *Material->GetPathName(), *SourceFilePath);
-			return true;
+			if (!Host->bEnableNewHLSLGenerator)
+			{
+				Host->bEnableNewHLSLGenerator = true;
+				Host->MarkPackageDirty();
+				FString SaveError;
+				if (!SaveAssetPackage(Host, SaveError))
+				{
+					UE_LOG(LogDreamShader, Warning,
+						TEXT("Failed to persist the parameter-visibility flag on the instance host material: %s"), *SaveError);
+				}
+			}
 		}
 
+	}
+
+	// Shared Graph-backend construction: applies settings, builds the node graph (decomposed Graph
+	// block or whole-surface single Custom node), lays out and recompiles. Extracted so both the
+	// visible Graph material path and the ThinCustom-on-hidden-base path build an identical graph
+	// onto their target UMaterial. Caller owns creation, source-hash skip, and persistence.
+	static bool PopulateMaterialGraphFromDefinition(
+		UMaterial* Material,
+		const FTextShaderDefinition& Definition,
+		const FString& SourceFilePath,
+		const FString& SourceText,
+		const TArray<Private::FResolvedNamedOutput>& NamedOutputs,
+		bool bUsesReturn,
+		ECustomMaterialOutputType ReturnOutputType,
+		bool bReturnIsSubstrateMaterial,
+		bool bUsesFrontMaterial,
+		bool bTransient,
+		FScopedSlowTask& MaterialSlowTask,
+		FString& OutMessage)
+	{
 		Material->Modify();
 		MaterialSlowTask.EnterProgressFrame(1.0f, FText::FromString(FString::Printf(TEXT("Clearing old material graph '%s'..."), *Material->GetName())));
 		Private::ClearMaterialExpressions(Material);
@@ -2522,10 +2534,348 @@ namespace UE::DreamShader::Editor
 		MaterialSlowTask.EnterProgressFrame(1.0f, FText::FromString(FString::Printf(TEXT("Compiling material '%s'..."), *Material->GetName())));
 		UMaterialEditingLibrary::RecompileMaterial(Material);
 		Material->PostEditChange();
+		return true;
+	}
+
+	// The hidden base UMaterial that carries the ThinCustom whole-surface graph (the instance parents
+	// to it). Hosting splits on bTransient:
+	//
+	// - TRANSIENT (the editor's in-memory default): the base lives in the transient package. Objects
+	//   whose outermost is GetTransientPackage() are excluded from IsAsset() and every content-browser
+	//   / asset-registry enumeration, so the base is naturally hidden with no override needed (the
+	//   instance hides itself via its own IsAsset()). Nothing is ever saved.
+	//
+	// - PERSIST (the cook director path): the base must be a real saveable sibling asset -- a saved
+	//   instance package records its Parent as an import by package+object path, and an import into
+	//   the transient package cannot resolve on load or at cook (the instance would lose its parent).
+	//   The base is created next to the instance as MB_DreamThinBase_<AssetName>, registered with the
+	//   asset registry, ownership-guarded like every other generated asset, and saved together with
+	//   the instance in one SavePackages call.
+	static bool EnsureThinCustomBaseMaterial(const FTextShaderDefinition& Definition, const bool bTransient, UMaterial*& OutBase, FString& OutError)
+	{
+		if (bTransient)
+		{
+			// Definition.Name is a slash-delimited logical path; sanitize it into a flat object name.
+			// Slashes in an FName break FindObject reuse (they read as subobject-path separators), so an
+			// unsanitized name would leak a new transient base on every regeneration.
+			const FName BaseName(*FString::Printf(TEXT("MB_DreamThinBase_%s"), *UE::DreamShader::SanitizeIdentifier(Definition.Name)));
+			OutBase = FindObject<UMaterial>(GetTransientPackage(), *BaseName.ToString());
+			if (!OutBase)
+			{
+				// RF_Standalone is mandatory, not cosmetic: RecompileMaterial runs a full GC pass
+				// (BuildTextureStreamingData -> CollectGarbage), and in the editor GARBAGE_COLLECTION_KEEPFLAGS
+				// is RF_Standalone alone. Until the instance parents to this base, the base is only reachable
+				// through a local pointer, so without RF_Standalone the GC collects it mid-recompile.
+				OutBase = NewObject<UMaterial>(GetTransientPackage(), BaseName, RF_Public | RF_Standalone | RF_Transient);
+			}
+			if (!OutBase)
+			{
+				OutError = FString::Printf(TEXT("Failed to create ThinCustom base material for '%s'."), *Definition.Name);
+				return false;
+			}
+			return true;
+		}
+
+		// Persist: derive the base's sibling package from the instance's own destination.
+		FString InstancePackageName;
+		FString InstanceObjectPath;
+		FString InstanceAssetName;
+		if (!Private::ResolveDreamShaderAssetDestination(Definition.Name, Definition.Root, InstancePackageName, InstanceObjectPath, InstanceAssetName, OutError))
+		{
+			return false;
+		}
+
+		const FString BaseLeafName = FString::Printf(TEXT("MB_DreamThinBase_%s"), *InstanceAssetName);
+		const FString BasePackageName = FPackageName::GetLongPackagePath(InstancePackageName) / BaseLeafName;
+		const FString BaseObjectPath = FString::Printf(TEXT("%s.%s"), *BasePackageName, *BaseLeafName);
+
+		if (UObject* ExistingObject = LoadObject<UObject>(nullptr, *BaseObjectPath))
+		{
+			OutBase = Cast<UMaterial>(ExistingObject);
+			if (!OutBase)
+			{
+				OutError = FString::Printf(TEXT("Asset '%s' already exists and is not a Material."), *BaseObjectPath);
+				return false;
+			}
+
+			// Ownership guard (same policy as CreateOrReuseMaterial): never rebuild over a saved asset
+			// DreamShader did not generate. The graph itself is cleared and repopulated by the caller.
+			if (FPackageName::DoesPackageExist(BasePackageName) && !Private::HasDreamShaderSourceMetadata(ExistingObject))
+			{
+				OutError = FString::Printf(
+					TEXT("Asset '%s' already exists and was not generated by DreamShader. Rename your shader or move/delete the existing asset before regenerating."),
+					*BaseObjectPath);
+				return false;
+			}
+
+			return true;
+		}
+
+		UPackage* BasePackage = CreatePackage(*BasePackageName);
+		if (!BasePackage)
+		{
+			OutError = FString::Printf(TEXT("Failed to create package '%s'."), *BasePackageName);
+			return false;
+		}
+
+		OutBase = NewObject<UMaterial>(BasePackage, FName(*BaseLeafName), RF_Public | RF_Standalone);
+		if (!OutBase)
+		{
+			OutError = FString::Printf(TEXT("Failed to create ThinCustom base material '%s'."), *BaseObjectPath);
+			return false;
+		}
+
+		FAssetRegistryModule::AssetCreated(OutBase);
+		return true;
+	}
+
+	// THE backend: build the material graph onto a hidden per-material base UMaterial (reusing the
+	// Graph construction wholesale) and emit a lightweight UDreamShaderMaterialInstance of it. The
+	// instance is a plain thin MIC -- parameters, settings, domains, and scene reads all live on the
+	// base as ordinary nodes and properties, enumerated and compiled natively by the engine. What the
+	// instance adds is the in-memory hiding (IsAsset) and root shader-map ownership
+	// (HasOverridenBaseProperties, since the parent is a UMaterial).
+	static bool GenerateThinCustomMaterialAsInstance(
+		const FString& SourceFilePath,
+		const FString& SourceHash,
+		const FTextShaderDefinition& Definition,
+		const FString& SourceText,
+		const TArray<Private::FResolvedNamedOutput>& NamedOutputs,
+		bool bUsesReturn,
+		ECustomMaterialOutputType ReturnOutputType,
+		bool bReturnIsSubstrateMaterial,
+		bool bUsesFrontMaterial,
+		FString& OutMessage,
+		const bool bForce,
+		const bool bTransient)
+	{
+		UDreamShaderMaterialInstance* Instance = nullptr;
+		FString InstanceError;
+		if (!Private::CreateOrReuseInstanceMaterial(Definition, Instance, InstanceError, bTransient) || !Instance)
+		{
+			OutMessage = FString::Printf(TEXT("%s: %s"), *SourceFilePath, *InstanceError);
+			return false;
+		}
+
+		if (!bForce && Private::IsGeneratedAssetSourceCurrent(Instance, SourceFilePath, SourceHash))
+		{
+			OutMessage = FString::Printf(TEXT("Skipped %s from %s; source hash is unchanged."), *Instance->GetPathName(), *SourceFilePath);
+			return true;
+		}
+
+		// After the skip check on purpose: a hash-skip must not create (or ownership-check) a base.
+		UMaterial* BaseMaterial = nullptr;
+		FString BaseError;
+		if (!EnsureThinCustomBaseMaterial(Definition, bTransient, BaseMaterial, BaseError) || !BaseMaterial)
+		{
+			OutMessage = FString::Printf(TEXT("%s: %s"), *SourceFilePath, *BaseError);
+			return false;
+		}
+
+		// Build the whole-surface Custom graph onto the base. bTransient is threaded through: the
+		// persist path lays out the base's graph (it becomes a real inspectable asset on disk), the
+		// transient path skips layout. Scope a self-contained slow-task for the build so its progress
+		// frames account against their own budget -- the caller already entered one coarse frame for
+		// the whole thin-custom generation, so threading that same task through here would overflow it
+		// (SlowTask.cpp "Work overflow" ensure).
+		{
+			FScopedSlowTask GraphBuildTask(11.0f, FText::FromString(FString::Printf(TEXT("Building material graph for '%s'..."), *Definition.Name)));
+			if (!PopulateMaterialGraphFromDefinition(
+					BaseMaterial, Definition, SourceFilePath, SourceText, NamedOutputs,
+					bUsesReturn, ReturnOutputType, bReturnIsSubstrateMaterial, bUsesFrontMaterial,
+					bTransient, GraphBuildTask, OutMessage))
+			{
+				return false;
+			}
+		}
+
+		// Deferred recache: the single shader recache happens in UpdateStaticPermutation below, after
+		// the parent's graph is in place.
+		Instance->SetParentEditorOnly(BaseMaterial, /*RecacheShader*/ false);
+		Instance->ClearParameterValuesEditorOnly();
+		Instance->SourceFilePath = SourceFilePath;
+		Instance->SourceHash = SourceHash;
+
+		Instance->UpdateStaticPermutation();
+		Instance->PostEditChange();
+		Private::ApplySourceMetadata(Instance, SourceFilePath, SourceHash);
+
+		if (bTransient)
+		{
+			// The editor-only setters and PostEditChange dirtied the in-memory package; clear it so no
+			// save-all or exit prompt can silently persist a virtual instance material.
+			Instance->GetPackage()->SetDirtyFlag(false);
+		}
+		else
+		{
+			// The base is the instance's ownership anchor on disk: stamp it so regeneration recognizes
+			// it (ownership guard) and save BOTH packages in one call -- SavePackages does not gather
+			// the parent dependency, and a saved instance whose base package is missing loses its
+			// parent import on the next load / at cook.
+			Private::ApplySourceMetadata(BaseMaterial, SourceFilePath, SourceHash);
+			BaseMaterial->MarkPackageDirty();
+			Instance->MarkPackageDirty();
+
+			FString SaveError;
+			if (!Private::SaveAssetPackages({ BaseMaterial, Instance }, SaveError))
+			{
+				OutMessage = FString::Printf(TEXT("%s: %s"), *SourceFilePath, *SaveError);
+				return false;
+			}
+		}
+
+		OutMessage = FString::Printf(TEXT("Generated DreamShader thin-custom material %s from %s."), *Instance->GetPathName(), *SourceFilePath);
+		return true;
+	}
+
+	bool FMaterialGenerator::GenerateMaterialFromFile(const FString& InSourceFilePath, FString& OutMessage, const bool bForce, const bool bTransient)
+	{
+		const FString SourceFilePath = UE::DreamShader::NormalizeSourceFilePath(InSourceFilePath);
+		FScopedSlowTask MaterialSlowTask(
+			11.0f,
+			FText::FromString(FString::Printf(TEXT("Generating DreamShader material from '%s'..."), *FPaths::GetCleanFilename(SourceFilePath))));
+		if (!IsRunningCommandlet())
+		{
+			MaterialSlowTask.MakeDialogDelayed(0.25f);
+		}
+
+		MaterialSlowTask.EnterProgressFrame(1.0f, FText::FromString(FString::Printf(TEXT("Reading material source '%s'..."), *FPaths::GetCleanFilename(SourceFilePath))));
+		if (UE::DreamShader::IsDreamShaderHeaderFile(SourceFilePath) || UE::DreamShader::IsDreamShaderFunctionFile(SourceFilePath))
+		{
+			OutMessage = FString::Printf(TEXT("DreamShader source '%s' cannot generate a material asset directly."), *SourceFilePath);
+			return false;
+		}
+
+		FString SourceText;
+		FString PreparedSourceError;
+		if (!LoadPreparedDreamShaderSource(SourceFilePath, SourceText, PreparedSourceError))
+		{
+			OutMessage = PreparedSourceError;
+			return false;
+		}
+
+		FTextShaderDefinition Definition;
+		FString ParseError;
+		MaterialSlowTask.EnterProgressFrame(1.0f, FText::FromString(FString::Printf(TEXT("Parsing material source '%s'..."), *FPaths::GetCleanFilename(SourceFilePath))));
+		if (!FTextShaderParser::Parse(SourceText, Definition, ParseError))
+		{
+			OutMessage = FormatParseErrorWithSourceLocation(SourceFilePath, SourceText, ParseError);
+			return false;
+		}
+
+		const FString SourceHash = Private::BuildSourceHash(SourceText);
+
+		if (Definition.Name.IsEmpty())
+		{
+			OutMessage = FString::Printf(TEXT("%s: This file does not define a top-level Shader block."), *SourceFilePath);
+			return false;
+		}
+
+		if (Definition.Outputs.IsEmpty())
+		{
+			OutMessage = FString::Printf(TEXT("%s: Outputs block is required."), *SourceFilePath);
+			return false;
+		}
+
+		TArray<Private::FResolvedNamedOutput> NamedOutputs;
+		bool bUsesReturn = false;
+		ECustomMaterialOutputType ReturnOutputType = CMOT_Float1;
+		bool bReturnIsSubstrateMaterial = false;
+		FString ValidationError;
+		if (!Private::ValidateSettings(Definition, ValidationError)
+			|| !Private::ValidateOutputs(Definition, NamedOutputs, bUsesReturn, ReturnOutputType, bReturnIsSubstrateMaterial, ValidationError))
+		{
+			OutMessage = FString::Printf(TEXT("%s: %s"), *SourceFilePath, *ValidationError);
+			return false;
+		}
+
+		bool bUsesFrontMaterial = false;
+		bool bUsesMaterialAttributesOutput = false;
+		for (const FTextShaderOutputBinding& Binding : Definition.Outputs)
+		{
+			if (Binding.TargetKind != FTextShaderOutputBinding::ETargetKind::MaterialProperty)
+			{
+				continue;
+			}
+
+			Private::FResolvedMaterialProperty ResolvedProperty;
+			if (!Private::ResolveMaterialProperty(Binding.MaterialProperty, ResolvedProperty))
+			{
+				continue;
+			}
+
+			bUsesFrontMaterial |= ResolvedProperty.bIsSubstrateMaterial;
+			bUsesMaterialAttributesOutput |= ResolvedProperty.OutputType == CMOT_MaterialAttributes;
+		}
+		if (bUsesFrontMaterial && bUsesMaterialAttributesOutput)
+		{
+			OutMessage = FString::Printf(TEXT("%s: Base.FrontMaterial and Base.MaterialAttributes cannot be used by the same Shader."), *SourceFilePath);
+			return false;
+		}
+
+		// Both backends consume the imported-functions include, so it is written before the
+		// backend split.
+		if (!Definition.Functions.IsEmpty())
+		{
+			FString IncludeWriteError;
+			if (!Private::WriteGeneratedInclude(SourceFilePath, Definition, IncludeWriteError))
+			{
+				OutMessage = FString::Printf(TEXT("%s: %s"), *SourceFilePath, *IncludeWriteError);
+				return false;
+			}
+		}
+
+		Private::EResolvedBackend RequestedBackend = Private::EResolvedBackend::Graph;
+		bool bExplicitBackend = false;
+		FString BackendError;
+		if (!Private::ResolveRequestedBackend(Definition, RequestedBackend, bExplicitBackend, BackendError))
+		{
+			OutMessage = FString::Printf(TEXT("%s: %s"), *SourceFilePath, *BackendError);
+			return false;
+		}
+
+		if (RequestedBackend == Private::EResolvedBackend::ThinCustom)
+		{
+			// Convergence path: build the whole surface onto a hidden base UMaterial and emit a
+			// lightweight instance of it. It reuses the Graph construction, so it is as capable as the
+			// Graph backend (return-style Outputs included) -- no capability gate or fallback needed.
+			MaterialSlowTask.EnterProgressFrame(8.0f, FText::FromString(FString::Printf(TEXT("Generating thin-custom material for '%s'..."), *Definition.Name)));
+			return GenerateThinCustomMaterialAsInstance(
+				SourceFilePath, SourceHash, Definition, SourceText, NamedOutputs,
+				bUsesReturn, ReturnOutputType, bReturnIsSubstrateMaterial, bUsesFrontMaterial,
+				OutMessage, bForce, bTransient);
+		}
+
+
+		UMaterial* Material = nullptr;
+		FString MaterialError;
+		MaterialSlowTask.EnterProgressFrame(1.0f, FText::FromString(FString::Printf(TEXT("Preparing material asset '%s'..."), *Definition.Name)));
+		if (!Private::CreateOrReuseMaterial(Definition, Material, MaterialError, bTransient) || !Material)
+		{
+			OutMessage = FString::Printf(TEXT("%s: %s"), *SourceFilePath, *MaterialError);
+			return false;
+		}
+
+		if (!bForce && Private::IsGeneratedAssetSourceCurrent(Material, SourceFilePath, SourceHash))
+		{
+			OutMessage = FString::Printf(TEXT("Skipped %s from %s; source hash is unchanged."), *Material->GetPathName(), *SourceFilePath);
+			return true;
+		}
+
+		if (!PopulateMaterialGraphFromDefinition(
+				Material, Definition, SourceFilePath, SourceText, NamedOutputs,
+				bUsesReturn, ReturnOutputType, bReturnIsSubstrateMaterial, bUsesFrontMaterial,
+				bTransient, MaterialSlowTask, OutMessage))
+		{
+			return false;
+		}
 
 		if (bTransient)
 		{
 			MaterialSlowTask.EnterProgressFrame(1.0f);
+			// Modify()/PostEditChange dirtied the in-memory package; clear it so no save-all or
+			// exit prompt can silently persist an in-memory material and fork the source of truth.
+			Material->GetPackage()->SetDirtyFlag(false);
 		}
 		else
 		{

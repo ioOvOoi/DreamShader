@@ -1,13 +1,29 @@
 #include "Commandlet/DreamShaderCommandletRunner.h"
+#include "DreamShaderMaterialInstance.h"
 #include "DreamShaderModule.h"
 #include "DreamShaderParser.h"
+#include "DreamShaderSettings.h"
+#include "DreamShaderTestCommon.h"
 #include "DreamShaderTypes.h"
 #include "DreamShaderVersionCompat.h"
 #include "MaterialAssetGeneration/DreamShaderMaterialGenerator.h"
+#include "Preview/DreamShaderPreviewRenderer.h"
 
+#include "AssetCompilingManager.h"
+#include "Engine/Texture.h"
 #include "HAL/FileManager.h"
+#include "ImageUtils.h"
+#include "Misc/App.h"
+#include "RHI.h"
+#include "RenderingThread.h"
+#include "ShaderCompiler.h"
+#include "MaterialShared.h"
 #include "Materials/Material.h"
+#include "Materials/MaterialParameters.h"
 #include "Materials/MaterialFunction.h"
+#include "Materials/MaterialExpressionTextureSampleParameter2D.h"
+#include "MaterialEditingLibrary.h"
+#include "Engine/Texture.h"
 #include "Materials/MaterialExpressionIf.h"
 #include "Materials/MaterialExpressionAdd.h"
 #include "Materials/MaterialExpressionMultiply.h"
@@ -477,6 +493,9 @@ bool FDreamShaderTruthyConditionWiringTest::RunTest(const FString& Parameters)
 	using namespace UE::DreamShader::Editor;
 	using namespace UE::DreamShader::Editor::Private::Tests;
 
+	// Asserts Graph-backend node shape (UMaterialExpressionIf), so pin the Graph backend — the
+	// if/else source is expressible in the Instance backend and would otherwise route there.
+	FScopedDreamShaderGraphBackendPin BackendPin;
 	FScopedDreamShaderAutomationArtifacts Artifacts;
 	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_Truthy"));
 	const FString ObjectPath = MakeAutomationObjectPath(AssetName);
@@ -572,6 +591,9 @@ bool FDreamShaderRoundTripMaterialTest::RunTest(const FString& Parameters)
 	using namespace UE::DreamShader::Editor::Private;
 	using namespace UE::DreamShader::Editor::Private::Tests;
 
+	// These assertions describe graph-backend node shapes; pin the backend against reroutes.
+	FScopedDreamShaderGraphBackendPin BackendPin;
+
 	FScopedDreamShaderAutomationArtifacts Artifacts;
 	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_RoundTrip"));
 	const FString ObjectPath = MakeAutomationObjectPath(AssetName);
@@ -653,6 +675,94 @@ Shader(Name="DreamShaderTests/Automation/%s")
 	return true;
 }
 
+IMPLEMENT_CUSTOM_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderRoundTripSubstrateMaterialTest,
+	FDreamShaderQuietAutomationTestBase,
+	"DreamShader.Roundtrip.SubstrateMaterialRegenerates",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+// A Substrate material's shading is driven by its FrontMaterial tree, so the UMaterial's ShadingModel
+// enum stays at its default (DefaultLit) -- it does not describe the surface. The decompiler used to
+// emit that enum verbatim, producing ShadingModel="DefaultLit" alongside Base.FrontMaterial, which the
+// generator rejects ("Base.FrontMaterial requires ShadingModel=Substrate or none"). So a decompiled
+// Substrate material would not round-trip. The existing round-trip test only re-PARSES the decompiled
+// source; this failure is at GENERATE time, so it needs a re-generate. (Requires r.Substrate=True.)
+bool FDreamShaderRoundTripSubstrateMaterialTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader;
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	// Substrate materials generate through the Graph backend (the decomposed node path).
+	FScopedDreamShaderGraphBackendPin BackendPin;
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_SubstrateSrc"));
+	const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+	Artifacts.AddObjectPath(ObjectPath);
+	AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
+	AddExpectedAutomationCleanupWarnings(*this);
+
+	FString SourceFilePath;
+	if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), MakeSubstrateMaterialSource(AssetName), SourceFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(SourceFilePath);
+
+	FString Message;
+	if (!TestTrue(
+		FString::Printf(TEXT("Substrate material generation succeeds: %s"), *Message),
+		FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, true)))
+	{
+		return false;
+	}
+
+	UMaterial* Material = LoadObject<UMaterial>(nullptr, *ObjectPath);
+	if (!TestNotNull(TEXT("Generated Substrate material loads"), Material))
+	{
+		return false;
+	}
+
+	// Decompile to a fresh automation-path name so the re-generated asset is registered for cleanup.
+	const FString ReAssetName = MakeUniqueTestAssetName(TEXT("M_SubstrateRoundTrip"));
+	const FString ReObjectPath = MakeAutomationObjectPath(ReAssetName);
+	Artifacts.AddObjectPath(ReObjectPath);
+	AddExpectedNewAssetProbeWarnings(*this, ReObjectPath);
+
+	FString DecompiledSource;
+	FString DecompileError;
+	if (!TestTrue(
+		FString::Printf(TEXT("Substrate decompile succeeds: %s"), *DecompileError),
+		GetGraphDecompiler().DecompileMaterial(Material, FString::Printf(TEXT("DreamShaderTests/Automation/%s"), *ReAssetName), DecompiledSource, DecompileError)))
+	{
+		return false;
+	}
+
+	// The fix: a FrontMaterial material decompiles to ShadingModel="Substrate", not the misleading
+	// DefaultLit enum, so it satisfies the generator's Base.FrontMaterial rule.
+	TestTrue(TEXT("Decompiled Substrate material binds Base.FrontMaterial."), DecompiledSource.Contains(TEXT("Base.FrontMaterial")));
+	TestTrue(TEXT("Decompiled Substrate ShadingModel is \"Substrate\"."), DecompiledSource.Contains(TEXT("ShadingModel = \"Substrate\"")));
+	TestFalse(TEXT("Decompiled Substrate ShadingModel is not the material's default DefaultLit enum."), DecompiledSource.Contains(TEXT("ShadingModel = \"DefaultLit\"")));
+
+	// The real round-trip: the decompiled source must re-GENERATE. This is the check the reported bug
+	// failed -- a re-parse alone would have passed while generation still errored.
+	FString ReSourceFilePath;
+	if (!WriteAutomationSourceFile(*this, ReAssetName + TEXT(".dsm"), DecompiledSource, ReSourceFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(ReSourceFilePath);
+
+	FString ReMessage;
+	TestTrue(
+		FString::Printf(TEXT("Decompiled Substrate source re-generates: %s"), *ReMessage),
+		FMaterialGenerator::GenerateMaterialFromFile(ReSourceFilePath, ReMessage, true));
+
+	return true;
+}
+
 namespace UE::DreamShader::Editor::Private::Tests
 {
 	template <typename TExpressionClass>
@@ -727,6 +837,11 @@ namespace UE::DreamShader::Editor::Private::Tests
 		const FString& Source,
 		UMaterial*& OutMaterial)
 	{
+		// This helper loads the result as a UMaterial, which only the Graph backend produces. Pin it so
+		// graph-shape tests do not depend on a source's domain/content happening to be inexpressible in
+		// the Instance backend (which would route it to a UMaterialInstance and return null here).
+		FScopedDreamShaderGraphBackendPin GraphPin;
+
 		const FString ObjectPath = MakeAutomationObjectPath(AssetName);
 		Artifacts.AddObjectPath(ObjectPath);
 		AddExpectedNewAssetProbeWarnings(Test, ObjectPath);
@@ -855,6 +970,9 @@ bool FDreamShaderParameterNodeGenerationTest::RunTest(const FString& Parameters)
 {
 	using namespace UE::DreamShader::Editor::Private::Tests;
 
+	// These assertions describe graph-backend node shapes; pin the backend against reroutes.
+	FScopedDreamShaderGraphBackendPin BackendPin;
+
 	FScopedDreamShaderAutomationArtifacts Artifacts;
 	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_Params"));
 	// Scal and Vec are declared WITHOUT `= value` on purpose (optional-default contract); Dyn carries
@@ -913,6 +1031,9 @@ IMPLEMENT_CUSTOM_SIMPLE_AUTOMATION_TEST(
 bool FDreamShaderOtherParameterNodeGenerationTest::RunTest(const FString& Parameters)
 {
 	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	// These assertions describe graph-backend node shapes; pin the backend against reroutes.
+	FScopedDreamShaderGraphBackendPin BackendPin;
 
 	struct FOtherParameterCase
 	{
@@ -976,6 +1097,9 @@ bool FDreamShaderParameterInputWiringTest::RunTest(const FString& Parameters)
 {
 	using namespace UE::DreamShader::Editor::Private::Tests;
 
+	// These assertions describe graph-backend node shapes; pin the backend against reroutes.
+	FScopedDreamShaderGraphBackendPin BackendPin;
+
 	FScopedDreamShaderAutomationArtifacts Artifacts;
 	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_ParamInputs"));
 	const FString Source = FString::Printf(TEXT(R"(
@@ -1007,5 +1131,1395 @@ Shader(Name="DreamShaderTests/Automation/%s")
 		IsNamedInputConnected(Material, TEXT("MaterialExpressionTextureSampleParameterCube"), TEXT("Coordinates")));
 	return true;
 }
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderGenerateInstanceBackendTest,
+	"DreamShader.Compiler.Generate.InstanceAlias",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+// Stage 6 (the flip): Backend="Instance" is a deprecation-window ALIAS for ThinCustom. The legacy
+// graphless-host generator is unreachable; an explicit Instance source now generates the thin chain
+// (hidden base carrying the real graph + thin instance with an empty Instance-backend model), and
+// parameters/settings resolve natively through the base.
+bool FDreamShaderGenerateInstanceBackendTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_AutoInstanceAlias"));
+	const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+	Artifacts.AddObjectPath(ObjectPath);
+	AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
+	AddExpectedAutomationCleanupWarnings(*this);
+
+	const FString Source = FString::Printf(TEXT(R"(Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
+{
+    Properties = {
+        ScalarParameter Boost = 0.5;
+        VectorParameter Tint = float4(1.0, 0.5, 0.25, 1.0);
+        const float K = 2.0;
+    }
+
+    Settings = {
+        Backend = "Instance";
+        ShadingModel = "Unlit";
+        BlendMode = "Opaque";
+    }
+
+    Outputs = {
+        vec3 Color;
+        Base.EmissiveColor = Color;
+    }
+
+    Graph = {
+        Color = Tint.rgb * Boost * K;
+    }
+}
+)"), *AssetName);
+
+	FString SourceFilePath;
+	if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), Source, SourceFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(SourceFilePath);
+
+	FString Message;
+	const bool bGenerated = FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ true);
+	if (!TestTrue(FString::Printf(TEXT("Instance-alias generation succeeds: %s"), *Message), bGenerated))
+	{
+		return false;
+	}
+
+	UDreamShaderMaterialInstance* Instance = FindObject<UDreamShaderMaterialInstance>(nullptr, *ObjectPath);
+	if (!TestNotNull(TEXT("Instance-alias material exists in memory."), Instance))
+	{
+		return false;
+	}
+
+	// The thin chain, not the legacy graphless host: empty Instance-backend model, parented to the
+	// per-material hidden base.
+	UMaterial* Base = Cast<UMaterial>(Instance->Parent.Get());
+	if (TestNotNull(TEXT("Instance is parented to a real base UMaterial."), Base))
+	{
+		TestTrue(TEXT("Parent is the ThinCustom hidden base."), Base->GetName().StartsWith(TEXT("MB_DreamThinBase_")));
+		TestEqual(TEXT("Blend mode lands on the base."), Base->BlendMode, BLEND_Opaque);
+		TestTrue(TEXT("Shading model lands on the base."), Base->GetShadingModels().HasShadingModel(MSM_Unlit));
+	}
+
+	float BoostValue = 0.0f;
+	TestTrue(TEXT("Scalar parameter resolves natively through the chain."),
+		Instance->GetScalarParameterValue(FMaterialParameterInfo(TEXT("Boost")), BoostValue) && FMath::IsNearlyEqual(BoostValue, 0.5f));
+	FLinearColor TintValue = FLinearColor::Black;
+	TestTrue(TEXT("Vector parameter resolves natively through the chain."),
+		Instance->GetVectorParameterValue(FMaterialParameterInfo(TEXT("Tint")), TintValue));
+	float KValue = 0.0f;
+	TestFalse(TEXT("Const property does not become a parameter."),
+		Instance->GetScalarParameterValue(FMaterialParameterInfo(TEXT("K")), KValue));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderGenerateThinCustomBackendTest,
+	"DreamShader.Compiler.Generate.ThinCustomBackend",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+bool FDreamShaderGenerateThinCustomBackendTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_AutoThinCustom"));
+	const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+	// Persist-mode generation (bTransient defaults false below) also materializes the hidden base as
+	// a real sibling asset; register it for cleanup and expected-probe suppression too.
+	const FString BaseAssetName = FString::Printf(TEXT("MB_DreamThinBase_%s"), *AssetName);
+	const FString BaseObjectPath = MakeAutomationObjectPath(BaseAssetName);
+	Artifacts.AddObjectPath(ObjectPath);
+	Artifacts.AddObjectPath(BaseObjectPath);
+	AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
+	AddExpectedNewAssetProbeWarnings(*this, BaseObjectPath);
+	AddExpectedAutomationCleanupWarnings(*this);
+
+	const FString Source = FString::Printf(TEXT(R"(Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
+{
+    Properties = {
+        ScalarParameter Boost = 0.5;
+        VectorParameter Tint = float4(1.0, 0.5, 0.25, 1.0);
+    }
+
+    Settings = {
+        Backend = "ThinCustom";
+        ShadingModel = "Unlit";
+        BlendMode = "Opaque";
+    }
+
+    Outputs = {
+        vec3 Color;
+        Base.EmissiveColor = Color;
+    }
+
+    Graph = {
+        Color = Tint.rgb * Boost;
+    }
+}
+)"), *AssetName);
+
+	FString SourceFilePath;
+	if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), Source, SourceFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(SourceFilePath);
+
+	FString Message;
+	const bool bGenerated = FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, true);
+	if (!TestTrue(FString::Printf(TEXT("ThinCustom material generation succeeds: %s"), *Message), bGenerated))
+	{
+		return false;
+	}
+
+	UDreamShaderMaterialInstance* Instance = LoadObject<UDreamShaderMaterialInstance>(nullptr, *ObjectPath);
+	if (!TestNotNull(FString::Printf(TEXT("Generated ThinCustom instance loads from '%s'."), *ObjectPath), Instance))
+	{
+		return false;
+	}
+
+	// The instance is a THIN material instance of a real base UMaterial: its own Instance-backend
+	// model stays empty (no per-property Custom injection, no synthesized parameter data), so the
+	// engine compiles and enumerates the base's real graph natively. This is what distinguishes the
+	// convergence path from the Instance backend.
+	TestTrue(TEXT("Instance forces a static permutation (root of its own shader map)."), Instance->HasOverridenBaseProperties());
+
+	UMaterial* Base = Cast<UMaterial>(Instance->Parent);
+	if (TestNotNull(TEXT("Instance is parented to a real base UMaterial."), Base))
+	{
+		TestTrue(TEXT("Parent is the ThinCustom hidden base."), Base->GetName().StartsWith(TEXT("MB_DreamThinBase_")));
+		TestTrue(TEXT("The base carries a real material graph (Multiply from the Graph block)."),
+			CountMaterialExpressionsOfClass<UMaterialExpressionMultiply>(Base) >= 1);
+
+		// Persist mode: the saved instance records its Parent as a package import, so the base must
+		// be a real saveable sibling asset -- a transient-package parent cannot resolve on a future
+		// load or at cook (the instance would silently lose its parent).
+		TestNotEqual(TEXT("Persisted base does not live in the transient package."),
+			Base->GetOutermost(), GetTransientPackage());
+		TestEqual(TEXT("Base is the named sibling asset."), Base->GetPathName(), BaseObjectPath);
+		TestTrue(TEXT("Base package reached disk alongside the instance."),
+			FPackageName::DoesPackageExist(FPackageName::ObjectPathToPackageName(BaseObjectPath)));
+	}
+
+	return true;
+}
+
+IMPLEMENT_CUSTOM_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderThinCustomVsGraphParityTest,
+	FDreamShaderQuietAutomationTestBase,
+	"DreamShader.Render.ThinCustomVsGraphParity",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+// Stage-1 acceptance gate for the ThinCustom convergence backend: the SAME shader body generated
+// through the Graph backend (a visible UMaterial) and through ThinCustom (hidden base + thin
+// instance, rendering through the instance's own static-permutation shader map) must produce
+// pixel-identical frames on the real RHI. Anything short of that -- a broken fall-through in the
+// instance resource, a parameter that failed to bind by name, a shading-model/blend-mode mismatch on
+// the base -- shows up as a pixel difference here.
+bool FDreamShaderThinCustomVsGraphParityTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	if (GUsingNullRHI || !FApp::CanEverRender())
+	{
+		AddInfo(TEXT("Skipping ThinCustom-vs-Graph render parity: no usable RHI (-nullrhi). Run without -nullrhi for the full pixel comparison."));
+		return true;
+	}
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	AddExpectedAutomationCleanupWarnings(*this);
+
+	// One shared body per case, generated twice: only the Backend setting differs between the twins.
+	// FlatParams exercises by-name scalar/vector parameter binding on an Unlit surface; UvTexture adds
+	// UE.TexCoord + a texture-object parameter + SampleTexture2D so interpolator allocation and the
+	// texture-sampling path must also match (Stage 2); LitAttributes routes the whole surface through
+	// Base.MaterialAttributes on a DefaultLit material so the lit pipeline and the
+	// MakeMaterialAttributes path must also match (Stage 5).
+	struct FParityCase
+	{
+		const TCHAR* CaseName;
+		const TCHAR* PropertiesBlock;
+		const TCHAR* SettingsBlock;
+		const TCHAR* OutputsBlock;
+		const TCHAR* GraphBlock;
+	};
+	const FParityCase ParityCases[] =
+	{
+		{
+			TEXT("FlatParams"),
+			TEXT("        ScalarParameter Boost = 0.75;\n        VectorParameter Tint = float4(0.1, 0.9, 0.35, 1.0);"),
+			TEXT("        ShadingModel = \"Unlit\";\n        BlendMode = \"Opaque\";"),
+			TEXT("        vec3 Color;\n        Base.EmissiveColor = Color;"),
+			TEXT("        Color = Tint.rgb * Boost;")
+		},
+		{
+			TEXT("UvTexture"),
+			TEXT("        TextureObjectParameter BaseMap = \"/Engine/EngineResources/DefaultTexture\";\n        ScalarParameter Boost = 1.0;"),
+			TEXT("        ShadingModel = \"Unlit\";\n        BlendMode = \"Opaque\";"),
+			TEXT("        vec3 Color;\n        Base.EmissiveColor = Color;"),
+			TEXT("        float2 uv = UE.TexCoord(Index=0);\n        float4 texel = SampleTexture2D(BaseMap, uv);\n        Color = vec3(0.08 * (uv.x + texel.r), 0.55 + 0.35 * uv.y, 0.15) * Boost;")
+		},
+		{
+			TEXT("LitAttributes"),
+			TEXT("        VectorParameter Tint = float4(0.15, 0.8, 0.3, 1.0);\n        ScalarParameter Rough = 0.4;"),
+			TEXT("        ShadingModel = \"DefaultLit\";\n        BlendMode = \"Opaque\";"),
+			TEXT("        MaterialAttributes Attrs;\n        Base.MaterialAttributes = Attrs;"),
+			TEXT("        Attrs.BaseColor = Tint.rgb;\n        Attrs.Roughness = Rough;")
+		},
+	};
+
+	const auto MakeParitySource = [](const FString& AssetName, const TCHAR* Backend, const FParityCase& Case)
+	{
+		return FString::Printf(TEXT(R"(Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
+{
+    Properties = {
+%s
+    }
+
+    Settings = {
+        Backend = "%s";
+%s
+    }
+
+    Outputs = {
+%s
+    }
+
+    Graph = {
+%s
+    }
+}
+)"), *AssetName, Case.PropertiesBlock, Backend, Case.SettingsBlock, Case.OutputsBlock, Case.GraphBlock);
+	};
+
+	const int32 RenderSize = 256;
+	const TCHAR* RenderMesh = TEXT("sphere");
+	const float RenderYaw = -157.5f;
+	const float RenderPitch = -11.25f;
+	UE::DreamShader::Editor::Private::FDreamShaderPreviewRenderContext RenderContext;
+
+	for (const FParityCase& Case : ParityCases)
+	{
+		UMaterialInterface* Twins[2] = { nullptr, nullptr };
+		const TCHAR* TwinBackends[2] = { TEXT("Graph"), TEXT("ThinCustom") };
+		const FString TwinAssetNames[2] =
+		{
+			MakeUniqueTestAssetName(*FString::Printf(TEXT("M_Parity%sGraph"), Case.CaseName)),
+			MakeUniqueTestAssetName(*FString::Printf(TEXT("M_Parity%sThin"), Case.CaseName)),
+		};
+
+		for (int32 TwinIndex = 0; TwinIndex < 2; ++TwinIndex)
+		{
+			const FString& AssetName = TwinAssetNames[TwinIndex];
+			const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+			Artifacts.AddObjectPath(ObjectPath);
+			AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
+
+			FString SourceFilePath;
+			if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), MakeParitySource(AssetName, TwinBackends[TwinIndex], Case), SourceFilePath))
+			{
+				return false;
+			}
+			Artifacts.AddSourceFile(SourceFilePath);
+
+			FString Message;
+			if (!TestTrue(
+				FString::Printf(TEXT("[%s] %s twin generation succeeds: %s"), Case.CaseName, TwinBackends[TwinIndex], *Message),
+				FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ true)))
+			{
+				return false;
+			}
+
+			Twins[TwinIndex] = LoadObject<UMaterialInterface>(nullptr, *ObjectPath);
+			if (!TestNotNull(FString::Printf(TEXT("[%s] %s twin loads from '%s'."), Case.CaseName, TwinBackends[TwinIndex], *ObjectPath), Twins[TwinIndex]))
+			{
+				return false;
+			}
+		}
+
+		// The ThinCustom twin must actually be the thin instance chain -- otherwise the comparison
+		// would silently degrade into Graph-vs-Graph.
+		UDreamShaderMaterialInstance* ThinInstance = Cast<UDreamShaderMaterialInstance>(Twins[1]);
+		if (!TestNotNull(FString::Printf(TEXT("[%s] ThinCustom twin is a UDreamShaderMaterialInstance."), Case.CaseName), ThinInstance))
+		{
+			return false;
+		}
+		TestNotNull(FString::Printf(TEXT("[%s] ThinCustom twin is parented to its hidden base."), Case.CaseName), Cast<UMaterial>(ThinInstance->Parent.Get()));
+
+		// Both shader maps must be fully compiled before pixels mean anything.
+		const auto FinishTwinCompilation = [&Twins]()
+		{
+			TArray<UObject*> CompileObjects;
+			CompileObjects.Add(Twins[0]);
+			CompileObjects.Add(Twins[1]);
+			FAssetCompilingManager::Get().FinishCompilationForObjects(CompileObjects);
+			if (GShaderCompilingManager)
+			{
+				GShaderCompilingManager->FinishAllCompilation();
+			}
+			FlushRenderingCommands();
+		};
+		FinishTwinCompilation();
+
+		// Render both twins through the identical offscreen path. A throwaway warm-up render per twin
+		// first: material resources/shader maps are allocated lazily on first render, and the finish-
+		// compile after the warm-up drains whatever that first render queued, so the measured frame
+		// renders the real shader instead of the default-material fallback.
+		TArray<FColor> TwinPixels[2];
+		for (int32 TwinIndex = 0; TwinIndex < 2; ++TwinIndex)
+		{
+			FString RenderError;
+			TArray<FColor> WarmupPixels;
+			if (!TestTrue(
+				FString::Printf(TEXT("[%s] %s twin warm-up render succeeds: %s"), Case.CaseName, TwinBackends[TwinIndex], *RenderError),
+				RenderContext.RenderFramePixels(Twins[TwinIndex], RenderSize, RenderSize, RenderMesh, RenderYaw, RenderPitch, WarmupPixels, RenderError)))
+			{
+				return false;
+			}
+
+			FinishTwinCompilation();
+
+			if (!TestTrue(
+				FString::Printf(TEXT("[%s] %s twin render succeeds: %s"), Case.CaseName, TwinBackends[TwinIndex], *RenderError),
+				RenderContext.RenderFramePixels(Twins[TwinIndex], RenderSize, RenderSize, RenderMesh, RenderYaw, RenderPitch, TwinPixels[TwinIndex], RenderError)))
+			{
+				return false;
+			}
+		}
+
+		if (!TestEqual(FString::Printf(TEXT("[%s] Both twins produced the same pixel count."), Case.CaseName), TwinPixels[1].Num(), TwinPixels[0].Num()))
+		{
+			return false;
+		}
+
+		// Sanity before parity: the frame must actually contain our green-dominant emissive. This is
+		// what separates "both twins render the same broken default-material checkerboard" (would pass
+		// a naive diff) from "both twins render the intended shader".
+		{
+			int32 GreenDominantPixels = 0;
+			uint64 SumR = 0, SumG = 0, SumB = 0;
+			for (const FColor& Pixel : TwinPixels[0])
+			{
+				SumR += Pixel.R;
+				SumG += Pixel.G;
+				SumB += Pixel.B;
+				if (Pixel.G > Pixel.R + 30 && Pixel.G > Pixel.B + 30)
+				{
+					++GreenDominantPixels;
+				}
+			}
+			const int32 PixelCount = FMath::Max(TwinPixels[0].Num(), 1);
+			const FColor CenterPixel = TwinPixels[0][(RenderSize / 2) * RenderSize + (RenderSize / 2)];
+			AddInfo(FString::Printf(
+				TEXT("[%s] Graph twin frame stats: avg RGB=(%d,%d,%d), center=(%d,%d,%d), %d green-dominant pixels."),
+				Case.CaseName,
+				int32(SumR / PixelCount), int32(SumG / PixelCount), int32(SumB / PixelCount),
+				CenterPixel.R, CenterPixel.G, CenterPixel.B,
+				GreenDominantPixels));
+
+			const bool bShowsEmissive = GreenDominantPixels > (TwinPixels[0].Num() / 20);
+			if (!bShowsEmissive)
+			{
+				// Dump both frames for offline inspection before failing -- a bit-identical pair that
+				// does not show the material means BOTH chains rendered the same wrong thing.
+				for (int32 TwinIndex = 0; TwinIndex < 2; ++TwinIndex)
+				{
+					TArray<FColor> PngColors = TwinPixels[TwinIndex];
+					for (FColor& Color : PngColors)
+					{
+						Color.A = 255;
+					}
+					TArray64<uint8> PngData;
+					FImageUtils::PNGCompressImageArray(RenderSize, RenderSize, TArrayView64<const FColor>(PngColors.GetData(), PngColors.Num()), PngData);
+					const FString DumpPath = FPaths::ProjectSavedDir() / TEXT("DreamShaderTests") / FString::Printf(TEXT("Parity_%s_%s.png"), Case.CaseName, TwinBackends[TwinIndex]);
+					FFileHelper::SaveArrayToFile(TArrayView64<const uint8>(PngData.GetData(), PngData.Num()), *DumpPath);
+					AddInfo(FString::Printf(TEXT("Dumped %s twin frame to '%s'."), TwinBackends[TwinIndex], *DumpPath));
+				}
+			}
+			TestTrue(
+				FString::Printf(TEXT("[%s] Graph twin frame shows the green emissive sphere (%d green-dominant pixels)."), Case.CaseName, GreenDominantPixels),
+				bShowsEmissive);
+		}
+
+		// Pixel parity with a small tolerance: the two shader maps are equivalent but separately
+		// translated/compiled, so allow LSB-level float/rounding differences while failing on anything
+		// a human could see.
+		{
+			constexpr int32 ChannelTolerance = 2;
+			int32 OffendingPixels = 0;
+			int32 MaxChannelDifference = 0;
+			for (int32 PixelIndex = 0; PixelIndex < TwinPixels[0].Num(); ++PixelIndex)
+			{
+				const FColor& A = TwinPixels[0][PixelIndex];
+				const FColor& B = TwinPixels[1][PixelIndex];
+				const int32 PixelDifference = FMath::Max3(
+					FMath::Abs(int32(A.R) - int32(B.R)),
+					FMath::Abs(int32(A.G) - int32(B.G)),
+					FMath::Abs(int32(A.B) - int32(B.B)));
+				MaxChannelDifference = FMath::Max(MaxChannelDifference, PixelDifference);
+				if (PixelDifference > ChannelTolerance)
+				{
+					++OffendingPixels;
+				}
+			}
+
+			const int32 AllowedOffenders = TwinPixels[0].Num() / 1000; // 0.1%
+			TestTrue(
+				FString::Printf(
+					TEXT("[%s] ThinCustom renders identically to its Graph twin (%d of %d pixels beyond tolerance %d, max channel difference %d)."),
+					Case.CaseName, OffendingPixels, TwinPixels[0].Num(), ChannelTolerance, MaxChannelDifference),
+				OffendingPixels <= AllowedOffenders);
+			AddInfo(FString::Printf(
+				TEXT("[%s] ThinCustom-vs-Graph parity: %d/%d pixels beyond tolerance %d, max channel difference %d."),
+				Case.CaseName, OffendingPixels, TwinPixels[0].Num(), ChannelTolerance, MaxChannelDifference));
+		}
+	}
+
+	return true;
+}
+
+IMPLEMENT_CUSTOM_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderMTestToonRoundTripRenderTest,
+	FDreamShaderQuietAutomationTestBase,
+	"DreamShader.Roundtrip.MTestToonRenderParity",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+// End-to-end round-trip fidelity gate for the real hand-authored Substrate toon material M_Test_Toon:
+// decompile it to a .dsm, regenerate a fresh twin from that source, and require the twin to render
+// pixel-identically to the original through the same offscreen thumbnail path as the ThinCustom-vs-Graph
+// parity test. This exercises both the ShadingModel="Substrate" fix and the renamed-channel swizzle fix
+// on a genuinely complex asset. Self-contained: only depends on M_Test_Toon existing in this project;
+// skips cleanly under -nullrhi or where the asset is absent (plugin dropped into another project).
+bool FDreamShaderMTestToonRoundTripRenderTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader;
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	if (GUsingNullRHI || !FApp::CanEverRender())
+	{
+		AddInfo(TEXT("Skipping M_Test_Toon round-trip render parity: no usable RHI (run without -nullrhi)."));
+		return true;
+	}
+
+	// "阿芙" via code points so this source file stays ASCII-clean.
+	const FString CjkFolder = FString::Chr(TCHAR(0x963F)) + FString::Chr(TCHAR(0x8299));
+	const FString OriginalPath = FString::Printf(TEXT("/Game/Render/Character/%s/NewToonMaterials/M_Test_Toon.M_Test_Toon"), *CjkFolder);
+	UMaterial* OriginalMaterial = LoadObject<UMaterial>(nullptr, *OriginalPath);
+	if (!OriginalMaterial)
+	{
+		AddInfo(FString::Printf(TEXT("Skipping M_Test_Toon round-trip: '%s' is not present in this project."), *OriginalPath));
+		return true;
+	}
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	AddExpectedAutomationCleanupWarnings(*this);
+
+	// Decompile the real material, then regenerate a transient twin from the emitted .dsm -- the true
+	// round trip. If the renamed-channel swizzle regressed, the ".m" suffix would re-appear and this
+	// regeneration would fail with an invalid-swizzle error, so generation success is itself a guard.
+	const FString ReAssetName = MakeUniqueTestAssetName(TEXT("M_MTestToonRoundTrip"));
+	const FString ReObjectPath = MakeAutomationObjectPath(ReAssetName);
+	Artifacts.AddObjectPath(ReObjectPath);
+	AddExpectedNewAssetProbeWarnings(*this, ReObjectPath);
+
+	FString DecompiledSource;
+	FString DecompileError;
+	if (!TestTrue(
+		FString::Printf(TEXT("M_Test_Toon decompiles: %s"), *DecompileError),
+		GetGraphDecompiler().DecompileMaterial(OriginalMaterial, FString::Printf(TEXT("DreamShaderTests/Automation/%s"), *ReAssetName), DecompiledSource, DecompileError)))
+	{
+		return false;
+	}
+
+	// Explicit regression assertions for the two decompiler fixes under test.
+	TestTrue(TEXT("Decompiled M_Test_Toon binds Base.FrontMaterial with ShadingModel=\"Substrate\"."),
+		DecompiledSource.Contains(TEXT("ShadingModel = \"Substrate\"")));
+	TestFalse(TEXT("Decompiled M_Test_Toon emits no invalid renamed-channel swizzle (\".m\")."),
+		DecompiledSource.Contains(TEXT(".m,")) || DecompiledSource.Contains(TEXT(".m ")) || DecompiledSource.Contains(TEXT(".m)")));
+
+	FString SourceFilePath;
+	if (!WriteAutomationSourceFile(*this, ReAssetName + TEXT(".dsm"), DecompiledSource, SourceFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(SourceFilePath);
+
+	FString Message;
+	if (!TestTrue(
+		FString::Printf(TEXT("Decompiled M_Test_Toon re-generates (0 errors): %s"), *Message),
+		FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ true)))
+	{
+		return false;
+	}
+
+	UMaterialInterface* Materials[2] = { nullptr, nullptr };
+	const TCHAR* Labels[2] = { TEXT("Original"), TEXT("RoundTripTwin") };
+	Materials[0] = OriginalMaterial;
+	Materials[1] = LoadObject<UMaterialInterface>(nullptr, *ReObjectPath);
+	if (!TestNotNull(FString::Printf(TEXT("Round-trip twin loads from '%s'."), *ReObjectPath), Materials[1]))
+	{
+		return false;
+	}
+
+	const int32 RenderSize = 256;
+	const TCHAR* RenderMesh = TEXT("sphere");
+	const float RenderYaw = -157.5f;
+	const float RenderPitch = -11.25f;
+	UE::DreamShader::Editor::Private::FDreamShaderPreviewRenderContext RenderContext;
+
+	const auto FinishCompile = [&Materials]()
+	{
+		TArray<UObject*> Objects;
+		Objects.Add(Materials[0]);
+		Objects.Add(Materials[1]);
+		FAssetCompilingManager::Get().FinishCompilationForObjects(Objects);
+		if (GShaderCompilingManager)
+		{
+			GShaderCompilingManager->FinishAllCompilation();
+		}
+		FlushRenderingCommands();
+	};
+	FinishCompile();
+
+	TArray<FColor> Pixels[2];
+	for (int32 Index = 0; Index < 2; ++Index)
+	{
+		FString RenderError;
+		TArray<FColor> Warmup;
+		if (!TestTrue(FString::Printf(TEXT("%s warm-up render succeeds: %s"), Labels[Index], *RenderError),
+			RenderContext.RenderFramePixels(Materials[Index], RenderSize, RenderSize, RenderMesh, RenderYaw, RenderPitch, Warmup, RenderError)))
+		{
+			return false;
+		}
+		FinishCompile();
+		if (!TestTrue(FString::Printf(TEXT("%s render succeeds: %s"), Labels[Index], *RenderError),
+			RenderContext.RenderFramePixels(Materials[Index], RenderSize, RenderSize, RenderMesh, RenderYaw, RenderPitch, Pixels[Index], RenderError)))
+		{
+			return false;
+		}
+	}
+
+	// Always dump both frames for offline / screenshot inspection.
+	for (int32 Index = 0; Index < 2; ++Index)
+	{
+		TArray<FColor> PngColors = Pixels[Index];
+		for (FColor& Color : PngColors)
+		{
+			Color.A = 255;
+		}
+		TArray64<uint8> PngData;
+		FImageUtils::PNGCompressImageArray(RenderSize, RenderSize, TArrayView64<const FColor>(PngColors.GetData(), PngColors.Num()), PngData);
+		const FString DumpPath = FPaths::ProjectSavedDir() / TEXT("DreamShaderTests") / FString::Printf(TEXT("MTestToon_%s.png"), Labels[Index]);
+		FFileHelper::SaveArrayToFile(TArrayView64<const uint8>(PngData.GetData(), PngData.Num()), *DumpPath);
+		AddInfo(FString::Printf(TEXT("Dumped %s frame to '%s'."), Labels[Index], *DumpPath));
+	}
+
+	if (!TestEqual(TEXT("Both frames share a pixel count."), Pixels[1].Num(), Pixels[0].Num()))
+	{
+		return false;
+	}
+
+	// Sentinel: the frame must actually show the material sphere, not just the (44,44,48) clear color --
+	// otherwise a pair of empty frames would sail through a naive diff (as a -run= commandlet does).
+	{
+		const FColor ClearColor(44, 44, 48);
+		int32 ForegroundPixels = 0;
+		for (const FColor& Pixel : Pixels[0])
+		{
+			const int32 D = FMath::Max3(
+				FMath::Abs(int32(Pixel.R) - int32(ClearColor.R)),
+				FMath::Abs(int32(Pixel.G) - int32(ClearColor.G)),
+				FMath::Abs(int32(Pixel.B) - int32(ClearColor.B)));
+			if (D > 8)
+			{
+				++ForegroundPixels;
+			}
+		}
+		AddInfo(FString::Printf(TEXT("Original frame foreground pixels (>8 from clear color): %d/%d."), ForegroundPixels, Pixels[0].Num()));
+		if (!TestTrue(
+			FString::Printf(TEXT("Original frame actually shows the material sphere (%d foreground pixels)."), ForegroundPixels),
+			ForegroundPixels > Pixels[0].Num() / 20))
+		{
+			return false;
+		}
+	}
+
+	// Round-trip parity: original vs regenerated twin. The two are separately translated/compiled shader
+	// maps, so allow LSB-level tolerance while failing on anything a human could see.
+	{
+		constexpr int32 ChannelTolerance = 2;
+		int32 OffendingPixels = 0;
+		int32 MaxChannelDifference = 0;
+		for (int32 PixelIndex = 0; PixelIndex < Pixels[0].Num(); ++PixelIndex)
+		{
+			const FColor& A = Pixels[0][PixelIndex];
+			const FColor& B = Pixels[1][PixelIndex];
+			const int32 PixelDifference = FMath::Max3(
+				FMath::Abs(int32(A.R) - int32(B.R)),
+				FMath::Abs(int32(A.G) - int32(B.G)),
+				FMath::Abs(int32(A.B) - int32(B.B)));
+			MaxChannelDifference = FMath::Max(MaxChannelDifference, PixelDifference);
+			if (PixelDifference > ChannelTolerance)
+			{
+				++OffendingPixels;
+			}
+		}
+
+		const int32 AllowedOffenders = Pixels[0].Num() / 1000; // 0.1%
+		AddInfo(FString::Printf(
+			TEXT("M_Test_Toon round-trip parity: %d/%d pixels beyond tolerance %d, max channel difference %d."),
+			OffendingPixels, Pixels[0].Num(), ChannelTolerance, MaxChannelDifference));
+		TestTrue(
+			FString::Printf(
+				TEXT("Round-trip twin renders identically to the original (%d of %d pixels beyond tolerance %d, max channel difference %d)."),
+				OffendingPixels, Pixels[0].Num(), ChannelTolerance, MaxChannelDifference),
+			OffendingPixels <= AllowedOffenders);
+	}
+
+	return true;
+}
+
+IMPLEMENT_CUSTOM_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderDecompileRenamedChannelUsesMaskTest,
+	FDreamShaderQuietAutomationTestBase,
+	"DreamShader.Roundtrip.RenamedChannelUsesMask",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+// Regression guard for the renamed-channel swizzle fix. A texture sample lets the author RELABEL its
+// per-channel outputs (ChannelNames), but channel selection at compile/render time is driven SOLELY by
+// the mask bits (FExpressionInput::Compile applies the connected output's mask; ApplyChannelNames only
+// rewrites the cosmetic name). So a green-masked output relabeled with the swizzle letter "R" must
+// decompile to ".g" (the mask), NOT ".r" (the misleading label) -- otherwise the regenerated material
+// silently samples the wrong channel of a packed MRA/ORM texture. The M_Test_Toon happy path can't catch
+// this because its relabel ("M") is not a valid swizzle letter and already falls through to the mask.
+bool FDreamShaderDecompileRenamedChannelUsesMaskTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	UMaterial* Material = NewObject<UMaterial>(GetTransientPackage(), NAME_None, RF_Transient);
+	if (!TestNotNull(TEXT("Transient probe material created."), Material))
+	{
+		return false;
+	}
+
+	UMaterialExpressionTextureSampleParameter2D* Tex = Cast<UMaterialExpressionTextureSampleParameter2D>(
+		UMaterialEditingLibrary::CreateMaterialExpression(Material, UMaterialExpressionTextureSampleParameter2D::StaticClass()));
+	if (!TestNotNull(TEXT("Texture sample parameter created."), Tex))
+	{
+		return false;
+	}
+	Tex->ParameterName = TEXT("T_MaskProbe");
+	Tex->Texture = LoadObject<UTexture>(nullptr, TEXT("/Engine/EngineResources/DefaultTexture"));
+
+	// Relabel with swizzle letters that DISAGREE with the physical masks: the red-masked output becomes
+	// "Rd" and the GREEN-masked output becomes "R". If the decompiler trusted the label it would emit
+	// ".r" (red) for the green channel; the mask is authoritative, so it must emit ".g".
+	Tex->ChannelNames.R = FText::FromString(TEXT("Rd"));
+	Tex->ChannelNames.G = FText::FromString(TEXT("R"));
+	Tex->ApplyChannelNames();
+
+	// Connect emissive to the output now labelled "R" -- the green-masked one (output index 2).
+	if (!TestTrue(TEXT("Connected the relabeled green output to EmissiveColor."),
+		UMaterialEditingLibrary::ConnectMaterialProperty(Tex, TEXT("R"), MP_EmissiveColor)))
+	{
+		return false;
+	}
+
+	FString DecompiledSource;
+	FString DecompileError;
+	if (!TestTrue(
+		FString::Printf(TEXT("Renamed-channel probe material decompiles: %s"), *DecompileError),
+		GetGraphDecompiler().DecompileMaterial(Material, TEXT("DreamShaderTests/Automation/M_RenamedChannelProbe"), DecompiledSource, DecompileError)))
+	{
+		return false;
+	}
+
+	// The green mask is authoritative, so the emissive must read the GREEN channel regardless of the "R" label.
+	TestTrue(TEXT("Relabeled green channel decompiles to the mask-derived '.g' swizzle."),
+		DecompiledSource.Contains(TEXT("T_MaskProbe.g")));
+	TestFalse(TEXT("Relabeled green channel does NOT decompile to the misleading '.r' label."),
+		DecompiledSource.Contains(TEXT("T_MaskProbe.r")));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderGenerateThinCustomTextureTest,
+	"DreamShader.Compiler.Generate.ThinCustomTexture",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+// Stage 2: texture parameters and state-read builtins reach ThinCustom as REAL nodes through the
+// shared Graph construction -- no .ush lowering, no instance-side texture index space, no dummy
+// interpolator chunks. The engine enumerates the base's texture parameter natively, which is what
+// makes the MI editor and the cook's used-texture gather work with zero instance machinery.
+bool FDreamShaderGenerateThinCustomTextureTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_AutoThinCustomTexture"));
+	const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+	Artifacts.AddObjectPath(ObjectPath);
+	AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
+	AddExpectedAutomationCleanupWarnings(*this);
+
+	const FString Source = FString::Printf(TEXT(R"(Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
+{
+    Properties = {
+        TextureObjectParameter BaseMap = "/Engine/EngineResources/DefaultTexture";
+        ScalarParameter Intensity = 1.0;
+    }
+
+    Settings = {
+        Backend = "ThinCustom";
+        ShadingModel = "Unlit";
+    }
+
+    Outputs = {
+        vec3 Color;
+        Base.EmissiveColor = Color;
+    }
+
+    Graph = {
+        float2 uv = UE.TexCoord(Index=0);
+        float4 texel = SampleTexture2D(BaseMap, uv);
+        Color = texel.rgb * Intensity;
+    }
+}
+)"), *AssetName);
+
+	FString SourceFilePath;
+	if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), Source, SourceFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(SourceFilePath);
+
+	FString Message;
+	const bool bGenerated = FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ true);
+	if (!TestTrue(FString::Printf(TEXT("ThinCustom texture generation succeeds: %s"), *Message), bGenerated))
+	{
+		return false;
+	}
+
+	UDreamShaderMaterialInstance* Instance = FindObject<UDreamShaderMaterialInstance>(nullptr, *ObjectPath);
+	if (!TestNotNull(TEXT("ThinCustom texture instance exists in memory."), Instance))
+	{
+		return false;
+	}
+
+	// The Instance-backend model stays empty: no lowered .ush, no per-instance texture index space,
+	// no dummy TexCoord side-effect inputs.
+
+	// Native parameter enumeration through the base's real nodes -- the engine, not synthesized
+	// cached data, resolves these.
+	UTexture* BaseMapValue = nullptr;
+	TestTrue(TEXT("BaseMap texture parameter resolves natively through the chain."),
+		Instance->GetTextureParameterValue(FMaterialParameterInfo(TEXT("BaseMap")), BaseMapValue) && BaseMapValue != nullptr);
+	float IntensityValue = 0.0f;
+	TestTrue(TEXT("Intensity scalar parameter resolves natively through the chain."),
+		Instance->GetScalarParameterValue(FMaterialParameterInfo(TEXT("Intensity")), IntensityValue) && FMath::IsNearlyEqual(IntensityValue, 1.0f));
+
+	// The base carries the real nodes: a texture-object parameter and a real TexCoord node (the
+	// stock translator allocates the interpolator from the node -- no dummy-chunk ceiling).
+	UMaterial* Base = Cast<UMaterial>(Instance->Parent.Get());
+	if (TestNotNull(TEXT("Instance is parented to the hidden base."), Base))
+	{
+		TestTrue(TEXT("Base has a real texture-object-parameter node."),
+			CountMaterialExpressionsOfClassName(Base, TEXT("MaterialExpressionTextureObjectParameter")) >= 1);
+		TestTrue(TEXT("Base has a real TextureCoordinate node."),
+			CountMaterialExpressionsOfClassName(Base, TEXT("MaterialExpressionTextureCoordinate")) >= 1);
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderGenerateThinCustomUITest,
+	"DreamShader.Compiler.Generate.ThinCustomUI",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+// Stage 3: the UI domain through ThinCustom. Unlike the Instance backend (which needs a dedicated
+// graphless per-domain host asset), the shared Graph construction sets MaterialDomain directly on
+// the per-material hidden base -- no host infrastructure at all.
+bool FDreamShaderGenerateThinCustomUITest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_AutoThinCustomUI"));
+	const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+	Artifacts.AddObjectPath(ObjectPath);
+	AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
+	AddExpectedAutomationCleanupWarnings(*this);
+
+	const FString Source = FString::Printf(TEXT(R"(Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
+{
+    Properties = {
+        VectorParameter BaseTint = float4(0.15, 0.55, 0.95, 1.0);
+        ScalarParameter Opacity = 1.0;
+    }
+
+    Settings = {
+        Backend = "ThinCustom";
+        Domain = "UI";
+    }
+
+    Outputs = {
+        vec3 Color;
+        float A;
+        Base.EmissiveColor = Color;
+        Base.Opacity = A;
+    }
+
+    Graph = {
+        float2 uv = UE.TexCoord(Index=0);
+        float grad = lerp(0.85, 1.0, uv.y);
+        Color = BaseTint.rgb * grad;
+        A = Opacity;
+    }
+}
+)"), *AssetName);
+
+	FString SourceFilePath;
+	if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), Source, SourceFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(SourceFilePath);
+
+	FString Message;
+	const bool bGenerated = FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ true);
+	if (!TestTrue(FString::Printf(TEXT("ThinCustom UI generation succeeds: %s"), *Message), bGenerated))
+	{
+		return false;
+	}
+
+	UDreamShaderMaterialInstance* Instance = FindObject<UDreamShaderMaterialInstance>(nullptr, *ObjectPath);
+	if (!TestNotNull(TEXT("ThinCustom UI instance exists in memory."), Instance))
+	{
+		return false;
+	}
+
+	FLinearColor BaseTintValue = FLinearColor::Black;
+	TestTrue(TEXT("BaseTint vector parameter resolves natively through the chain."),
+		Instance->GetVectorParameterValue(FMaterialParameterInfo(TEXT("BaseTint")), BaseTintValue));
+
+	UMaterial* Base = Cast<UMaterial>(Instance->Parent.Get());
+	if (TestNotNull(TEXT("Instance is parented to the hidden base."), Base))
+	{
+		TestEqual(TEXT("The base carries the UI material domain."), Base->MaterialDomain, MD_UI);
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderGenerateThinCustomPostProcessTest,
+	"DreamShader.Compiler.Generate.ThinCustomPostProcess",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+// Stage 3: the PostProcess domain through ThinCustom. The scene read becomes a REAL
+// UMaterialExpressionSceneTexture node on the hidden base -- replacing the Instance backend's named
+// value-input machinery (FDreamShaderSceneRead / SceneTextureLookup chunks) for this path.
+bool FDreamShaderGenerateThinCustomPostProcessTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_AutoThinCustomPP"));
+	const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+	Artifacts.AddObjectPath(ObjectPath);
+	AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
+	AddExpectedAutomationCleanupWarnings(*this);
+
+	const FString Source = FString::Printf(TEXT(R"(Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
+{
+    Properties = {
+        ScalarParameter Saturation = 1.4;
+    }
+
+    Settings = {
+        Backend = "ThinCustom";
+        Domain = "PostProcess";
+    }
+
+    Outputs = {
+        vec3 Color;
+        Base.EmissiveColor = Color;
+    }
+
+    Graph = {
+        float3 scene = UE.SceneTexture(Id="PostProcessInput0").rgb;
+        float luma = dot(scene, float3(0.299, 0.587, 0.114));
+        Color = lerp(float3(luma, luma, luma), scene, Saturation);
+    }
+}
+)"), *AssetName);
+
+	FString SourceFilePath;
+	if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), Source, SourceFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(SourceFilePath);
+
+	FString Message;
+	const bool bGenerated = FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ true);
+	if (!TestTrue(FString::Printf(TEXT("ThinCustom PostProcess generation succeeds: %s"), *Message), bGenerated))
+	{
+		return false;
+	}
+
+	UDreamShaderMaterialInstance* Instance = FindObject<UDreamShaderMaterialInstance>(nullptr, *ObjectPath);
+	if (!TestNotNull(TEXT("ThinCustom PostProcess instance exists in memory."), Instance))
+	{
+		return false;
+	}
+
+	// No named value-input scene reads: the scene texture is a real node on the base, not a
+	// translator-injected chunk on the instance.
+
+	UMaterial* Base = Cast<UMaterial>(Instance->Parent.Get());
+	if (TestNotNull(TEXT("Instance is parented to the hidden base."), Base))
+	{
+		TestEqual(TEXT("The base carries the PostProcess material domain."), Base->MaterialDomain, MD_PostProcess);
+		TestTrue(TEXT("The base carries a real SceneTexture node."),
+			CountMaterialExpressionsOfClassName(Base, TEXT("MaterialExpressionSceneTexture")) >= 1);
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderGenerateThinCustomSceneReadsTest,
+	"DreamShader.Compiler.Generate.ThinCustomSceneReads",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+// Stage 4: translucent scene reads through ThinCustom. UE.SceneDepth/UE.SceneColor/UE.PixelDepth
+// become REAL nodes on the hidden base -- replacing the Instance backend's named value-input
+// machinery (FDreamShaderSceneRead + SceneDepth/SceneColor compiler chunks) for this path. The
+// engine's own "only translucent materials can read scene color" validation stands in for the
+// Instance backend's hand-written pre-flight gate.
+bool FDreamShaderGenerateThinCustomSceneReadsTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_AutoThinCustomSceneReads"));
+	const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+	Artifacts.AddObjectPath(ObjectPath);
+	AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
+	AddExpectedAutomationCleanupWarnings(*this);
+
+	const FString Source = FString::Printf(TEXT(R"(Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
+{
+    Properties = {
+        ScalarParameter FadeDistance = 64.0;
+        VectorParameter TintColor = float4(0.3, 0.7, 1.0, 1.0);
+    }
+
+    Settings = {
+        Backend = "ThinCustom";
+        ShadingModel = "Unlit";
+        BlendMode = "Translucent";
+    }
+
+    Outputs = {
+        vec3 Color;
+        float Alpha;
+        Base.EmissiveColor = Color;
+        Base.Opacity = Alpha;
+    }
+
+    Graph = {
+        float sceneDepth = UE.SceneDepth();
+        float pixelDepth = UE.PixelDepth();
+        float fade = saturate((sceneDepth - pixelDepth) / FadeDistance);
+
+        float4 behind = UE.SceneColor();
+        Color = lerp(behind.rgb, TintColor.rgb, 0.35);
+        Alpha = fade;
+    }
+}
+)"), *AssetName);
+
+	FString SourceFilePath;
+	if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), Source, SourceFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(SourceFilePath);
+
+	FString Message;
+	const bool bGenerated = FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ true);
+	if (!TestTrue(FString::Printf(TEXT("ThinCustom scene-reads generation succeeds: %s"), *Message), bGenerated))
+	{
+		return false;
+	}
+
+	UDreamShaderMaterialInstance* Instance = FindObject<UDreamShaderMaterialInstance>(nullptr, *ObjectPath);
+	if (!TestNotNull(TEXT("ThinCustom scene-reads instance exists in memory."), Instance))
+	{
+		return false;
+	}
+
+	// The named value-input machinery stays entirely unused on this path.
+
+	UMaterial* Base = Cast<UMaterial>(Instance->Parent.Get());
+	if (TestNotNull(TEXT("Instance is parented to the hidden base."), Base))
+	{
+		TestEqual(TEXT("The base carries the translucent blend mode."), Base->BlendMode, BLEND_Translucent);
+		TestTrue(TEXT("The base carries a real SceneDepth node."),
+			CountMaterialExpressionsOfClassName(Base, TEXT("MaterialExpressionSceneDepth")) >= 1);
+		TestTrue(TEXT("The base carries a real SceneColor node."),
+			CountMaterialExpressionsOfClassName(Base, TEXT("MaterialExpressionSceneColor")) >= 1);
+		TestTrue(TEXT("The base carries a real PixelDepth node."),
+			CountMaterialExpressionsOfClassName(Base, TEXT("MaterialExpressionPixelDepth")) >= 1);
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderGenerateThinCustomMaterialAttributesTest,
+	"DreamShader.Compiler.Generate.ThinCustomMaterialAttributes",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+// Stage 5: a whole-MaterialAttributes bind through ThinCustom. The shared Graph construction seeds a
+// real MakeMaterialAttributes node and flips bUseMaterialAttributes on the hidden base -- replacing
+// the Instance backend's per-channel flattening (the __Attrs_Field local rewrite) for this path.
+bool FDreamShaderGenerateThinCustomMaterialAttributesTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_AutoThinCustomMatAttrs"));
+	const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+	Artifacts.AddObjectPath(ObjectPath);
+	AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
+	AddExpectedAutomationCleanupWarnings(*this);
+
+	const FString Source = FString::Printf(TEXT(R"(Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
+{
+    Properties = {
+        VectorParameter Tint = float4(0.6, 0.8, 1.0, 1.0);
+        ScalarParameter Rough = 0.35;
+        ScalarParameter Metal = 0.0;
+    }
+
+    Settings = {
+        Backend = "ThinCustom";
+        ShadingModel = "DefaultLit";
+        BlendMode = "Opaque";
+    }
+
+    Outputs = {
+        MaterialAttributes Attrs;
+        Base.MaterialAttributes = Attrs;
+    }
+
+    Graph = {
+        Attrs.BaseColor = Tint.rgb;
+        Attrs.Roughness = Rough;
+        Attrs.Metallic = Metal;
+    }
+}
+)"), *AssetName);
+
+	FString SourceFilePath;
+	if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), Source, SourceFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(SourceFilePath);
+
+	FString Message;
+	const bool bGenerated = FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ true);
+	if (!TestTrue(FString::Printf(TEXT("ThinCustom MaterialAttributes generation succeeds: %s"), *Message), bGenerated))
+	{
+		return false;
+	}
+
+	UDreamShaderMaterialInstance* Instance = FindObject<UDreamShaderMaterialInstance>(nullptr, *ObjectPath);
+	if (!TestNotNull(TEXT("ThinCustom MaterialAttributes instance exists in memory."), Instance))
+	{
+		return false;
+	}
+
+
+	UMaterial* Base = Cast<UMaterial>(Instance->Parent.Get());
+	if (TestNotNull(TEXT("Instance is parented to the hidden base."), Base))
+	{
+		TestTrue(TEXT("The base routes the surface through MaterialAttributes."), Base->bUseMaterialAttributes);
+		TestTrue(TEXT("The base carries a real MakeMaterialAttributes node."),
+			CountMaterialExpressionsOfClassName(Base, TEXT("MaterialExpressionMakeMaterialAttributes")) >= 1);
+		TestTrue(TEXT("The base carries the DefaultLit shading model."),
+			Base->GetShadingModels().HasShadingModel(MSM_DefaultLit));
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderGenerateInstanceBackendStateReadsTest,
+	"DreamShader.Compiler.Generate.InstanceAliasStateReads",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+// Stage 6: the no-arg state-read wave through the Instance alias. Every name the Instance .ush
+// lowering accepted is registered in the node-graph evaluator's UE.* table, so the same source
+// produces real nodes on the hidden base (semantics pinned against the DS_ macros).
+bool FDreamShaderGenerateInstanceBackendStateReadsTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_AutoInstanceStateReads"));
+	const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+	Artifacts.AddObjectPath(ObjectPath);
+	AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
+	AddExpectedAutomationCleanupWarnings(*this);
+
+	const FString Source = FString::Printf(TEXT(R"(Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
+{
+    Settings = {
+        Backend = "Instance";
+        ShadingModel = "Unlit";
+    }
+
+    Outputs = {
+        vec3 Color;
+        Base.EmissiveColor = Color;
+    }
+
+    Graph = {
+        float3 wp = UE.WorldPosition();
+        float3 op = UE.ObjectPosition();
+        float3 refl = UE.ReflectionVector();
+        float2 vp = UE.ScreenPosition();
+        float rnd = UE.PerInstanceRandom();
+        Color = frac(wp * 0.001) * 0.5 + refl * 0.25 + float3(vp * rnd, op.z * 0.0);
+    }
+}
+)"), *AssetName);
+
+	FString SourceFilePath;
+	if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), Source, SourceFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(SourceFilePath);
+
+	FString Message;
+	const bool bGenerated = FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ true);
+	if (!TestTrue(FString::Printf(TEXT("State-read alias generation succeeds: %s"), *Message), bGenerated))
+	{
+		return false;
+	}
+
+	UDreamShaderMaterialInstance* Instance = FindObject<UDreamShaderMaterialInstance>(nullptr, *ObjectPath);
+	if (!TestNotNull(TEXT("State-read alias material exists in memory."), Instance))
+	{
+		return false;
+	}
+
+
+	UMaterial* Base = Cast<UMaterial>(Instance->Parent.Get());
+	if (TestNotNull(TEXT("Instance is parented to the hidden base."), Base))
+	{
+		TestTrue(TEXT("UE.WorldPosition is a real node."),
+			CountMaterialExpressionsOfClassName(Base, TEXT("MaterialExpressionWorldPosition")) >= 1);
+		TestTrue(TEXT("UE.ObjectPosition is a real node."),
+			CountMaterialExpressionsOfClassName(Base, TEXT("MaterialExpressionObjectPositionWS")) >= 1);
+		TestTrue(TEXT("UE.ReflectionVector is a real node."),
+			CountMaterialExpressionsOfClassName(Base, TEXT("MaterialExpressionReflectionVectorWS")) >= 1);
+		TestTrue(TEXT("UE.ScreenPosition is a real node."),
+			CountMaterialExpressionsOfClassName(Base, TEXT("MaterialExpressionScreenPosition")) >= 1);
+		TestTrue(TEXT("UE.PerInstanceRandom is a real node."),
+			CountMaterialExpressionsOfClassName(Base, TEXT("MaterialExpressionPerInstanceRandom")) >= 1);
+	}
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderGenerateInstanceBackendImportedFunctionTest,
+	"DreamShader.Compiler.Generate.InstanceAliasImportedFunction",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+// Stage 6: an out-param imported function through the Instance alias. The shared Graph construction
+// materializes the import through its own function-call machinery (same as the Graph backend's
+// .dsf/.dsh imports), so the out-param call form keeps working with no .ush call-site rewriting.
+bool FDreamShaderGenerateInstanceBackendImportedFunctionTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_AutoInstanceImport"));
+	const FString HeaderFileName = AssetName + TEXT("_Shared.dsh");
+	const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+	Artifacts.AddObjectPath(ObjectPath);
+	AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
+	AddExpectedAutomationCleanupWarnings(*this);
+
+	FString HeaderFilePath;
+	if (!WriteAutomationSourceFile(*this, HeaderFileName, MakeSharedHeaderSource(), HeaderFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(HeaderFilePath);
+
+	const FString Source = FString::Printf(TEXT(R"(import "%s";
+
+Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
+{
+    Properties = {
+        VectorParameter InColor = (0.5, 0.5, 0.5, 1.0);
+        VectorParameter InTint = (1.0, 0.8, 0.6, 1.0);
+    }
+
+    Settings = { Backend = "Instance"; ShadingModel = "Unlit"; }
+
+    Outputs = {
+        vec3 Color;
+        Base.EmissiveColor = Color;
+    }
+
+    Graph = {
+        ApplyAutomationTint(InColor.rgb, InTint.rgb, Color);
+    }
+}
+)"), *HeaderFileName, *AssetName);
+
+	FString SourceFilePath;
+	if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), Source, SourceFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(SourceFilePath);
+
+	FString Message;
+	const bool bGenerated = FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ true);
+	if (!TestTrue(FString::Printf(TEXT("Imported-function alias generation succeeds: %s"), *Message), bGenerated))
+	{
+		return false;
+	}
+
+	UDreamShaderMaterialInstance* Instance = FindObject<UDreamShaderMaterialInstance>(nullptr, *ObjectPath);
+	if (!TestNotNull(TEXT("Imported-function alias material exists in memory."), Instance))
+	{
+		return false;
+	}
+
+	FLinearColor InColorValue = FLinearColor::Black;
+	TestTrue(TEXT("InColor resolves natively through the chain."),
+		Instance->GetVectorParameterValue(FMaterialParameterInfo(TEXT("InColor")), InColorValue));
+	TestNotNull(TEXT("Instance is parented to the hidden base."), Cast<UMaterial>(Instance->Parent.Get()));
+
+	return true;
+}
+
+IMPLEMENT_SIMPLE_AUTOMATION_TEST(
+	FDreamShaderGenerateInstanceBackendBaseOverridesTest,
+	"DreamShader.Compiler.Generate.InstanceAliasBaseOverrides",
+	EAutomationTestFlags::EditorContext | EAutomationTestFlags::EngineFilter)
+
+// Stage 6: long-tail material settings through the Instance alias. They land as plain UMaterial
+// properties on the hidden base via the shared reflected settings applier -- the
+// FMaterialInstanceBasePropertyOverrides route (and its bOverride_ bookkeeping) is retired with the
+// legacy backend.
+bool FDreamShaderGenerateInstanceBackendBaseOverridesTest::RunTest(const FString& Parameters)
+{
+	using namespace UE::DreamShader::Editor;
+	using namespace UE::DreamShader::Editor::Private::Tests;
+
+	FScopedDreamShaderAutomationArtifacts Artifacts;
+	const FString AssetName = MakeUniqueTestAssetName(TEXT("M_AutoInstanceOverrides"));
+	const FString ObjectPath = MakeAutomationObjectPath(AssetName);
+	Artifacts.AddObjectPath(ObjectPath);
+	AddExpectedNewAssetProbeWarnings(*this, ObjectPath);
+	AddExpectedAutomationCleanupWarnings(*this);
+
+	const FString Source = FString::Printf(TEXT(R"(Shader(Name="DreamShaderTests/Automation/%s", Root="Game")
+{
+    Settings = {
+        Backend = "Instance";
+        ShadingModel = "Unlit";
+        BlendMode = "Masked";
+        TwoSided = true;
+        OpacityMaskClipValue = 0.7;
+    }
+
+    Outputs = {
+        vec3 Color;
+        float Mask;
+        Base.EmissiveColor = Color;
+        Base.OpacityMask = Mask;
+    }
+
+    Graph = {
+        Color = vec3(1.0, 1.0, 1.0);
+        Mask = 1.0;
+    }
+}
+)"), *AssetName);
+
+	FString SourceFilePath;
+	if (!WriteAutomationSourceFile(*this, AssetName + TEXT(".dsm"), Source, SourceFilePath))
+	{
+		return false;
+	}
+	Artifacts.AddSourceFile(SourceFilePath);
+
+	FString Message;
+	const bool bGenerated = FMaterialGenerator::GenerateMaterialFromFile(SourceFilePath, Message, /*bForce*/ true, /*bTransient*/ true);
+	if (!TestTrue(FString::Printf(TEXT("Base-overrides alias generation succeeds: %s"), *Message), bGenerated))
+	{
+		return false;
+	}
+
+	UDreamShaderMaterialInstance* Instance = FindObject<UDreamShaderMaterialInstance>(nullptr, *ObjectPath);
+	if (!TestNotNull(TEXT("Base-overrides alias material exists in memory."), Instance))
+	{
+		return false;
+	}
+
+	UMaterial* Base = Cast<UMaterial>(Instance->Parent.Get());
+	if (TestNotNull(TEXT("Instance is parented to the hidden base."), Base))
+	{
+		TestEqual(TEXT("BlendMode lands on the base."), Base->BlendMode, BLEND_Masked);
+		TestTrue(TEXT("TwoSided lands on the base."), Base->TwoSided != 0);
+		TestTrue(TEXT("OpacityMaskClipValue lands on the base."), FMath::IsNearlyEqual(Base->OpacityMaskClipValue, 0.7f));
+	}
+
+	// The legacy per-instance override route stays untouched: settings live on the base, inherited.
+	TestFalse(TEXT("No BlendMode base-property override on the instance."), Instance->BasePropertyOverrides.bOverride_BlendMode != 0);
+	TestFalse(TEXT("No ShadingModel base-property override on the instance."), Instance->BasePropertyOverrides.bOverride_ShadingModel != 0);
+
+	return true;
+}
+
 
 #endif // WITH_DEV_AUTOMATION_TESTS

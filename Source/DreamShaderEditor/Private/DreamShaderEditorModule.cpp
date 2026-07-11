@@ -1,6 +1,7 @@
 #include "Bridge/DreamShaderEditorBridge.h"
 #include "MaterialAssetGeneration/DreamShaderMaterialGenerator.h"
 #include "SourceFiles/DreamShaderSourceFileUtils.h"
+#include "UI/DreamShaderMaterialBrowser.h"
 
 #include "CoreGlobals.h"
 #include "DreamShaderModule.h"
@@ -21,6 +22,16 @@ namespace
 		FString CommandletName;
 		return FParse::Value(FCommandLine::Get(), TEXT("-run="), CommandletName) && CommandletName.Contains(TEXT("Cook"));
 	}
+
+	bool IsCookWorkerProcess()
+	{
+		// Multiprocess cook: the director launches every worker with -cookworker (see CookDirector).
+		// A worker's -run= still contains "Cook", so IsCookCommandlet() is true for it too. Only the
+		// director should materialize the source files as persistent assets; the workers then load what
+		// the director saved. Without this gate every process regenerates and races to save the same
+		// packages.
+		return FParse::Param(FCommandLine::Get(), TEXT("cookworker"));
+	}
 }
 
 class FDreamShaderEditorModule : public IModuleInterface
@@ -30,13 +41,12 @@ public:
 	{
 		if (IsRunningCommandlet())
 		{
-			if (IsCookCommandlet())
+			if (IsCookCommandlet() && !IsCookWorkerProcess())
 			{
-				const UDreamShaderSettings* Settings = GetDefault<UDreamShaderSettings>();
-				if (Settings && Settings->bVirtualMaterialMode)
-				{
-					GenerateAllAssetsForCook();
-				}
+				// Materials are always memory-only in the editor, so the cook must materialize every
+				// source file as a persistent asset for packaging. Director only -- workers load the
+				// saved packages (see IsCookWorkerProcess).
+				GenerateAllAssetsForCook();
 			}
 			return;
 		}
@@ -48,10 +58,14 @@ public:
 
 		Bridge = MakeShared<UE::DreamShader::Editor::Private::FDreamShaderEditorBridge, ESPMode::ThreadSafe>();
 		Bridge->Startup();
+
+		UE::DreamShader::Editor::Private::FDreamShaderMaterialBrowser::Register();
 	}
 
 	virtual void ShutdownModule() override
 	{
+		UE::DreamShader::Editor::Private::FDreamShaderMaterialBrowser::Unregister();
+
 		if (Bridge)
 		{
 			Bridge->Shutdown();
@@ -72,6 +86,7 @@ private:
 
 		UE_LOG(LogDreamShader, Display, TEXT("DreamShader cook: generating %d source file(s) as persistent assets..."), SourceFiles.Num());
 
+		int32 FailureCount = 0;
 		for (const FString& SourceFile : SourceFiles)
 		{
 			const FString NormalizedPath = UE::DreamShader::NormalizeSourceFilePath(SourceFile);
@@ -89,7 +104,17 @@ private:
 			else
 			{
 				UE_LOG(LogDreamShader, Error, TEXT("  [Cook] Failed: %s"), *Message);
+				++FailureCount;
 			}
+		}
+
+		if (FailureCount > 0)
+		{
+			// Fail the cook rather than package a build that is silently missing (or has a half-built)
+			// DreamShader material. A cook that could not generate every source file must not succeed.
+			UE_LOG(LogDreamShader, Fatal,
+				TEXT("DreamShader cook generation failed for %d source file(s); aborting the cook. See the [Cook] Failed entries above."),
+				FailureCount);
 		}
 
 		UE_LOG(LogDreamShader, Display, TEXT("DreamShader cook asset generation complete."));

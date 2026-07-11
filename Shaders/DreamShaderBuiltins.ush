@@ -1,0 +1,85 @@
+// DreamShader instance-backend builtin support.
+//
+// Included by generated DSI_*.ush files inside the material translation unit, at the
+// %{uniform_material_expressions} slot of MaterialTemplate.ush -- after FMaterialPixelParameters
+// and every Get*(Parameters) helper, so Parameters fields, View.* uniforms, and Common.ush
+// functions are all in scope. Each helper mirrors the HLSL the material translator emits for the
+// corresponding UMaterialExpression (see Engine/Config/BaseMaterialExpressions.ini for Epic's own
+// node->HLSL snippet table).
+//
+// Reads that depend on translator side effects (interpolator slot allocation, usage flags) only
+// work because FDreamShaderInstanceResource compiles matching dummy input chunks during
+// translation: DS_TexCoord needs an allocated TexCoords slot (NUM_TEX_COORD_INTERPOLATORS),
+// DS_VertexColor needs bUsesVertexColor (INTERPOLATE_VERTEX_COLOR).
+
+#ifndef DREAMSHADER_BUILTINS_USH
+#define DREAMSHADER_BUILTINS_USH
+
+// UE.Time -- UMaterialExpressionTime (HLSLMaterialTranslator GameTime/PeriodicHint).
+#define DS_TIME (View.GameTime)
+#define DS_REAL_TIME (View.RealTime)
+#define DS_DELTA_TIME (View.DeltaTime)
+#define DS_PERIODIC_TIME(Period) (fmod(View.GameTime, (Period)))
+
+// UE.TexCoord -- UMaterialExpressionTextureCoordinate: Parameters.TexCoords[n].xy. The array only
+// exists when at least one interpolator slot was allocated during translation.
+float2 DS_TexCoord(FMaterialPixelParameters Parameters, uint CoordinateIndex)
+{
+#if NUM_TEX_COORD_INTERPOLATORS
+	return Parameters.TexCoords[CoordinateIndex].xy;
+#else
+	return float2(0.0f, 0.0f);
+#endif
+}
+
+// UE.VertexColor -- UMaterialExpressionVertexColor. The interpolant is only fed when
+// bUsesVertexColor was set during translation.
+float4 DS_VertexColor(FMaterialPixelParameters Parameters)
+{
+	return Parameters.VertexColor;
+}
+
+// Side-effect-free Parameters reads (no dummy chunk needed). Every field/helper below is populated
+// unconditionally at pixel entry (CalcMaterialParametersEx), so these compile in any opaque Surface
+// pixel eval with no usage flag or interpolator request. The HLSL mirrors the .Definition strings
+// the engine's own reflected nodes emit (Config/BaseMaterialExpressions.ini) or the Get*(Parameters)
+// helpers from MaterialTemplate.ush.
+#define DS_CameraVector(Parameters) ((Parameters).CameraVector)
+#define DS_ReflectionVector(Parameters) ((Parameters).ReflectionVector)
+#define DS_PixelNormalWS(Parameters) ((Parameters).WorldNormal)
+#define DS_VertexNormalWS(Parameters) ((Parameters).TangentToWorld[2])
+#define DS_TwoSidedSign(Parameters) ((Parameters).TwoSidedSign)
+#define DS_ViewportUV(Parameters) (GetViewportUV(Parameters))
+#define DS_PixelDepth(Parameters) (GetPixelDepth(Parameters))
+
+// World-space geometry. The absolute forms are LWC (FWSVector3); WSDemote lowers them to float3 the
+// same way the engine's own forward-lighting shaders do (SubstrateForwardLighting.ush). The
+// translated (camera-relative) form is already plain float3 and keeps precision near the camera.
+#define DS_WorldPosition(Parameters) (WSDemote(GetWorldPosition(Parameters)))
+#define DS_TranslatedWorldPosition(Parameters) (GetTranslatedWorldPosition(Parameters))
+#define DS_ObjectPosition(Parameters) (WSDemote(GetObjectWorldPosition(Parameters)))
+#define DS_ObjectRadius(Parameters) (GetPrimitiveData(Parameters).ObjectRadius)
+#define DS_ObjectBounds(Parameters) (float3(GetPrimitiveData(Parameters).ObjectBoundsX, GetPrimitiveData(Parameters).ObjectBoundsY, GetPrimitiveData(Parameters).ObjectBoundsZ))
+#define DS_CameraPosition(Parameters) (WSDemote(GetWorldCameraOrigin(Parameters)))
+
+// Per-instance data. Meaningful only for instanced / GPU-culled draws; on a plain mesh these read
+// back safe constants (PerInstanceRandom -> 0, PerInstanceFadeAmount -> 1) with no compile error.
+#define DS_PerInstanceRandom(Parameters) (GetPerInstanceRandom(Parameters))
+#define DS_PerInstanceFadeAmount(Parameters) (GetPerInstanceFadeAmount(Parameters))
+
+// UE.Panner -- UMaterialExpressionPanner composition: UV + frac(Time * Speed).
+float2 DS_Panner(float2 UV, float Time, float2 Speed)
+{
+	return UV + float2(frac(Time * Speed.x), frac(Time * Speed.y));
+}
+
+// Texture parameter sampling sugar. A texture parameter arrives in the eval function as the pair
+// `Texture2D Tex, SamplerState TexSampler` (the shape the translator gives Custom expression
+// texture inputs), so the sampler is derivable from the texture identifier via token pasting.
+// DSL sources write the unprefixed spelling (SampleTexture2D/...Lod/...Bias); the generator
+// lowers it to these namespaced macros. Texture2DSample handles the ES3.1 sampler fallback.
+#define DS_SampleTexture2D(Tex, UV) Texture2DSample(Tex, Tex##Sampler, UV)
+#define DS_SampleTexture2DLod(Tex, UV, Lod) Texture2DSampleLevel(Tex, Tex##Sampler, UV, Lod)
+#define DS_SampleTexture2DBias(Tex, UV, Bias) Texture2DSampleBias(Tex, Tex##Sampler, UV, Bias)
+
+#endif // DREAMSHADER_BUILTINS_USH
