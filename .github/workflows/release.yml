@@ -3,7 +3,8 @@ name: Release
 on:
   push:
     tags:
-      - "v*.*.*"
+      - "v*.*.*" # stable, e.g. v1.5.0
+      - "v*.*.*b" # beta,   e.g. v1.5.0b
   workflow_dispatch:
     inputs:
       version:
@@ -11,7 +12,7 @@ on:
         required: false
         type: string
       prerelease:
-        description: "Mark the GitHub Release as a pre-release."
+        description: "Force the GitHub Release to be a pre-release (beta versions are pre-release automatically)."
         required: false
         default: false
         type: boolean
@@ -36,42 +37,62 @@ jobs:
           $ErrorActionPreference = 'Stop'
 
           $Descriptor = Get-Content -Raw -Path 'DreamShader.uplugin' | ConvertFrom-Json
-          $PluginVersion = [string]$Descriptor.VersionName
-          if ([string]::IsNullOrWhiteSpace($PluginVersion)) {
+          $VersionName = [string]$Descriptor.VersionName
+          if ([string]::IsNullOrWhiteSpace($VersionName)) {
             throw 'DreamShader.uplugin VersionName is empty.'
           }
 
-          $InputVersion = '${{ github.event.inputs.version }}'.Trim()
-          $Version = if ([string]::IsNullOrWhiteSpace($InputVersion)) { $PluginVersion } else { $InputVersion.TrimStart('v') }
-          $TagName = "v$Version"
+          # Base X.Y.Z from the (possibly decorated) VersionName -- "1.5.0 - Beta" => "1.5.0".
+          if ($VersionName -notmatch '^\s*([0-9]+\.[0-9]+\.[0-9]+)') {
+            throw "DreamShader.uplugin VersionName '$VersionName' must start with an X.Y.Z version."
+          }
+          $BaseVersion = $Matches[1]
+
+          # Beta when the descriptor flags it or the VersionName is decorated with 'beta'.
+          $IsBeta = ([bool]$Descriptor.IsBetaVersion) -or ($VersionName -match '(?i)beta')
+
+          # Tag / filename slug: base version, plus a 'b' suffix for beta (1.5.0 / 1.5.0b).
+          $Slug = if ($IsBeta) { "${BaseVersion}b" } else { $BaseVersion }
+          $TagName = "v$Slug"
 
           if ('${{ github.ref_type }}' -eq 'tag') {
             $PushedTag = '${{ github.ref_name }}'
-            $PushedVersion = $PushedTag.TrimStart('v')
-            if ($PushedVersion -ne $PluginVersion) {
-              throw "Tag '$PushedTag' does not match DreamShader.uplugin VersionName '$PluginVersion'."
+            if ($PushedTag -ne $TagName) {
+              throw "Pushed tag '$PushedTag' does not match the tag derived from DreamShader.uplugin ('$TagName'). Fix VersionName / IsBetaVersion, or retag."
             }
-            $Version = $PluginVersion
-            $TagName = $PushedTag
+          }
+          else {
+            $InputVersion = '${{ github.event.inputs.version }}'.Trim()
+            if (-not [string]::IsNullOrWhiteSpace($InputVersion)) {
+              $InputSlug = $InputVersion.TrimStart('v')
+              if ($InputSlug -ne $Slug) {
+                throw "Requested version '$InputVersion' does not match DreamShader.uplugin ('$Slug')."
+              }
+            }
           }
 
-          if ($Version -ne $PluginVersion) {
-            throw "Requested release version '$Version' does not match DreamShader.uplugin VersionName '$PluginVersion'."
-          }
+          "DREAMSHADER_VERSION=$VersionName" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "DREAMSHADER_BASE=$BaseVersion"    | Out-File -FilePath $env:GITHUB_ENV -Append
+          "DREAMSHADER_SLUG=$Slug"           | Out-File -FilePath $env:GITHUB_ENV -Append
+          "DREAMSHADER_TAG=$TagName"         | Out-File -FilePath $env:GITHUB_ENV -Append
+          "DREAMSHADER_PRERELEASE=$(if ($IsBeta) { 'true' } else { 'false' })" | Out-File -FilePath $env:GITHUB_ENV -Append
 
-          "DREAMSHADER_VERSION=$Version" | Out-File -FilePath $env:GITHUB_ENV -Append
-          "DREAMSHADER_TAG=$TagName" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "Version:    $VersionName"
+          Write-Host "Base:       $BaseVersion"
+          Write-Host "Tag:        $TagName"
+          Write-Host "Slug:       $Slug"
+          Write-Host "Prerelease: $IsBeta"
 
       - name: Package plugin
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
 
-          $Version = $env:DREAMSHADER_VERSION
+          $Slug = $env:DREAMSHADER_SLUG
           $StageRoot = Join-Path $env:RUNNER_TEMP 'DreamShaderRelease'
           $PluginRoot = Join-Path $StageRoot 'DreamShader'
           $ArtifactRoot = Join-Path $env:GITHUB_WORKSPACE 'artifacts'
-          $ZipPath = Join-Path $ArtifactRoot "DreamShader-$Version.zip"
+          $ZipPath = Join-Path $ArtifactRoot "DreamShader-$Slug.zip"
 
           Remove-Item -LiteralPath $StageRoot -Recurse -Force -ErrorAction SilentlyContinue
           Remove-Item -LiteralPath $ArtifactRoot -Recurse -Force -ErrorAction SilentlyContinue
@@ -133,10 +154,15 @@ jobs:
           $ErrorActionPreference = 'Stop'
 
           $Version = $env:DREAMSHADER_VERSION
+          $Slug = $env:DREAMSHADER_SLUG
+          $Base = $env:DREAMSHADER_BASE
+          $Tag = $env:DREAMSHADER_TAG
+          $IsPrerelease = $env:DREAMSHADER_PRERELEASE -eq 'true'
           $NotesPath = Join-Path $env:RUNNER_TEMP 'DreamShaderReleaseNotes.md'
+
+          # Pull the section for this version out of the changelog.
           $Lines = Get-Content -Path 'CHANGELOG.md'
           $StartIndex = -1
-
           for ($Index = 0; $Index -lt $Lines.Count; ++$Index) {
             if ($Lines[$Index] -match "^##\s+$([regex]::Escape($Version))\b") {
               $StartIndex = $Index + 1
@@ -153,11 +179,49 @@ jobs:
               }
             }
             $Body = ($Lines[$StartIndex..($EndIndex - 1)] -join "`n").Trim()
+            # Drop a leading blockquote (the CHANGELOG's own beta note) so the release page's own
+            # pre-release callout below is the single source of that caveat.
+            $BodyLines = $Body -split "`n"
+            $Skip = 0
+            while ($Skip -lt $BodyLines.Count -and ($BodyLines[$Skip].TrimStart().StartsWith('>') -or $BodyLines[$Skip].Trim() -eq '')) { $Skip++ }
+            if ($Skip -gt 0 -and $Skip -lt $BodyLines.Count) {
+              $Body = ($BodyLines[$Skip..($BodyLines.Count - 1)] -join "`n").Trim()
+            }
           } else {
-            $Body = "DreamShader $Version release."
+            $Body = "See [CHANGELOG.md](https://github.com/TypeDreamMoon/DreamShader/blob/$Tag/CHANGELOG.md)."
           }
 
-          "# DreamShader $Version`n`n$Body" | Set-Content -Path $NotesPath -Encoding UTF8
+          $Notes = [System.Collections.Generic.List[string]]::new()
+          if ($IsPrerelease) {
+            $Notes.Add("> :warning: **Beta / pre-release.** APIs and generated-asset layout may still change before the stable ``$Base``. Please [report issues](https://github.com/TypeDreamMoon/DreamShader/issues).")
+            $Notes.Add("")
+          }
+          $Notes.Add("### :package: Installation")
+          $Notes.Add("")
+          $Notes.Add("1. Download ``DreamShader-$Slug.zip`` from the assets below.")
+          $Notes.Add("2. Extract the ``DreamShader`` folder into your project's ``Plugins/`` directory.")
+          $Notes.Add("3. Enable **DreamShader** in *Edit -> Plugins* and restart the editor.")
+          $Notes.Add("")
+          $Notes.Add("Compatible with Unreal Engine 5.3 - 5.7 (Win64).")
+          $Notes.Add("")
+          $Notes.Add("### :sparkles: What's changed")
+          $Notes.Add("")
+          $Notes.Add($Body)
+          $Notes.Add("")
+          $Notes.Add("### :inbox_tray: Assets")
+          $Notes.Add("")
+          $Notes.Add("| Asset | Description |")
+          $Notes.Add("| :---- | :---------- |")
+          $Notes.Add("| ``DreamShader-$Slug.zip`` | The Unreal plugin: source, resources, docs, README, CHANGELOG, LICENSE. |")
+          $Notes.Add("| ``*.vsix`` | DreamShaderLang VSCode extension (highlighting, completion, diagnostics). |")
+          $Notes.Add("")
+          $Notes.Add("### :link: Links")
+          $Notes.Add("")
+          $Notes.Add("- Documentation: https://lang.64hz.cn/")
+          $Notes.Add("- Full changelog: [CHANGELOG.md](https://github.com/TypeDreamMoon/DreamShader/blob/$Tag/CHANGELOG.md)")
+          $Notes.Add("- VSCode extension: https://github.com/TypeDreamMoon/dreamshader-language-support")
+
+          ($Notes -join "`n") | Set-Content -Path $NotesPath -Encoding UTF8
           "DREAMSHADER_NOTES=$NotesPath" | Out-File -FilePath $env:GITHUB_ENV -Append
 
       - name: Publish GitHub Release
@@ -171,7 +235,7 @@ jobs:
           $Title = "DreamShader $env:DREAMSHADER_VERSION"
           $ZipPath = $env:DREAMSHADER_ZIP
           $NotesPath = $env:DREAMSHADER_NOTES
-          $IsPrerelease = '${{ github.event.inputs.prerelease }}' -eq 'true'
+          $IsPrerelease = ($env:DREAMSHADER_PRERELEASE -eq 'true') -or ('${{ github.event.inputs.prerelease }}' -eq 'true')
           $ReleaseAssets = @($ZipPath)
 
           $VSCodeAssetDir = $env:DREAMSHADER_VSCODE_ASSET_DIR

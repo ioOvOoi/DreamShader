@@ -13,7 +13,7 @@
       </p>
       <p>
         <img alt="Unreal Engine 5.3-5.7" src="https://img.shields.io/badge/Unreal%20Engine-5.3--5.7-313131" />
-        <img alt="Version 1.4.1" src="https://img.shields.io/badge/version-1.4.1-blue" />
+        <img alt="Version 1.5.0 - Beta" src="https://img.shields.io/badge/version-1.5.0%20--%20Beta-orange" />
         <img alt="License MIT" src="https://img.shields.io/badge/license-MIT-green" />
       </p>
       <p>
@@ -42,6 +42,10 @@
     </td>
   </tr>
 </table>
+
+> [!NOTE]
+>
+> **`1.5.0` is a Beta release.** The unified ThinCustom backend and the new Material Content Browser are render-verified, but generated-asset layout and some APIs may still change before the stable `1.5.0`. See the [changelog](CHANGELOG.md) for the full feature list.
 
 > [!TIP]
 >
@@ -358,6 +362,15 @@ The Unreal Material Function asset context menu and editor toolbar include Dream
   <img alt="DreamShader editor tools" src="./Images/editor-tools.png" />
 </p>
 
+### Material Content Browser
+
+`Tools > DreamShader > Material Content Browser` opens a dedicated tab for managing and creating DreamShader materials, split into two pages:
+
+- **Project** — browse, filter, and inspect every material and material instance under `/Game`, with the full inheritance chain (hidden base → root instance → variants) and one-click **Create instance** into a folder you pick.
+- **Dream Shader Gen** — list your `.dsm` sources with a live preview, search and filters, compile-all, and load-time error surfacing.
+
+It can also materialize memory-only (preview) materials to disk, and toggle whether DreamShader's memory-only materials appear in the Content Browser.
+
 ### Decompiler Export
 
 Right-click a `Material` or `Material Function` in the Content Browser and choose `DreamShader > Export DSM/DSF`. Exported files are written to `DShader/Decompiled/Materials` or `DShader/Decompiled/Functions` and opened in your preferred text editor.
@@ -406,20 +419,25 @@ Extension releases are available from [dreamshader-language-support](https://git
 
 ## Release
 
-The repository includes a GitHub Actions release workflow. Push a tag that matches `VersionName` in `DreamShader.uplugin`:
+The repository includes a GitHub Actions release workflow. Push a tag whose version matches `DreamShader.uplugin`. Stable releases use `vX.Y.Z`; Beta releases (`IsBetaVersion: true`, or a `VersionName` ending in `Beta`) use a `b` suffix and are published as GitHub pre-releases automatically:
 
 ```powershell
-git tag v1.4.1
-git push origin v1.4.1
+# Stable, VersionName "1.5.0"
+git tag v1.5.0
+git push origin v1.5.0
+
+# Beta, VersionName "1.5.0 - Beta"
+git tag v1.5.0b
+git push origin v1.5.0b
 ```
 
-The release archive is named `DreamShader-<Version>.zip` and contains the plugin source, resources, documentation, README, CHANGELOG, and LICENSE. It excludes `Binaries` and `Intermediate`. The release workflow also attaches the latest VSCode extension assets from `TypeDreamMoon/dreamshader-language-support`.
+The release archive is named `DreamShader-<slug>.zip` (e.g. `DreamShader-1.5.0b.zip`) and contains the plugin source, resources, documentation, README, CHANGELOG, and LICENSE. It excludes `Binaries` and `Intermediate`. The release workflow also attaches the latest VSCode extension assets from `TypeDreamMoon/dreamshader-language-support`, and builds the release notes from the matching `CHANGELOG.md` section.
 
 ## Project Info
 
 | Item | Value |
 | :--- | :---- |
-| Version | `1.4.1` |
+| Version | `1.5.0 - Beta` |
 | Language | `DreamShaderLang` |
 | Unreal Engine | `5.3` - `5.7` |
 | Author | TypeDreamMoon |

@@ -1,5 +1,46 @@
 # DreamShader ChangeLog
 
+## 1.5.0 - Beta - 2026-07-16
+
+> Beta release. The unified backend and the new editor tooling are feature-complete and render-verified, but APIs and generated-asset layout may still change before the stable `1.5.0`. Please report issues.
+
+### Language (DreamShaderLang 1.5)
+
+- Section `=` is now optional: write `Properties { ... }`, `Settings { ... }`, and `Graph { ... }` without the assignment.
+- `Properties Group("Name") { ... }` scopes a group onto every parameter it contains; groups nest and compose.
+- `Slider(min, max)` shorthand sets a scalar parameter's UI range; asset paths can follow `=` directly and bare quoted paths are accepted.
+- Single-output functions can be used as return values (`x = Fn(...)`), and `Graph` builtins now match the `Function` path (`fract`, `mod` / `fmod`).
+- Live preview streaming keeps the editor and language-server previews in sync while you type.
+
+### Backend — one unified compilation path
+
+- The Graph and (experimental) Instance backends are collapsed into a single **ThinCustom** path: DreamShaderLang compiles to a real node graph on a hidden base `UMaterial`, wrapped by a thin `UDreamShaderMaterialInstance`. The engine compiles and enumerates the material natively, so Substrate, static switches, virtual textures, MaterialAttributes, and cook correctness all come from the real graph.
+- Bit-identical SM6 render parity with the previous Graph backend, verified across Unlit, textured, and DefaultLit MaterialAttributes cases.
+- The hidden base is a subobject of the instance — one asset, one package, invisible in the Content Browser, with no separate `MB_DreamThinBase_*` sibling and no cross-package parent import to lose at cook.
+- `Backend="Instance"` and `DefaultBackend=Instance` are retained as aliases for ThinCustom; a single **Default Compiler Backend** setting replaces the old In-Memory toggle.
+
+### Editor — Material Content Browser
+
+- New **DreamShader Material Content Browser** tab (`Tools > DreamShader`) with two pages: **Project** (browse, filter, and inspect every material / material instance under `/Game`, with the full inheritance chain) and **Dream Shader Gen** (source list, live preview, search, filters, compile-all, and load-time error surfacing).
+- Create material instances from any material through a folder picker, and materialize in-memory (preview-only) materials to disk on demand.
+- Content Browser context-menu actions and a toggle to show or hide DreamShader's memory-only materials.
+
+### Decompiler
+
+- Faithful round-trip for Substrate materials and renamed graph channels: the exporter now derives channel swizzles from the write mask rather than the channel name, so recompiled materials match the source bit-for-bit.
+
+### Fixed
+
+- Cook: assets are materialized on the cook director only, and a generation error now fails the cook instead of shipping a stale asset.
+- Generation refuses to overwrite assets DreamShader did not generate, and pre-validates graph syntax before clearing the target material.
+- Generated-include identity hashes the project-relative source path; stored source paths are project-relative and no longer carry a generated-at timestamp.
+- Runtime builds: guarded the editor-only `UEnum::HasMetaData` call so non-editor / Shipping (store) builds compile (#12).
+- Bridge: adopted `FCoreDelegates::GetOnPostEngineInit` for UE 5.8, and constrained "Clean Generated Shaders" to `Intermediate` with per-file deletes.
+
+### Compatibility
+
+- Unreal Engine `5.3` through `5.7` (Win64).
+
 ## 1.4.1 - 2026-07-01
 
 ### Added

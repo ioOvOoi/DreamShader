@@ -1,7 +1,7 @@
 {
 	"FileVersion": 3,
-	"Version": 142,
-	"VersionName": "1.4.1",
+	"Version": 150,
+	"VersionName": "1.5.0 - Beta",
 	"FriendlyName": "DreamShader",
 	"Description": "Author Unreal materials and material functions with DreamShaderLang .dsm/.dsh source files that auto-generate standard UMaterial and UMaterialFunction assets.",
 	"Category": "DreamPlugin",
@@ -13,7 +13,7 @@
 	"Copyright": "Copyright (c) 2026 TypeDreamMoon. All rights reserved.",
 	"EnabledByDefault": true,
 	"CanContainContent": true,
-	"IsBetaVersion": false,
+	"IsBetaVersion": true,
 	"Installed": false,
 	"Modules": [
 		{
